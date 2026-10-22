@@ -29,6 +29,10 @@ fn error_valid_utf8(text: const u8[:]) -> bool {
     return true;
 }
 
+// Public text boundary check for applications decoding JSON or other UTF-8 data.
+// Control-character policy belongs to the consuming format, not this function.
+fn valid_utf8(text: const u8[:]) -> bool { return error_valid_utf8(text); }
+
 fn error_append(out: u8[..MAX_RESPONSE_BODY_BYTES]&, text: const u8[:]) -> bool {
     if text.len > MAX_RESPONSE_BODY_BYTES - out.len { return false; }
     out.append(text);

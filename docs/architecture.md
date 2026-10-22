@@ -58,5 +58,9 @@ cannot continually enqueue work and starve the reactor. Cross-thread delivery is
 - Keep `tests/run.py` as the single complete verification command; register new unit programs there.
 - Keep generated binaries/cache under ignored `build/`; keep examples out of `src/`.
 
-The example is an application, not framework policy: its generated IDs, demonstration
-rejection header, routes, logging, and 503-on-event-overflow choice are intentionally visible there.
+The basic example is a Todo API: `server.goose` wires middleware, events and lifecycle;
+`todos/store.goose` owns records and atomic persistence, `todos/input.goose` validates
+payloads and query values, and `todos/api.goose` handles routes and transactional state swaps.
+Its OpenAPI contract and curl walkthrough live beside the example. File writes are
+synchronous and bounded by the small store; callbacks still run on the reactor thread.
+The old routing/middleware feature demonstration is retained in `tests/fixtures/features.goose`.

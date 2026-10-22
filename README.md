@@ -20,16 +20,20 @@ drains existing connections within a five-second grace period.
 
 ```sh
 curl http://127.0.0.1:8080/health
-curl --data 'Hello Goose' http://127.0.0.1:8080/echo
-curl http://127.0.0.1:8080/users/42
-curl 'http://127.0.0.1:8080/greet?name=Goose+Web'
-curl -i -X POST http://127.0.0.1:8080/health
-curl -i -H 'X-Demo-Reject: yes' http://127.0.0.1:8080/health
+curl -i -H 'Content-Type: application/json' \
+  --data '{"title":"Try Goose Web"}' http://127.0.0.1:8080/todos
+curl http://127.0.0.1:8080/todos
+curl -X PATCH -H 'Content-Type: application/json' \
+  --data '{"completed":true}' http://127.0.0.1:8080/todos/1
+curl -i -X DELETE http://127.0.0.1:8080/todos/1
 ```
 
-The last two demonstrate 405 method errors and a middleware rejection. Every
-application response includes a generated `X-Request-ID`. Request events go to
-multiple listeners, including a one-shot listener. A full event queue returns 503.
+The example is a [complete Todo API](examples/basic/README.md), including validation,
+pagination, filtered lists, and atomic JSON-file persistence in `build/todos.json`.
+Every application response includes a generated `X-Request-ID`. Request events go
+to multiple listeners; successful mutations also dispatch domain events. A full
+event queue returns 503 before a mutation can change data. The local contract is
+[OpenAPI](examples/basic/openapi.yaml).
 
 ## Project layout
 
@@ -44,7 +48,7 @@ src/
   events/                Typed bounded event bus
   runtime/               Readiness loop, configuration, lifecycle, metrics
 native/posix/            Socket and signal shim
-examples/basic/          Runnable application
+examples/basic/          Todo API, OpenAPI contract, and application modules
 tests/
   unit/                  Goose contract tests
   native/                C socket tests
@@ -73,6 +77,7 @@ The suite builds with Goose runtime checks, checks event and application contrac
 forces partial writes, and verifies concurrent clients, routing, middleware, request
 limits, deadlines, metrics, and graceful shutdown on real loopback sockets. It also
 runs 33,119 deterministic parser fuzz/property checks using four recorded seeds.
+Todo tests also exercise CRUD, validation, persisted restarts, capacity, and failed-save rollback.
 
 See [Architecture](docs/architecture.md), [API contracts](docs/api.md),
 [HTTP request profile](docs/http-conformance.md), and [Roadmap](ROADMAP.md).

@@ -63,6 +63,7 @@ const HEADER_EXPECT = "Expect";
 const HEADER_TRAILER = "Trailer";
 const HEADER_UPGRADE = "Upgrade";
 const HEADER_ALLOW = "Allow";
+const HEADER_LOCATION = "Location";
 const HEADER_REQUEST_ID = "X-Request-ID";
 const HTTP_VERSION = "HTTP/1.1";
 const CONNECTION_CLOSE = "close";

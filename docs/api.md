@@ -56,6 +56,11 @@ check the status before using the value. No Unicode normalization is applied.
 
 ## Middleware and application errors
 
+`valid_utf8(text)` checks that bytes form valid UTF-8, rejecting truncated, overlong,
+surrogate, and out-of-range encodings. It does not reject control characters;
+the consuming format or application applies that policy. The Todo example checks
+JSON request encoding before passing it to the standard-library JSON parser.
+
 `pipeline(request, response, before, handler, after)` calls before first. Its boolean
 result controls whether handler runs. After always runs when callbacks return normally,
 including on rejection. Nest pipelines through a named handler for additional layers;

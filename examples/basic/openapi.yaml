@@ -1,0 +1,630 @@
+openapi: 3.1.0
+info:
+  title: Goose Web basic Todo API
+  version: 1.0.0
+  description: A bounded single-process Todo example. JSON request objects reject duplicate member names
+    after escape decoding; this additional constraint is not expressible by JSON Schema after parsing.
+    All application responses carry X-Request-ID. Framework parser rejections happen before middleware
+    and can use plain text without that header. Mutation success follows persistence and required-event
+    admission; save failure or event backpressure does not change live state. No authentication or browser
+    UI is provided.
+servers:
+- url: http://127.0.0.1:8080
+paths:
+  /health:
+    get:
+      summary: Check server health
+      operationId: getHealth
+      responses:
+        '200':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        '405':
+          $ref: '#/components/responses/405'
+    head:
+      summary: Check health without a response body
+      operationId: headHealth
+      responses:
+        '200':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+        '405':
+          description: Method is not registered for the selected path. Allow lists available methods,
+            including HEAD for GET.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+            Allow:
+              description: Available HTTP methods for the selected path.
+              schema:
+                type: string
+      description: ' HEAD uses the GET representation length and sends no body, including for errors.'
+  /todos:
+    get:
+      summary: List Todos in ascending ID order
+      operationId: listTodos
+      responses:
+        '200':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TodoPage'
+        '400':
+          $ref: '#/components/responses/400'
+        '413':
+          $ref: '#/components/responses/413'
+        '422':
+          $ref: '#/components/responses/422'
+        '405':
+          $ref: '#/components/responses/405'
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 8
+          default: 8
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: completed
+        in: query
+        schema:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+        description: Exact lowercase token, compared after query decoding.
+      description: Only limit, offset, and completed are accepted. Each decoded key may occur once. Unknown
+        or duplicate keys are 422; malformed escapes are 400; decoded fields over 1024 bytes are 413.
+        Filter before offset/limit. Empty pages retain the filtered total.
+    head:
+      summary: Get list representation headers without a body
+      operationId: headTodos
+      responses:
+        '200':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+        '400':
+          description: Malformed JSON or invalid percent escape. URI syntax errors can be rejected before
+            application middleware and its request ID.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+        '413':
+          description: A decoded query field exceeds 1024 bytes, or the request exceeds the framework
+            byte limit.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+        '422':
+          description: JSON is valid but fails the object schema, ID validation, or strict query rules.
+            Duplicate fields, including escaped equivalents, are rejected.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+        '405':
+          description: Method is not registered for the selected path. Allow lists available methods,
+            including HEAD for GET.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+            Allow:
+              description: Available HTTP methods for the selected path.
+              schema:
+                type: string
+      parameters:
+      - name: limit
+        in: query
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 8
+          default: 8
+      - name: offset
+        in: query
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+      - name: completed
+        in: query
+        schema:
+          type: string
+          enum:
+          - 'true'
+          - 'false'
+        description: Exact lowercase token, compared after query decoding.
+      description: Only limit, offset, and completed are accepted. Each decoded key may occur once. Unknown
+        or duplicate keys are 422; malformed escapes are 400; decoded fields over 1024 bytes are 413.
+        Filter before offset/limit. Empty pages retain the filtered total. HEAD uses the GET representation
+        length and sends no body, including for errors.
+    post:
+      summary: Create a Todo
+      operationId: createTodo
+      responses:
+        '201':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+            Location:
+              description: Canonical path of the created Todo.
+              schema:
+                type: string
+                pattern: ^/todos/[1-9][0-9]*$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Todo'
+        '400':
+          $ref: '#/components/responses/400'
+        '409':
+          $ref: '#/components/responses/409'
+        '415':
+          $ref: '#/components/responses/415'
+        '422':
+          $ref: '#/components/responses/422'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+        '405':
+          $ref: '#/components/responses/405'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TodoCreate'
+  /todos/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      description: 'Positive canonical decimal int64: no zero, leading zeros, sign, or nondecimal bytes.
+        IDs increase monotonically and are never reused, including after restart.'
+      schema:
+        type: string
+        pattern: ^[1-9][0-9]*$
+    get:
+      summary: Retrieve a Todo
+      operationId: getTodo
+      responses:
+        '200':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Todo'
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+        '405':
+          $ref: '#/components/responses/405'
+    head:
+      summary: Get Todo representation headers without a body
+      operationId: headTodo
+      responses:
+        '200':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+        '404':
+          description: Route or valid Todo ID does not exist.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+        '422':
+          description: JSON is valid but fails the object schema, ID validation, or strict query rules.
+            Duplicate fields, including escaped equivalents, are rejected.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+        '405':
+          description: Method is not registered for the selected path. Allow lists available methods,
+            including HEAD for GET.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+            Allow:
+              description: Available HTTP methods for the selected path.
+              schema:
+                type: string
+      description: ' HEAD uses the GET representation length and sends no body, including for errors.'
+    put:
+      summary: Replace title and completed
+      operationId: replaceTodo
+      responses:
+        '200':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Todo'
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          $ref: '#/components/responses/404'
+        '415':
+          $ref: '#/components/responses/415'
+        '422':
+          $ref: '#/components/responses/422'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+        '405':
+          $ref: '#/components/responses/405'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TodoReplace'
+    patch:
+      summary: Update at least one Todo field
+      operationId: patchTodo
+      responses:
+        '200':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Todo'
+        '400':
+          $ref: '#/components/responses/400'
+        '404':
+          $ref: '#/components/responses/404'
+        '415':
+          $ref: '#/components/responses/415'
+        '422':
+          $ref: '#/components/responses/422'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+        '405':
+          $ref: '#/components/responses/405'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TodoPatch'
+    delete:
+      summary: Delete a Todo
+      operationId: deleteTodo
+      responses:
+        '204':
+          description: Successful response.
+          headers:
+            X-Request-ID:
+              description: Positive per-process request sequence assigned to application responses.
+              schema:
+                type: string
+                pattern: ^[1-9][0-9]*$
+        '404':
+          $ref: '#/components/responses/404'
+        '422':
+          $ref: '#/components/responses/422'
+        '500':
+          $ref: '#/components/responses/500'
+        '503':
+          $ref: '#/components/responses/503'
+        '405':
+          $ref: '#/components/responses/405'
+components:
+  schemas:
+    Title:
+      type: string
+      minLength: 1
+      maxLength: 128
+      pattern: ^[^\u0000-\u001f\u007f]+$
+      description: 1..128 UTF-8 bytes after JSON decoding; valid Unicode scalar UTF-8, not entirely Unicode
+        White_Space, no ASCII control bytes or DEL. Whitespace is preserved for nonblank titles. No Unicode
+        normalization. maxLength counts characters; the byte limit is additionally enforced.
+      x-max-utf8-bytes: 128
+    Todo:
+      type: object
+      additionalProperties: false
+      required:
+      - id
+      - title
+      - completed
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        title:
+          $ref: '#/components/schemas/Title'
+        completed:
+          type: boolean
+    TodoCreate:
+      type: object
+      additionalProperties: false
+      required:
+      - title
+      properties:
+        title:
+          $ref: '#/components/schemas/Title'
+        completed:
+          type: boolean
+          default: false
+    TodoReplace:
+      type: object
+      additionalProperties: false
+      required:
+      - title
+      - completed
+      properties:
+        title:
+          $ref: '#/components/schemas/Title'
+        completed:
+          type: boolean
+    TodoPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title:
+          $ref: '#/components/schemas/Title'
+        completed:
+          type: boolean
+    TodoPage:
+      type: object
+      additionalProperties: false
+      required:
+      - items
+      - total
+      - limit
+      - offset
+      properties:
+        items:
+          type: array
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/Todo'
+        total:
+          type: integer
+          minimum: 0
+          maximum: 128
+          description: Number of items matching the completed filter before pagination.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 8
+        offset:
+          type: integer
+          minimum: 0
+    Health:
+      type: object
+      additionalProperties: false
+      required:
+      - status
+      properties:
+        status:
+          const: ok
+    Error:
+      type: object
+      additionalProperties: false
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+  responses:
+    '400':
+      description: Malformed JSON or invalid percent escape. URI syntax errors can be rejected before
+        application middleware and its request ID.
+      headers:
+        X-Request-ID:
+          description: Present for application errors; absent when the HTTP parser rejects the request
+            first.
+          schema:
+            type: string
+            pattern: ^[1-9][0-9]*$
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+        text/plain:
+          schema:
+            type: string
+    '404':
+      description: Route or valid Todo ID does not exist.
+      headers:
+        X-Request-ID:
+          description: Positive per-process request sequence assigned to application responses.
+          schema:
+            type: string
+            pattern: ^[1-9][0-9]*$
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '405':
+      description: Method is not registered for the selected path. Allow lists available methods, including
+        HEAD for GET.
+      headers:
+        X-Request-ID:
+          description: Positive per-process request sequence assigned to application responses.
+          schema:
+            type: string
+            pattern: ^[1-9][0-9]*$
+        Allow:
+          description: Available HTTP methods for the selected path.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '409':
+      description: The 128-item store is full.
+      headers:
+        X-Request-ID:
+          description: Positive per-process request sequence assigned to application responses.
+          schema:
+            type: string
+            pattern: ^[1-9][0-9]*$
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '413':
+      description: A decoded query field exceeds 1024 bytes, or the request exceeds the framework byte
+        limit.
+      headers:
+        X-Request-ID:
+          description: Present for application errors; absent when the HTTP parser rejects the request
+            first.
+          schema:
+            type: string
+            pattern: ^[1-9][0-9]*$
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+        text/plain:
+          schema:
+            type: string
+    '415':
+      description: Content-Type must identify application/json for POST, PUT, or PATCH.
+      headers:
+        X-Request-ID:
+          description: Positive per-process request sequence assigned to application responses.
+          schema:
+            type: string
+            pattern: ^[1-9][0-9]*$
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '422':
+      description: JSON is valid but fails the object schema, ID validation, or strict query rules. Duplicate
+        fields, including escaped equivalents, are rejected.
+      headers:
+        X-Request-ID:
+          description: Positive per-process request sequence assigned to application responses.
+          schema:
+            type: string
+            pattern: ^[1-9][0-9]*$
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '500':
+      description: Persistence failed. error.code is storage_error; live state and next ID remain unchanged.
+      headers:
+        X-Request-ID:
+          description: Positive per-process request sequence assigned to application responses.
+          schema:
+            type: string
+            pattern: ^[1-9][0-9]*$
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    '503':
+      description: Required event queue is full. error.code is event_queue_full; mutation has not occurred.
+      headers:
+        X-Request-ID:
+          description: Positive per-process request sequence assigned to application responses.
+          schema:
+            type: string
+            pattern: ^[1-9][0-9]*$
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
