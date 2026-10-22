@@ -49,8 +49,11 @@ tests/
   native/                C socket tests
   fixtures/              Server programs used by integration tests
   integration/           Real HTTP and runtime checks
+  fuzz/                  Reproducible parser fuzz/property corpus
   run.py                 Complete test entry point
 docs/                    Architecture and API contracts
+scripts/                 Pinned compiler bootstrap
+.github/workflows/       Linux CI with GCC and Clang
 build/                   Ignored binaries and compiler cache
 ```
 
@@ -67,8 +70,12 @@ python3 tests/run.py
 Set `GOOSE=/opt/goose/goose` if Goose is not on PATH; `CC` selects the C compiler.
 The suite builds with Goose runtime checks, checks event and application contracts,
 forces partial writes, and verifies concurrent clients, routing, middleware, request
-limits, deadlines, metrics, and graceful shutdown on real loopback sockets.
+limits, deadlines, metrics, and graceful shutdown on real loopback sockets. It also
+runs 33,119 deterministic parser fuzz/property checks using four recorded seeds.
 
-See [Architecture](docs/architecture.md), [API contracts](docs/api.md), and
-[Roadmap](ROADMAP.md). The transport is currently POSIX-only; TLS, chunked encoding,
+See [Architecture](docs/architecture.md), [API contracts](docs/api.md),
+[HTTP request profile](docs/http-conformance.md), and [Roadmap](ROADMAP.md).
+See [CI and compiler setup](docs/ci.md) to build the pinned upstream compiler and
+reproduce both C compiler configurations locally.
+The transport is currently POSIX-only; TLS, chunked encoding,
 keep-alive, streaming, and language-level async suspension remain future work.

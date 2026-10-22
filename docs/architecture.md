@@ -53,6 +53,7 @@ cannot continually enqueue work and starve the reactor. Cross-thread delivery is
 - Routing and middleware rules belong in their respective modules, not the reactor.
 - New transport primitives need native tests under `tests/native/`.
 - Server lifecycle/limits need fixtures under `tests/fixtures/` and live checks under `tests/integration/`.
+- Reproducible parser fuzz/property checks belong under `tests/fuzz/`; preserve seeds and regression cases.
 - Keep `tests/run.py` as the single complete verification command; register new unit programs there.
 - Keep generated binaries/cache under ignored `build/`; keep examples out of `src/`.
 

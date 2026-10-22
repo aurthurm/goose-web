@@ -19,7 +19,9 @@
 
 ## Milestone 3: protocol and platform coverage
 
-- HTTP parser conformance/fuzz testing before expanding exposure.
+- [x] Strict request profile, malformed-input/prefix regressions, and deterministic parser fuzz/property checks.
+- [x] Pinned upstream compiler and Linux CI definition for GCC and Clang.
+- Broader conformance and coverage-guided fuzzing before public deployment.
 - Streaming, keep-alive, and chunked encoding with explicit ownership/backpressure.
 - Windows transport, then evaluate epoll/kqueue under measured load.
 - TLS integration and deployment guidance.

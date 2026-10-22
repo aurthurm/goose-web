@@ -36,6 +36,35 @@ def health(port):
     assert int(fields[b"X-Request-ID"]) > 0
 
 
+def malformed_requests(port):
+    # These complete requests must be rejected before any application handler.
+    # They exercise the actual connection/parser boundary, not just pure parsing.
+    cases = [
+        b"GET /health HTTP/1.1\r\nHost: local host\r\n\r\n",
+        b"GET /health HTTP/1.1\r\nHost: localhost:abc\r\n\r\n",
+        b"GET /health HTTP/1.1\r\nHost: user@localhost\r\n\r\n",
+        b"GET /health HTTP/1.1\r\nHost: [not-an-ip]\r\n\r\n",
+        b"GET /health#fragment HTTP/1.1\r\nHost: x\r\n\r\n",
+        b"GET /bad%GG HTTP/1.1\r\nHost: x\r\n\r\n",
+        b"GET /bad\xff HTTP/1.1\r\nHost: x\r\n\r\n",
+        b"GET /health HTTP/1.1\r\nHost: x\r\nX: value\nHidden: yes\r\n\r\n",
+        b"GET /health HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n",
+        b"GET /health HTTP/1.1\r\nHost: x\r\nContent-Length: 0, 0\r\n\r\n",
+        b"GET /health HTTP/1.1\r\nHost: x\r\nContent-Length: +0\r\n\r\n",
+    ]
+    for raw in cases:
+        status, headers, _ = exchange(port, raw)
+        assert status == 400, (raw, status)
+        assert b"X-Request-ID" not in headers, "malformed request reached middleware"
+    # Binary and HTTP-looking body bytes belong to the declared first body only.
+    body = b"\x00\xffGET /missing HTTP/1.1\r\nHost: body\r\n\r\n"
+    first = (b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: " +
+             str(len(body)).encode() + b"\r\n\r\n" + body)
+    extra = b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"
+    status, _, echoed = exchange(port, first + extra)
+    assert status == 200 and echoed == body
+
+
 def test_server(executable):
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
@@ -54,6 +83,7 @@ def test_server(executable):
                     raise
                 time.sleep(0.02)
         health(port)
+        malformed_requests(port)
         with socket.create_connection(("127.0.0.1", port), timeout=3) as slow:
             slow.sendall(b"GET /health HTTP/1.1\r\nHost:")
             start = time.monotonic()
@@ -95,8 +125,10 @@ def test_server(executable):
         assert status == 405 and fields[b"Allow"] == b"GET, HEAD"
         status, _, body = exchange(port, b"GET /greet?name=Goose+Web%21 HTTP/1.1\r\nHost: x\r\n\r\n")
         assert status == 200 and body == b"Hello, Goose Web!!\n"
-        status, _, body = exchange(port, b"GET /greet?name=ok&bad=%GG HTTP/1.1\r\nHost: x\r\n\r\n")
-        assert status == 400 and json.loads(body)["error"]["code"] == "invalid_query"
+        # A syntactically valid URI can still exceed the decoded query limit.
+        raw = b"GET /greet?name=" + b"x" * 1025 + b" HTTP/1.1\r\nHost: x\r\n\r\n"
+        status, _, body = exchange(port, raw)
+        assert status == 413 and json.loads(body)["error"]["code"] == "invalid_query"
         status, fields, body = exchange(port, b"POST /echo HTTP/1.1\r\nHost: x\r\nx-demo-reject: yes\r\nContent-Length: 5\r\n\r\nhello")
         assert status == 403 and json.loads(body)["error"]["code"] == "request_rejected"
         assert b"X-Request-ID" in fields

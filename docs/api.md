@@ -14,6 +14,9 @@ for that field. Serialization also validates direct struct mutations and rejects
 The response body capacity is 8192 bytes.
 
 HTTP/1.1 origin-form requests use Content-Length bodies and one response per connection.
+Targets follow strict ASCII URI syntax with validated percent escapes; raw Unicode
+and fragments are rejected. Host values must match the supported reg-name/bracketed
+IPv6 profile, with optional numeric port. Only SP/HTAB are trimmed around field values.
 Duplicate Host/Content-Length, invalid header names/control bytes, and ambiguous framing
 return 400. Unsupported transfer encoding returns 501; Expect returns 417. HEAD sends
 no body but retains the selected representation's length. No keep-alive or pipelining:

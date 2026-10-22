@@ -1,0 +1,45 @@
+name: Linux CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: linux-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Linux / ${{ matrix.cc }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    env:
+      CC: ${{ matrix.cc }}
+      GOOSE_CC: ${{ matrix.cc }}
+      CXX: g++
+      GOOSE: ${{ github.workspace }}/build/tools/goose/build/goose
+      GOOSE_STDLIB: ${{ github.workspace }}/build/tools/goose/source/stdlib
+      GOOSE_HOME: ${{ github.workspace }}/build/goose-cache
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Show toolchain
+        run: |
+          python3 --version
+          cmake --version
+          "$CC" --version
+          "$CXX" --version
+      - name: Build pinned Goose compiler
+        run: python3 scripts/bootstrap_goose.py
+      - name: Run full test suite
+        run: python3 tests/run.py
