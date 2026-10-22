@@ -1,35 +1,55 @@
-# Architecture notes
+# Goose Web architecture — async-first
 
-## Layers
+## Runtime
 
-1. **Application:** declarative route composition, handlers and typed extractors.
-2. **Core (Goose):** dispatch, request parsing, response formatting, middleware, errors and policies.
-3. **Transport adapter:** sockets, timeouts, read/write and connection lifecycle through a small C ABI.
-4. **OS:** sockets / polling primitives.
+```text
+nonblocking socket readiness
+           |
+           v
+     reactor / event loop  -------> bounded timer/cancellation queue
+           |
+           v
+   connection state machines
+           |
+           v
+     HTTP parser / router
+           |
+           v
+     Goose request handlers
+           |
+           v
+    write queue / backpressure
 
-### Bootstrap constraints
+  Event subsystem (cross-cutting)
+  on / once / off / emit / dispatch
+       | typed envelopes
+       v
+  bounded FIFO + static handler dispatch
+```
 
-The transport experiment is synchronous, POSIX-only and one connection at a time. The socket shim never retains pointers to Goose-owned buffers. The native `gw_read` and `gw_write` APIs consume Goose slices immediately. There is no background task or callback into Goose. No keep-alive, streaming or request bodies are supported in the bootstrap demo.
+**An event loop is not automatically `async/await`.** Goose lacks Tokio-style futures; use explicitly polled state machines, yielding bounded work and never blocking the reactor on DB calls or sleeps. Blocking tasks will eventually be handed to isolated worker threads using flat typed queue messages.
 
-The initial routing utility is deliberately independent of the socket implementation so that core behavior can be tested without networking.
+## Event core
 
-### Route dispatch design
+Events are native framework primitives, not a web plugin. Define a typed event catalog (enum variants with payloads), routing code generated/static by event type, listener bookkeeping and a bounded owned-payload queue. The initial `events.goose` provides a small FIFO queue, demonstrating the ownership/dispatch basis; full dynamic subscription and delivery are roadmap items. Arbitrary callback values cannot be stored as runtime listener pointers under Goose's current type system.
 
-Goose's callable blocks are compile-time constructs and cannot escape as ordinary function pointers. Therefore **do not** build a runtime registry of arbitrary callbacks. Investigate a compile-time route table or generated static dispatcher. Route matching should be deterministic, resolve static-before-parameter precedence, and reject ambiguous registrations.
+**Planned public API (design only):**
 
-### HTTP safety requirements before alpha
+```text
+app.events.on(Event.UserCreated) { event => ... }
+app.events.once(Event.Ready) { event => ... }
+let token = app.events.subscribe(Event.UserCreated, handler)
+app.events.off(token)
+app.events.emit(Event.UserCreated { id: 42, name: "Ana" })
+app.events.dispatch(64) // bounded batch; never block transport forever
+```
 
-- Header/body/time/connection limits, reject conflicting content-length and transfer-encoding.
-- Incremental parsing across reads. Correct CRLF handling, path normalization, percent decoding and routing rules.
-- No response splitting, constant-time comparison for secrets, and safe default headers.
-- Backpressure and bounded queues; handle partial reads/writes and client disconnects.
-- Fuzz request parser and verify against established HTTP test corpora.
-- TLS provided by a trusted reverse proxy until a native adapter is complete.
+Payloads must be owned/flat when sent across worker boundaries. Cancellation and once semantics must be deterministic. A bounded queue has explicit overflow behavior. Avoid exposing borrowed request/body data after the request scope.
 
-### Plugin contract
+## Bootstrap warning
 
-Plugins operate on compile-time route configuration or per-request context, not arbitrary mutable process-global state. Transport plugins are distinct from application middleware. Version public contracts independently.
+The initial synchronous `examples/hello.goose` and POSIX shim predate the async-first decision and are retained only as a transport interoperability spike. **They are not the runtime architecture.** No part of the prototype is production safe. The async reactor and incremental HTTP parser must replace it before the first alpha.
 
-### Versioning
+## Security and performance
 
-Experimental `0.x` versions may change APIs. Every release pins an upstream Goose compiler revision, tests supported OS/compilers and includes a compatibility matrix.
+Backpressure, timeout handling, partial I/O, slowloris defenses, protocol ambiguity detection, cancellations and proper lifecycle closure precede public deployment. Compare native event-loop designs with reproducible connection-count, throughput, CPU, RSS and tail-latency measurements. TLS can initially terminate at a reverse proxy.
