@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""One entry point for debug builds, unit tests, native tests, and socket tests."""
+from pathlib import Path
+import os
+import shutil
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+BUILD = ROOT / "build"
+
+
+def main():
+    BUILD.mkdir(exist_ok=True)
+    env = dict(os.environ)
+    env.setdefault("GOOSE_HOME", str(BUILD / "cache"))
+    compiler = os.environ.get("GOOSE", "goose")
+    if not shutil.which(compiler):
+        raise SystemExit("Set GOOSE to the installed Goose compiler executable")
+    programs = [("core", "tests/unit/core.goose"), ("router", "tests/unit/router.goose"),
+                ("application", "tests/unit/application.goose"), ("server", "examples/basic/server.goose")]
+    for name, source in programs:
+        subprocess.run([compiler, "build", str(ROOT / source), "--debug", "-o", str(BUILD / name)],
+                       env=env, check=True, cwd=ROOT)
+    for name in ("core", "router", "application"):
+        subprocess.run([str(BUILD / name)], check=True)
+    cc = os.environ.get("CC", "cc")
+    subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/transport.c"),
+                    "-o", str(BUILD / "transport")], check=True)
+    subprocess.run([str(BUILD / "transport")], check=True)
+    subprocess.run([sys.executable, str(ROOT / "tests/integration/http.py"), str(BUILD / "server")], env=env, check=True)
+    subprocess.run([sys.executable, str(ROOT / "tests/integration/runtime.py")], env=env, check=True)
+
+
+if __name__ == "__main__":
+    main()
