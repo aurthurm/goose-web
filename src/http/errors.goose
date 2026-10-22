@@ -1,3 +1,5 @@
+import src.constants.http;
+import src.constants.limits;
 import .response;
 import std;
 namespace web;
@@ -27,13 +29,13 @@ fn error_valid_utf8(text: const u8[:]) -> bool {
     return true;
 }
 
-fn error_append(out: u8[..8192]&, text: const u8[:]) -> bool {
-    if text.len > 8192 - out.len { return false; }
+fn error_append(out: u8[..MAX_RESPONSE_BODY_BYTES]&, text: const u8[:]) -> bool {
+    if text.len > MAX_RESPONSE_BODY_BYTES - out.len { return false; }
     out.append(text);
     return true;
 }
 
-fn error_append_string(out: u8[..8192]&, text: const u8[:]) -> bool {
+fn error_append_string(out: u8[..MAX_RESPONSE_BODY_BYTES]&, text: const u8[:]) -> bool {
     if !error_append(out, "\"") { return false; }
     let hex = "0123456789abcdef";
     for c in text {
@@ -51,8 +53,8 @@ fn error_append_string(out: u8[..8192]&, text: const u8[:]) -> bool {
 }
 
 fn error_fallback(result: Response&) -> bool {
-    result.status = 500;
-    result.content_type = "application/json";
+    result.status = HTTP_INTERNAL_SERVER_ERROR;
+    result.content_type = CONTENT_TYPE_JSON;
     result.body = "{\"error\":{\"code\":\"internal_error\",\"message\":\"Unable to encode application error\"}}\n";
     return false;
 }
@@ -62,17 +64,17 @@ fn error_fallback(result: Response&) -> bool {
 // malformed UTF-8, or capacity exhaustion returns false with a complete 500
 // response, never a partial/truncated JSON document. Existing headers survive.
 fn application_error(result: Response&, status: i32, code: const u8[:], message: const u8[:]) -> bool {
-    if status < 400 || status > 599 || !error_valid_utf8(code) || !error_valid_utf8(message) {
+    if status < HTTP_MIN_ERROR_STATUS || status > HTTP_MAX_STATUS || !error_valid_utf8(code) || !error_valid_utf8(message) {
         return error_fallback(result);
     }
     // Inputs may borrow result.body or result.content_type. Consume both in
     // full before replacing any response fields that could back these views.
-    var body: u8[..8192] = [];
+    var body: u8[..MAX_RESPONSE_BODY_BYTES] = [];
     if !error_append(body, "{\"error\":{\"code\":") || !error_append_string(body, code) ||
        !error_append(body, ",\"message\":") || !error_append_string(body, message) ||
        !error_append(body, "}}\n") { return error_fallback(result); }
     result.body = body;
-    result.content_type = "application/json";
+    result.content_type = CONTENT_TYPE_JSON;
     result.status = status;
     return true;
 }

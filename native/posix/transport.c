@@ -10,6 +10,7 @@
 #include <netinet/in.h>
 #include <unistd.h>
 #include <signal.h>
+#include "constants.h"
 
 typedef struct { uint8_t *data; int64_t len; } gw_bytes;
 typedef struct { int32_t *data; int64_t len; } gw_ints;
@@ -17,30 +18,31 @@ typedef struct { int32_t *data; int64_t len; } gw_ints;
 static int gw_nonblock(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0 ||
-        fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) { close(fd); return -1; }
+        fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) { close(fd); return GW_INVALID_SOCKET; }
 #ifdef SO_NOSIGPIPE
     int one = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one)) < 0) {
-        close(fd); return -1;
+        close(fd); return GW_INVALID_SOCKET;
     }
 #endif
     return fd;
 }
 
 int32_t gw_listen_config(int32_t port, int32_t public_bind) {
-    if (port < 1 || port > 65535 || (public_bind != 0 && public_bind != 1)) return -1;
+    if (port < GW_MIN_PORT || port > GW_MAX_PORT ||
+        (public_bind != GW_BIND_LOOPBACK && public_bind != GW_BIND_PUBLIC)) return GW_INVALID_SOCKET;
     int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return -1;
+    if (fd < 0) return GW_INVALID_SOCKET;
     int one = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) < 0) {
-        close(fd); return -1;
+        close(fd); return GW_INVALID_SOCKET;
     }
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(public_bind ? INADDR_ANY : INADDR_LOOPBACK);
     addr.sin_port = htons((uint16_t)port);
-    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, 64) < 0) {
-        close(fd); return -1;
+    if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0 || listen(fd, GW_SOCKET_BACKLOG) < 0) {
+        close(fd); return GW_INVALID_SOCKET;
     }
     return gw_nonblock(fd);
 }
@@ -48,13 +50,13 @@ int32_t gw_listen_config(int32_t port, int32_t public_bind) {
 int32_t gw_accept(int32_t listener) {
     int fd = accept(listener, NULL, NULL);
     if (fd >= 0) return gw_nonblock(fd);
-    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? -2 : -1;
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? GW_IO_WOULD_BLOCK : GW_IO_ERROR;
 }
 
 int64_t gw_recv(int32_t fd, gw_bytes bytes) {
     ssize_t n = recv(fd, bytes.data, (size_t)bytes.len, 0);
     if (n >= 0) return n;
-    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? -2 : -1;
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? GW_IO_WOULD_BLOCK : GW_IO_ERROR;
 }
 
 int64_t gw_send(int32_t fd, gw_bytes bytes) {
@@ -64,33 +66,35 @@ int64_t gw_send(int32_t fd, gw_bytes bytes) {
     ssize_t n = send(fd, bytes.data, (size_t)bytes.len, 0);
 #endif
     if (n >= 0) return n;
-    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? -2 : -1;
+    return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? GW_IO_WOULD_BLOCK : GW_IO_ERROR;
 }
 
-/* Per-call poll state: one listener plus at most 64 clients. */
+/* Per-call poll state: one listener plus the bounded client pool. */
 int32_t gw_poll(gw_ints fds, gw_ints interests, gw_ints ready, int32_t timeout) {
-    if (fds.len > 65 || interests.len != fds.len || ready.len != fds.len) return -1;
-    struct pollfd items[65];
+    if (fds.len > GW_MAX_POLL_FDS || interests.len != fds.len || ready.len != fds.len) return GW_IO_ERROR;
+    struct pollfd items[GW_MAX_POLL_FDS];
     for (int64_t i = 0; i < fds.len; ++i) {
         items[i].fd = fds.data[i];
-        items[i].events = interests.data[i] == 2 ? POLLOUT : POLLIN;
+        items[i].events = interests.data[i] == GW_POLL_WRITE ? POLLOUT : POLLIN;
         items[i].revents = 0;
         ready.data[i] = 0;
     }
     int n = poll(items, (nfds_t)fds.len, timeout);
-    if (n < 0) return errno == EINTR ? 0 : -1;
+    if (n < 0) return errno == EINTR ? 0 : GW_IO_ERROR;
     for (int64_t i = 0; i < fds.len; ++i) {
         short r = items[i].revents;
         /* HUP may accompany readable buffered data. Try read/write first. */
         ready.data[i] = (r & (POLLIN | POLLOUT | POLLHUP)) ? 1 :
-                       (r & (POLLERR | POLLNVAL)) ? -1 : 0;
+                       (r & (POLLERR | POLLNVAL)) ? GW_IO_ERROR : 0;
     }
     return n;
 }
 
 void gw_close(int32_t fd) { if (fd >= 0) close(fd); }
 
-int32_t gw_listen(int32_t port) { return gw_listen_config(port, 0); }
+int64_t gw_transport_max_clients(void) { return GW_MAX_CLIENTS; }
+
+int32_t gw_listen(int32_t port) { return gw_listen_config(port, GW_BIND_LOOPBACK); }
 
 /* Opt-in process-wide ownership. The signal handler only writes sig_atomic_t.
    Call begin/end from one reactor thread; nested ownership is rejected.

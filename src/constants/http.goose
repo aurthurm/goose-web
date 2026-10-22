@@ -1,0 +1,68 @@
+namespace web;
+
+// Public HTTP status codes. Parse success also uses HTTP_OK.
+const HTTP_OK = 200;
+const HTTP_CREATED = 201;
+const HTTP_ACCEPTED = 202;
+const HTTP_NO_CONTENT = 204;
+const HTTP_PARTIAL_CONTENT = 206;
+const HTTP_MOVED_PERMANENTLY = 301;
+const HTTP_FOUND = 302;
+const HTTP_SEE_OTHER = 303;
+const HTTP_NOT_MODIFIED = 304;
+const HTTP_TEMPORARY_REDIRECT = 307;
+const HTTP_PERMANENT_REDIRECT = 308;
+const HTTP_BAD_REQUEST = 400;
+const HTTP_UNAUTHORIZED = 401;
+const HTTP_FORBIDDEN = 403;
+const HTTP_NOT_FOUND = 404;
+const HTTP_METHOD_NOT_ALLOWED = 405;
+const HTTP_REQUEST_TIMEOUT = 408;
+const HTTP_CONFLICT = 409;
+const HTTP_GONE = 410;
+const HTTP_CONTENT_TOO_LARGE = 413;
+const HTTP_UNSUPPORTED_MEDIA_TYPE = 415;
+const HTTP_EXPECTATION_FAILED = 417;
+const HTTP_UNPROCESSABLE_CONTENT = 422;
+const HTTP_TOO_MANY_REQUESTS = 429;
+const HTTP_REQUEST_HEADER_FIELDS_TOO_LARGE = 431;
+const HTTP_INTERNAL_SERVER_ERROR = 500;
+const HTTP_NOT_IMPLEMENTED = 501;
+const HTTP_BAD_GATEWAY = 502;
+const HTTP_SERVICE_UNAVAILABLE = 503;
+const HTTP_GATEWAY_TIMEOUT = 504;
+const HTTP_VERSION_NOT_SUPPORTED = 505;
+
+const HTTP_MIN_RESPONSE_STATUS = HTTP_OK;
+const HTTP_MIN_ERROR_STATUS = HTTP_BAD_REQUEST;
+const HTTP_MAX_STATUS = 599;
+const PARSE_INCOMPLETE = 0;
+const QUERY_MISSING = 0;
+
+const METHOD_GET = "GET";
+const METHOD_HEAD = "HEAD";
+const METHOD_POST = "POST";
+const METHOD_PUT = "PUT";
+const METHOD_PATCH = "PATCH";
+const METHOD_DELETE = "DELETE";
+const METHOD_OPTIONS = "OPTIONS";
+const METHOD_CONNECT = "CONNECT";
+const METHOD_TRACE = "TRACE";
+
+const CONTENT_TYPE_JSON = "application/json";
+const CONTENT_TYPE_TEXT = "text/plain; charset=utf-8";
+const CONTENT_TYPE_HTML = "text/html; charset=utf-8";
+const CONTENT_TYPE_OCTET_STREAM = "application/octet-stream";
+
+const HEADER_HOST = "Host";
+const HEADER_CONTENT_LENGTH = "Content-Length";
+const HEADER_CONTENT_TYPE = "Content-Type";
+const HEADER_CONNECTION = "Connection";
+const HEADER_TRANSFER_ENCODING = "Transfer-Encoding";
+const HEADER_EXPECT = "Expect";
+const HEADER_TRAILER = "Trailer";
+const HEADER_UPGRADE = "Upgrade";
+const HEADER_ALLOW = "Allow";
+const HEADER_REQUEST_ID = "X-Request-ID";
+const HTTP_VERSION = "HTTP/1.1";
+const CONNECTION_CLOSE = "close";

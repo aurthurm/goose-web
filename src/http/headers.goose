@@ -1,3 +1,5 @@
+import src.constants.http;
+import src.constants.limits;
 import .types;
 import std;
 namespace web;
@@ -26,10 +28,10 @@ fn equal_header(a: u8[:], b: u8[:]) -> bool {
 }
 
 fn valid_response_header(name: const u8[:], value: const u8[:]) -> bool {
-    if name.len > 64 || value.len > 256 || !token(name) { return false; }
-    if equal_header(name, "content-length") || equal_header(name, "transfer-encoding") ||
-       equal_header(name, "connection") || equal_header(name, "content-type") ||
-       equal_header(name, "trailer") || equal_header(name, "upgrade") { return false; }
+    if name.len > MAX_HEADER_NAME_BYTES || value.len > MAX_HEADER_VALUE_BYTES || !token(name) { return false; }
+    if equal_header(name, HEADER_CONTENT_LENGTH) || equal_header(name, HEADER_TRANSFER_ENCODING) ||
+       equal_header(name, HEADER_CONNECTION) || equal_header(name, HEADER_CONTENT_TYPE) ||
+       equal_header(name, HEADER_TRAILER) || equal_header(name, HEADER_UPGRADE) { return false; }
     for c in value { if c < 32 || c == 127 { return false; } }
     return true;
 }
@@ -43,7 +45,7 @@ fn set_header(r: Response&, name: const u8[:], value: const u8[:]) -> bool {
             return true;
         }
     }
-    if r.headers.len == 16 { return false; }
+    if r.headers.len == MAX_RESPONSE_HEADERS { return false; }
     r.headers.push(Header { name: name, value: value });
     return true;
 }

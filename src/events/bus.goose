@@ -1,23 +1,24 @@
 import std;
+import src.constants.limits;
 namespace web;
 
 // Payloads must be fixed-size values; buffers with explicit capacity work too.
 struct Event<T> { topic: i32, args: T }
 struct Subscription { id: i64, topic: i32, once: bool, active: bool }
 struct EventBus<T> {
-    listeners: Subscription[64],
-    queue: Event<T>[256],
+    listeners: Subscription[MAX_EVENT_LISTENERS],
+    queue: Event<T>[MAX_QUEUED_EVENTS],
     head: i64, count: i64, next_id: i64, draining: bool
 }
 
 fn event_bus<T>() -> EventBus<T> {
     return EventBus<T> {
-        listeners: [default<Subscription>(); 64],
-        queue: [default<Event<T>>(); 256], head: 0, count: 0, next_id: 1, draining: false
+        listeners: [default<Subscription>(); MAX_EVENT_LISTENERS],
+        queue: [default<Event<T>>(); MAX_QUEUED_EVENTS], head: 0, count: 0, next_id: 1, draining: false
     };
 }
 
-// Zero means the subscription table is full. IDs are never reused.
+// INVALID_SUBSCRIPTION means the table is full. IDs are never reused.
 fn subscribe<T>(bus: EventBus<T>&, topic: i32, once: bool = false) -> i64 {
     for i in bus.listeners.len {
         if !bus.listeners[i].active {
@@ -27,7 +28,7 @@ fn subscribe<T>(bus: EventBus<T>&, topic: i32, once: bool = false) -> i64 {
             return id;
         }
     }
-    return 0;
+    return INVALID_SUBSCRIPTION;
 }
 
 fn unsubscribe<T>(bus: EventBus<T>&, id: i64) -> bool {
@@ -61,7 +62,7 @@ fn drain<T, F>(bus: EventBus<T>&) -> i64 {
         bus.head = (bus.head + 1) % bus.queue.len;
         bus.count -= 1;
         let cutoff = bus.next_id;
-        var previous: i64 = 0;
+        var previous: i64 = INVALID_SUBSCRIPTION;
         loop {
             var index: i64 = -1;
             var next = cutoff;

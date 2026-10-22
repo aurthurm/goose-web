@@ -8,6 +8,7 @@ All modules declare `namespace web` because Goose imports files without creating
 
 | Directory | Responsibility | Dependencies |
 | --- | --- | --- |
+| `src/constants/` | Public HTTP identifiers, fixed capacities, runtime defaults | No runtime state |
 | `src/http/types.goose` | Shared request, response, and header data | Goose stdlib |
 | `src/http/headers.goose` | Header validation and owned response headers | HTTP types |
 | `src/http/request.goose` | Incremental request parsing and borrowed header lookup | HTTP types, headers |

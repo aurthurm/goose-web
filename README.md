@@ -37,6 +37,7 @@ multiple listeners, including a one-shot listener. A full event queue returns 50
 goose_web.goose           Public package entry
 goose_web.build           Native build definition
 src/
+  constants/             Public HTTP names, fixed limits, runtime defaults
   http/                  Request parsing, response framing, headers, JSON errors
   routing/               Route matching, path parameters, query decoding
   middleware/            Compile-time request pipeline
@@ -75,6 +76,8 @@ runs 33,119 deterministic parser fuzz/property checks using four recorded seeds.
 
 See [Architecture](docs/architecture.md), [API contracts](docs/api.md),
 [HTTP request profile](docs/http-conformance.md), and [Roadmap](ROADMAP.md).
+Use the [public constants](docs/constants.md) for statuses such as `web::HTTP_NOT_FOUND`,
+methods such as `web::METHOD_GET`, content types, capacity limits, and runtime defaults.
 See [CI and compiler setup](docs/ci.md) to build the pinned upstream compiler and
 reproduce both C compiler configurations locally.
 The transport is currently POSIX-only; TLS, chunked encoding,

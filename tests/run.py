@@ -18,12 +18,13 @@ def main():
     if not shutil.which(compiler):
         raise SystemExit("Set GOOSE to the installed Goose compiler executable")
     programs = [("core", "tests/unit/core.goose"), ("router", "tests/unit/router.goose"),
-                ("application", "tests/unit/application.goose"), ("http_parser", "tests/unit/http_parser.goose"),
+                ("application", "tests/unit/application.goose"), ("constants", "tests/unit/constants.goose"),
+                ("http_parser", "tests/unit/http_parser.goose"),
                 ("parser_fuzz", "tests/fuzz/parser.goose"), ("server", "examples/basic/server.goose")]
     for name, source in programs:
         subprocess.run([compiler, "build", str(ROOT / source), "--debug", "-o", str(BUILD / name)],
                        env=env, check=True, cwd=ROOT)
-    for name in ("core", "router", "application", "http_parser", "parser_fuzz"):
+    for name in ("core", "router", "application", "constants", "http_parser", "parser_fuzz"):
         subprocess.run([str(BUILD / name)], check=True, timeout=60)
     cc = os.environ.get("CC", "cc")
     subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/transport.c"),

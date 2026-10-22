@@ -1,5 +1,9 @@
 # API contracts
 
+Public names such as `web::HTTP_OK`, `web::METHOD_GET`, and `web::CONTENT_TYPE_JSON`
+are available through the package import. See the [constants reference](constants.md)
+for fixed limits, configurable defaults, headers, and lifecycle identifiers.
+
 ## HTTP and headers
 
 `Request` contains read-only `method`, `target`, `body`, and `raw_headers` views.
@@ -28,7 +32,7 @@ of complete HTTP conformance.
 
 ```goose
 var routes = web::router();
-assert(web::add_route(routes, "GET", "/users/:id", 1));
+assert(web::add_route(routes, web::METHOD_GET, "/users/:id", 1));
 let selected = web::match_route(routes, request.method, request.target);
 // selected.status: 200, 404, or 405
 // selected.handler_id selects your named handler; selected.allow supplies Allow.

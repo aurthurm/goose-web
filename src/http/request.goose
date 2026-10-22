@@ -1,3 +1,6 @@
+import src.constants.runtime;
+import src.constants.http;
+import src.constants.limits;
 import .types;
 import .headers;
 import std;
@@ -87,7 +90,7 @@ fn request_ipv6(value: const u8[:]) -> bool {
 }
 
 // A nonempty RFC 3986 reg-name or bracketed IPv6, optionally followed by a
-// numeric TCP port. IPvFuture, scoped IPv6, empty ports and >65535 are outside
+// numeric TCP port. IPvFuture, scoped IPv6, empty ports and >MAX_PORT are outside
 // this server's deliberately restricted Host profile.
 fn request_host_valid(value: const u8[:]) -> bool {
     if value.len == 0 { return false; }
@@ -121,7 +124,7 @@ fn request_host_valid(value: const u8[:]) -> bool {
         for c in value[port..] {
             if c < '0' || c > '9' { return false; }
             number = number * 10 + (c - '0');
-            if number > 65535 { return false; }
+            if number > MAX_PORT { return false; }
         }
     }
     return true;
@@ -144,7 +147,7 @@ fn request_header(request: Request, name: const u8[:]) -> const u8[:] {
     return "";
 }
 
-// Result 0 = incomplete, 200 = complete, otherwise an HTTP error status.
+// Result 0 = incomplete, HTTP_OK = complete, otherwise an HTTP error status.
 // Views borrow raw: handlers finish before the connection slot is reused.
 fn parse_request(raw: const u8[:]) -> Request, i32 {
     let empty = Request { method: raw[..0], target: raw[..0], body: raw[..0], raw_headers: raw[..0] };
@@ -153,26 +156,26 @@ fn parse_request(raw: const u8[:]) -> Request, i32 {
     // next network read; body bytes are never inspected as header syntax.
     let header_limit = if end < 0 { raw.len } else { end + 4 };
     for i in header_limit {
-        if raw[i] == 10 && (i == 0 || raw[i - 1] != 13) { return empty, 400; }
-        if raw[i] == 13 && i + 1 < header_limit && raw[i + 1] != 10 { return empty, 400; }
+        if raw[i] == 10 && (i == 0 || raw[i - 1] != 13) { return empty, HTTP_BAD_REQUEST; }
+        if raw[i] == 13 && i + 1 < header_limit && raw[i + 1] != 10 { return empty, HTTP_BAD_REQUEST; }
     }
     if end < 0 {
-        return empty, if raw.len >= MAX_REQUEST { 431 } else { 0 };
+        return empty, if raw.len >= MAX_REQUEST_BYTES { HTTP_REQUEST_HEADER_FIELDS_TOO_LARGE } else { PARSE_INCOMPLETE };
     }
-    if raw.len > MAX_REQUEST { return empty, 413; }
+    if raw.len > MAX_REQUEST_BYTES { return empty, HTTP_CONTENT_TOO_LARGE; }
     let line_end = find(raw, "\r\n");
     let line = raw[..line_end];
     let first = find(line, " ");
-    if first <= 0 { return empty, 400; }
+    if first <= 0 { return empty, HTTP_BAD_REQUEST; }
     let rest = line[first + 1..];
     let second = find(rest, " ");
-    if second <= 0 || !token(line[..first]) { return empty, 400; }
+    if second <= 0 || !token(line[..first]) { return empty, HTTP_BAD_REQUEST; }
     let target = rest[..second];
-    if !request_target_valid(target) { return empty, 400; }
+    if !request_target_valid(target) { return empty, HTTP_BAD_REQUEST; }
     let version = rest[second + 1..];
     if version.len != 8 || version[..5] != "HTTP/" || version[6] != '.' ||
-       version[5] < '0' || version[5] > '9' || version[7] < '0' || version[7] > '9' { return empty, 400; }
-    if version != "HTTP/1.1" { return empty, 505; }
+       version[5] < '0' || version[5] > '9' || version[7] < '0' || version[7] > '9' { return empty, HTTP_BAD_REQUEST; }
+    if version != HTTP_VERSION { return empty, HTTP_VERSION_NOT_SUPPORTED; }
     var length: i64 = 0;
     var length_large = false;
     var have_length = false;
@@ -184,41 +187,41 @@ fn parse_request(raw: const u8[:]) -> Request, i32 {
         let n = find(raw[pos..], "\r\n");
         let header = raw[pos..pos + n];
         let colon = find(header, ":");
-        if colon <= 0 || !token(header[..colon]) { return empty, 400; }
+        if colon <= 0 || !token(header[..colon]) { return empty, HTTP_BAD_REQUEST; }
         let name = header[..colon];
         let value = request_ows(header[colon + 1..]);
         for c in header[colon + 1..] {
-            if (c < 32 && c != 9) || c == 127 { return empty, 400; }
+            if (c < 32 && c != 9) || c == 127 { return empty, HTTP_BAD_REQUEST; }
         }
-        if equal_header(name, "host") {
-            if have_host || !request_host_valid(value) { return empty, 400; }
+        if equal_header(name, HEADER_HOST) {
+            if have_host || !request_host_valid(value) { return empty, HTTP_BAD_REQUEST; }
             have_host = true;
         }
-        if equal_header(name, "content-length") {
-            if have_length || value.len == 0 { return empty, 400; }
+        if equal_header(name, HEADER_CONTENT_LENGTH) {
+            if have_length || value.len == 0 { return empty, HTTP_BAD_REQUEST; }
             have_length = true;
             for c in value {
-                if c < '0' || c > '9' { return empty, 400; }
+                if c < '0' || c > '9' { return empty, HTTP_BAD_REQUEST; }
                 // Saturate at the request limit, validating remaining digits.
                 // Arbitrarily many leading zeroes are safe and stay valid.
                 if !length_large {
                     length = length * 10 + (c - '0');
-                    if length > MAX_REQUEST { length_large = true; }
+                    if length > MAX_REQUEST_BYTES { length_large = true; }
                 }
             }
         }
-        if equal_header(name, "transfer-encoding") { transfer = true; }
-        if equal_header(name, "expect") { expect = true; }
+        if equal_header(name, HEADER_TRANSFER_ENCODING) { transfer = true; }
+        if equal_header(name, HEADER_EXPECT) { expect = true; }
         pos += n + 2;
     }
-    if !have_host { return empty, 400; }
-    if transfer && have_length { return empty, 400; }
-    if length_large { return empty, 413; }
-    if transfer { return empty, 501; }
-    if expect { return empty, 417; }
+    if !have_host { return empty, HTTP_BAD_REQUEST; }
+    if transfer && have_length { return empty, HTTP_BAD_REQUEST; }
+    if length_large { return empty, HTTP_CONTENT_TOO_LARGE; }
+    if transfer { return empty, HTTP_NOT_IMPLEMENTED; }
+    if expect { return empty, HTTP_EXPECTATION_FAILED; }
     let body_start = end + 4;
-    if length > MAX_REQUEST - body_start { return empty, 413; }
-    if raw.len < body_start + length { return empty, 0; }
+    if length > MAX_REQUEST_BYTES - body_start { return empty, HTTP_CONTENT_TOO_LARGE; }
+    if raw.len < body_start + length { return empty, PARSE_INCOMPLETE; }
     return Request { method: line[..first], target: target,
-                     body: raw[body_start..body_start + length], raw_headers: raw[line_end + 2..end + 2] }, 200;
+                     body: raw[body_start..body_start + length], raw_headers: raw[line_end + 2..end + 2] }, HTTP_OK;
 }
