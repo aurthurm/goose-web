@@ -180,3 +180,87 @@ bound untrusted input; fixed and grow arrays can be encoded but not decoded.
 
 Decoding runs in two passes: a syntax pass over the whole text, then the typed pass. So
 errors found in the second pass are never syntax errors.
+
+## Application API
+
+The app layer (`src/app/`) is built only on the calls above. An app is one function over
+`web::Ctx&`, served with `web::run(config) { c => app(c) }`. Application code in the global
+namespace calls these through `c.name(...)` (UFCS); `src/app/dsl.goose` forwards each name
+there. Inside namespace `web` call `web::name(c, ...)` directly.
+
+### Ctx accessors
+
+| Call | Meaning |
+| --- | --- |
+| `c.method()`, `c.path()`, `c.target()`, `c.header(name)` | request views |
+| `c.param(name)`, `c.param_int(name)` | path parameter; `param_int` writes 422 `invalid_param` on failure |
+| `c.query(key)`, `c.query_int(key, default)` | query value; `query_int` writes 400 `invalid_query` on failure |
+| `c.status(code)` | sets the status and returns `Ctx&` for chaining |
+| `c.set(name, value)` | response header (asserts on an invalid header) |
+| `c.text(s)`, `c.html(s)`, `c.json_raw(s)` | content type and body; over capacity → 500 `response_too_large` |
+| `c.json(value)`, `c.json_list(items)` | JSON responses (below) |
+| `c.body<T>()` (see below) | request body; written as `body<T>(c)` |
+| `c.no_content()`, `c.redirect(location, code)`, `c.fail(status, code, message)` | responses |
+| `c.done()` | true once a response was written; middleware can short-circuit on it |
+
+`c.body<T>()` is spelled `body<T>(c)`: the parser does not accept explicit type arguments on a
+UFCS call. `c.request_id` is a `Ctx` field, so the middleware is called as `request_id(c) { }`.
+
+### Routing DSL
+
+`c.routes() { ... }` runs its block twice:
+
+1. *Match pass.* Each `c.get/post/put/patch/delete/head/options/any(pattern) { }` records
+   whether `prefix + pattern` matches the path. Route bodies do not run.
+2. The best route is selected with the rules in `router.goose`. No path match → 404
+   `not_found`. A path match without the method → 405 `method_not_allowed` with `Allow`.
+3. *Dispatch pass.* The block runs again. Only the selected route's body runs, with path
+   parameters bound.
+
+Consequences:
+
+- Code in `c.routes() { }` outside a route body runs twice. Keep it declarative: route calls,
+  `c.group(prefix) { }`, and functions that declare routes.
+- Routes are matched by declaration order, so both passes must declare the same routes. Do not
+  branch on mutable state between passes.
+- `return` inside a route body leaves the enclosing named function, which ends that route.
+- Invalid patterns abort with the pattern in the message.
+
+### Middleware
+
+Middleware is `fn name<Next>(c: Ctx&, ...) { before; Next(); after; }`. Not calling `Next()`
+short-circuits. Nesting gives the order: the outer middleware's `before` runs first, and its
+`after` runs last.
+
+| Call | Behavior |
+| --- | --- |
+| `request_id(c) { }` | next value of a process-global counter, stored in `c.request_id` and sent as `X-Request-ID` |
+| `logger(c) { }` | after `Next`, prints one line: `METHOD path status bytes`; control bytes are masked |
+| `cors(c, origin = "*") { }` | sets `Access-Control-Allow-Origin` (plus `Vary: Origin` for a non-wildcard origin). A preflight (OPTIONS with `Access-Control-Request-Method`) gets 204 with Allow-Methods, Allow-Headers (echoes the request's headers when valid, else `Content-Type`) and `Max-Age: 600`, and `Next` is not called |
+| `require_json(c) { }` | 415 `unsupported_media_type` unless the media type is `application/json` (parameters ignored, case-insensitive). It applies to every request in its block, so wrap body-carrying routes |
+
+### JSON responses and request bodies
+
+- `c.json(value)` encodes a struct or scalar, passed by value, and keeps the status already set
+  by `c.status()` (default 200). It sends `application/json`. Failures: over capacity → 500
+  `response_too_large`; invalid UTF-8 → 500 `encode_error`.
+- `c.json_list(items)` encodes an array or slice as a JSON array. Use it for arrays and slices;
+  `c.json` on an array does not compile. A `u8` slice is text.
+- `body<T>(c) -> T, bool` decodes the body strictly. `body_result<T>(c) -> T, DecodeResult`
+  also returns the decoder result (`has<T>(result, "field")` for PATCH). On failure the error
+  response is already written:
+
+| Failure | Status | Code |
+| --- | --- | --- |
+| media type is not `application/json` | 415 | `unsupported_media_type` |
+| empty body | 400 | `invalid_json` |
+| not JSON, or invalid UTF-8 | 400 | `invalid_json`, message "Malformed JSON: ..." |
+| schema error | 422 | `invalid_payload`, message "field: error" |
+
+Nested structs must be registered in namespace `web`, once for encoding (`c.json_list`) and once
+for decoding (`body<T>`):
+
+```goose
+fn web::json_put_value(out: u8[>..]&, v: Item&) -> bool { return web::json_put_fields(out, v); }
+fn web::json_read_value(d: web::JsonDecoder&, out: Item&) { web::json_read_fields(d, out); }
+```

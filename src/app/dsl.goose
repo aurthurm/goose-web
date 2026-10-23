@@ -36,3 +36,16 @@ fn ::no_content(c: web::Ctx&) { web::no_content(c); }
 fn ::redirect(c: web::Ctx&, location: const u8[:], code: i32 = web::HTTP_FOUND) { web::redirect(c, location, code); }
 fn ::fail(c: web::Ctx&, code: i32, error_code: const u8[:], message: const u8[:]) { web::fail(c, code, error_code, message); }
 fn ::done(c: web::Ctx&) -> bool { return web::done(c); }
+
+// Responses and bodies. c.json takes a struct or scalar by value; c.json_list takes an
+// array or slice. c.body<T>() writes 415/400/422 and returns false on failure.
+fn ::json<T>(c: web::Ctx&, value: T) { web::json(c, value); }
+fn ::json_list<E>(c: web::Ctx&, items: E[:]) { web::json_list(c, items); }
+fn ::body<T>(c: web::Ctx&) -> T, bool { return web::body<T>(c); }
+fn ::body_result<T>(c: web::Ctx&) -> T, web::DecodeResult { return web::body_result<T>(c); }
+
+// Middleware. Each takes the block as Next; c.name() { ... } and web::name(c) { ... } agree.
+fn ::request_id<F>(c: web::Ctx&) { web::request_id(c, F); }
+fn ::logger<F>(c: web::Ctx&) { web::logger(c, F); }
+fn ::cors<F>(c: web::Ctx&, origin: const u8[:] = "*") { web::cors(c, origin, F); }
+fn ::require_json<F>(c: web::Ctx&) { web::require_json(c, F); }

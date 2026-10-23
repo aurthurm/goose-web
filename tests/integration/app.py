@@ -64,6 +64,40 @@ def test_app(executable):
 
         status, fields, body = exchange(port, b"HEAD /users/42 HTTP/1.1\r\nHost: x\r\n\r\n")
         assert status == 200 and body == b"" and int(fields[b"Content-Length"]) > 0, fields
+        status, fields, body = exchange(port, b"GET /users/42 HTTP/1.1\r\nHost: x\r\n\r\n")
+        first_id = int(fields[b"X-Request-ID"])
+        assert first_id > 0 and fields[b"Access-Control-Allow-Origin"] == b"*", fields
+
+        def send_json(raw_body, content_type=b"application/json"):
+            request = (b"POST /api/items HTTP/1.1\r\nHost: x\r\nContent-Type: " + content_type +
+                       b"\r\nContent-Length: " + str(len(raw_body)).encode() + b"\r\n\r\n" + raw_body)
+            return exchange(port, request)
+
+        status, fields, body = send_json(b'{"title":"milk"}')
+        assert status == 201 and body == b'{"id":1,"title":"milk","done":false}', (status, body)
+        assert fields[b"Content-Type"] == b"application/json"
+        assert int(fields[b"X-Request-ID"]) > first_id
+
+        status, fields, body = exchange(port, b"GET /api/items HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert status == 200 and body == b'[{"id":1,"title":"milk","done":false}]', body
+
+        status, _, body = send_json(b"{}", b"text/plain")
+        assert status == 415 and json.loads(body)["error"]["code"] == "unsupported_media_type", body
+
+        status, _, body = send_json(b'{"title":')
+        assert status == 400 and json.loads(body)["error"]["code"] == "invalid_json", body
+
+        status, _, body = send_json(b'{"title":"a","zzz":1}')
+        assert status == 422 and json.loads(body)["error"]["code"] == "invalid_payload", body
+        assert b"zzz: unknown key" in body, body
+
+        status, fields, _ = exchange(port, b"OPTIONS /api/items HTTP/1.1\r\nHost: x\r\nOrigin: https://a.example\r\n"
+                                     b"Access-Control-Request-Method: POST\r\n"
+                                     b"Access-Control-Request-Headers: Content-Type\r\n\r\n")
+        assert status == 204 and fields[b"Access-Control-Allow-Origin"] == b"*", fields
+        assert fields[b"Access-Control-Allow-Methods"] == b"GET, POST, PUT, PATCH, DELETE, OPTIONS", fields
+        assert fields[b"Access-Control-Allow-Headers"] == b"Content-Type" and fields[b"Access-Control-Max-Age"] == b"600"
+        assert b"X-Request-ID" in fields, fields
         assert process.poll() is None
     finally:
         process.terminate()
@@ -72,7 +106,7 @@ def test_app(executable):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-    print("App socket tests passed: routes, groups, path params, 404, 405 with Allow, HEAD, status")
+    print("App socket tests passed: routes, groups, path params, 404, 405, HEAD, JSON 201/415/400/422, CORS preflight, X-Request-ID")
 
 
 if __name__ == "__main__":
