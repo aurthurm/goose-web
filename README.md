@@ -39,6 +39,7 @@ fn main() {
 ## Features
 
 - Typed routing DSL: `c.get`/`post`/`put`/`patch`/`delete`, `:param` segments, `c.group` prefixes, automatic 404 and 405 with `Allow`.
+- OpenAPI 3.1 from the routes block and struct reflection, served at `/openapi.json` with a `/docs` page (`web::openapi`).
 - Reflective JSON in and out: `body<T>(c)` decodes strict structs (415, 400, 422 written for you); `c.json(value)` encodes any struct.
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
 - Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
@@ -77,8 +78,9 @@ The example is a [complete Todo API](examples/basic/README.md), including valida
 pagination, filtered lists, and atomic JSON-file persistence in `build/todos.json`.
 Every application response includes a generated `X-Request-ID`. Request events go
 to multiple listeners; successful mutations also dispatch domain events. A full
-event queue returns 503 before a mutation can change data. The local contract is
-[OpenAPI](examples/basic/openapi.yaml).
+event queue returns 503 before a mutation can change data. The API is documented at
+`/openapi.json` (generated from the routes) with a Swagger UI page at `/docs`. The hand-written
+[contract](examples/basic/openapi.yaml) adds what the generated spec does not express yet.
 
 ## Project layout
 

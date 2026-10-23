@@ -6,16 +6,19 @@ import src.http.response;
 import src.http.headers;
 import src.http.errors;
 import src.routing.router;
+import src.app.openapi_state;
 import std;
 namespace web;
 
 // Group prefixes nest this deep. Fixed so a Ctx stays a plain value on the stack.
 const MAX_GROUP_DEPTH = 8;
 const MAX_I64_VALUE = 9223372036854775807;
-// Route pass state. Idle means no c.routes() block is active.
+// Route pass state. Idle means no c.routes() block is active. Describe runs the block
+// only to collect OpenAPI operations; no route body runs in it.
 const PASS_IDLE = 0;
 const PASS_MATCH = 1;
 const PASS_DISPATCH = 2;
+const PASS_DESCRIBE = 3;
 
 // One value per request, owned by the server loop for the duration of the handler.
 // The response is borrowed: the runtime owns one reused Response (see run.goose), so a
@@ -32,6 +35,7 @@ struct Ctx {
     matched: RouteMatch,
     prefixes: const u8[:][MAX_GROUP_DEPTH],
     prefix_count: i64,
+    oas: OpenApiState,
 }
 
 // Routing state zeroed; the response is the caller's (tests and the runtime create it with response()).

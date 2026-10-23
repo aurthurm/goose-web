@@ -19,6 +19,7 @@ struct StoreFile { version: i64, next_id: i64, todos: Todo[..MAX_TODOS] }
 // A Todo is a JSON object wherever it appears: in responses, lists and the store file.
 fn web::json_put_value(out: u8[>..]&, v: todo::Todo&) -> bool { return web::json_put_fields(out, v); }
 fn web::json_read_value(d: web::JsonDecoder&, out: todo::Todo&) { web::json_read_fields(d, out); }
+fn web::json_schema_value(out: u8[>..]&, v: todo::Todo&) { web::json_schema_fields(out, v); }
 
 fn store() -> Store {
     return Store { slots: [default<Slot>(); MAX_TODOS], next_id: 1 };

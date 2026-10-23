@@ -30,7 +30,7 @@
 - [x] Keep-alive connections: persistent HTTP/1.1 and opt-in HTTP/1.0, in-order pipelining, idle and per-connection limits.
 - [x] Response bodies up to 1 MiB by default (16 MiB ceiling) in a growable, reused buffer (`max_response_bytes`); in-flight responses share a pool capped by `max_pool_bytes`, with 503 when it is full.
 - Next: chunked/streaming bodies.
-- Next: automatic OpenAPI generation from structs.
+- [x] OpenAPI 3.1 generated from the routes block and struct reflection (`web::openapi`), with a `/docs` page.
 - Next: typed configuration from environment variables.
 
 ## Milestone 3: protocol and platform coverage

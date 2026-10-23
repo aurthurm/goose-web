@@ -1,7 +1,9 @@
 # Basic Todo API
 
 This example turns Goose Web routing, middleware, typed events, and lifecycle
-handling into a small JSON API. Its local contract is [openapi.yaml](openapi.yaml).
+handling into a small JSON API. The API is documented twice: the server generates an OpenAPI 3.1 document at
+`/openapi.json` (Swagger UI at `/docs`), and [openapi.yaml](openapi.yaml) is the hand-written
+contract, which also covers the 409, 413 and 503 responses and the `Location` header.
 It supports up to 128 Todos and returns at most eight per list request.
 
 ## Run
@@ -34,6 +36,8 @@ file. Atomic replacement does not provide multi-process coordination.
 
 ```sh
 curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:8080/openapi.json
+# then open http://127.0.0.1:8080/docs in a browser
 curl -i -H 'Content-Type: application/json' \
   --data '{"title":"Learn Goose Web"}' http://127.0.0.1:8080/todos
 curl 'http://127.0.0.1:8080/todos?limit=8&offset=0&completed=false'

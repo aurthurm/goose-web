@@ -4,6 +4,7 @@ import src.http.headers;
 import src.http.errors;
 import src.routing.router;
 import src.app.context;
+import src.app.openapi;
 import std;
 namespace web;
 
@@ -36,7 +37,11 @@ fn route_full_pattern(c: Ctx&, pattern: const u8[:]) -> u8[..MAX_ROUTE_PATTERN_B
 // declaration is the one selected. Route IDs are declaration order within the block.
 fn route_add<F>(c: Ctx&, method: const u8[:], pattern: const u8[:]) {
     if c.pass == PASS_IDLE { abort("route declared outside c.routes()"); }
-    if c.pass == PASS_MATCH {
+    if c.pass == PASS_DESCRIBE {
+        // Match-all routes (any) have no OpenAPI method, so they are not documented.
+        let full = route_full_pattern(c, pattern);
+        if method != METHOD_ANY { oas_add_operation(c, method, full[..]); } else { oas_reset_pending(c); }
+    } else if c.pass == PASS_MATCH {
         let full = route_full_pattern(c, pattern);
         if !add_route(c.table, method, full[..], c.route_index as i32) {
             abort(str("route rejected (duplicate, invalid method, or table full): ", method, " ", full[..]));
@@ -45,6 +50,19 @@ fn route_add<F>(c: Ctx&, method: const u8[:], pattern: const u8[:]) {
         F();
     }
     c.route_index += 1;
+}
+
+// Describe pass: runs the block only to collect operations (no route body runs), then
+// answers the document request. Annotations before a route attach to that route.
+fn describe_routes<F>(c: Ctx&, kind: i32) {
+    oas_begin(c);
+    c.pass = PASS_DESCRIBE;
+    c.route_index = 0;
+    c.prefix_count = 0;
+    F();
+    c.prefix_count = 0;
+    c.pass = PASS_IDLE;
+    oas_respond(c, kind);
 }
 
 // Same route/shape selection as match_route, plus any(). Explicit method beats
@@ -115,6 +133,11 @@ fn route_select(table: Router&, method: const u8[:], path: const u8[:]) -> Route
 // A `return` inside a route body leaves routes() before its cleanup, so every entry
 // resets the routing state it depends on.
 fn routes<F>(c: Ctx&) {
+    let kind = oas_kind(c);
+    if kind != 0 {
+        describe_routes(c, kind, F);
+        return;
+    }
     c.table = router();
     c.prefix_count = 0;
     c.route_index = 0;

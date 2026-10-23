@@ -314,3 +314,16 @@ let ok2 = web::transaction(db) { web::insert(db, a).1 && web::update(db, b) };  
   offload is future work (only flat values may cross Goose thread queues).
 - Example: `examples/sqlite-todos/` (a compact Todo API persisted in SQLite, OpenAPI-annotated), plus
   unit tests on `:memory:` and an integration test over sockets with restart persistence.
+
+### Implementation notes (v0.3 OpenAPI, as built)
+
+- Goose requires a resizable field to be the last field of its struct, so the describe state
+  (`OpenApiState` in `src/app/openapi_state.goose`) keeps its fixed-capacity fragments first and its
+  growable text buffer last.
+- The routes block captures `c`, so Goose refuses to shrink `c` (`clear()`) while the block is live.
+  Describe state is therefore changed only by building a local copy and assigning it back whole.
+- The describe pass is entered from `routes()` when the request is for the document or the docs page
+  (`oas_kind`). Annotations check `c.pass == PASS_DESCRIBE` first, so they are free elsewhere.
+- Path parameters are documented as strings, as designed; query parameters are all optional.
+- Still open: per-field constraints beyond the integer width (for example `limit` 1..8), per-status
+  error codes such as 409 and 503, and `$ref` reuse. `examples/basic/openapi.yaml` is kept for those.

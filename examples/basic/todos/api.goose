@@ -15,6 +15,12 @@ const ACTION_DELETED = 3;
 // title, PUT requires both fields and PATCH requires at least one. title_valid in the
 // store checks the text itself: blank, control characters and overlong titles.
 struct TodoInput { title: u8[..MAX_TITLE_BYTES] = "", completed: bool = false }
+// Documentation-only shapes for OpenAPI: PUT requires both fields and PATCH neither, which one
+// schema cannot say, so each operation names its own struct. Decoding still uses TodoInput.
+struct TodoReplace { title: u8[..MAX_TITLE_BYTES], completed: bool }
+struct TodoPatch { title: u8[..MAX_TITLE_BYTES], completed: bool }
+fn web::optional_fields(v: todo::TodoInput&) -> const u8[:] { return "completed"; }
+fn web::optional_fields(v: todo::TodoPatch&) -> const u8[:] { return "title,completed"; }
 
 // List envelope. The codec writes fields in declaration order.
 struct TodoPage { items: Todo[..MAX_PAGE_SIZE], total: i64, limit: i64, offset: i64 }
@@ -162,11 +168,27 @@ fn delete_todo<CanMutate, OnMutation>(c: web::Ctx&) {
 // OnMutation are the application's event hooks (see server.goose).
 fn mount<CanMutate, OnMutation>(c: web::Ctx&) {
     c.group("/todos") {
+        web::summary(c, "List todos, 1 to 8 per page (limit defaults to 8)");
+        web::query_params<TodoListParams>(c);
+        web::returns<TodoPage>(c, web::HTTP_OK);
         c.get("/") { list_todos(c); };
+        web::summary(c, "Create a todo");
+        web::accepts<TodoInput>(c);
+        web::returns<Todo>(c, web::HTTP_CREATED);
         c.post("/") { create_todo(c, CanMutate, OnMutation); };
+        web::summary(c, "Get a todo");
+        web::returns<Todo>(c, web::HTTP_OK);
         c.get("/:id") { get_todo(c); };
+        web::summary(c, "Replace a todo (both fields required)");
+        web::accepts<TodoReplace>(c);
+        web::returns<Todo>(c, web::HTTP_OK);
         c.put("/:id") { replace_todo(c, CanMutate, OnMutation); };
+        web::summary(c, "Update some fields of a todo");
+        web::accepts<TodoPatch>(c);
+        web::returns<Todo>(c, web::HTTP_OK);
         c.patch("/:id") { patch_todo(c, CanMutate, OnMutation); };
+        web::summary(c, "Delete a todo");
+        web::returns_empty(c, web::HTTP_NO_CONTENT);
         c.delete("/:id") { delete_todo(c, CanMutate, OnMutation); };
     };
 }
