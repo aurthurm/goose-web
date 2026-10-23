@@ -22,6 +22,7 @@ def main():
                 ("application", "tests/unit/application.goose"), ("constants", "tests/unit/constants.goose"),
                 ("http_parser", "tests/unit/http_parser.goose"),
                 ("app_routes", "tests/unit/app_routes.goose"),
+                ("json_codec", "tests/unit/json_codec.goose"),
                 ("todo_store", "tests/unit/todo_store.goose"), ("todo_input", "tests/unit/todo_input.goose"),
                 ("todo_api", "tests/unit/todo_api.goose"),
                 ("parser_fuzz", "tests/fuzz/parser.goose"), ("features", "tests/fixtures/features.goose"),
@@ -29,8 +30,8 @@ def main():
     for name, source in programs:
         subprocess.run([compiler, "build", str(ROOT / source), "--debug", "-o", str(BUILD / name)],
                        env=env, check=True, cwd=ROOT)
-    for name in ("core", "router", "application", "app_routes", "constants", "http_parser", "todo_input", "todo_api",
-                 "parser_fuzz"):
+    for name in ("core", "router", "application", "app_routes", "constants", "http_parser", "json_codec",
+                 "todo_input", "todo_api", "parser_fuzz"):
         subprocess.run([str(BUILD / name)], check=True, timeout=60)
     with tempfile.TemporaryDirectory(prefix="goose-todo-unit-") as directory:
         subprocess.run([str(BUILD / "todo_store"), str(Path(directory) / "todos.json")], check=True, timeout=60)
