@@ -156,7 +156,8 @@ fn test_xss_payloads() {
 
 fn test_html_helper() {
     var shared = web::response();
-    var c = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, shared);
+    var scratch = web::AppScratch { .. };
+    var c = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, shared, scratch);
     var page = sample();
     web::html_template<Page>(c, "<p>{{title}}</p>", page);
     assert(c.written && c.response.status == web::HTTP_OK);
@@ -164,7 +165,8 @@ fn test_html_helper() {
     assert(web::body_of(c.response) == "<p>&lt;b&gt;&quot;Tom&quot; &amp; &#39;Jerry&#39;&lt;/b&gt;</p>");
 
     var failed_response = web::response();
-    var failed = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, failed_response);
+    var failed_scratch = web::AppScratch { .. };
+    var failed = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, failed_response, failed_scratch);
     web::html_template<Page>(failed, "{{nope}}", page);
     assert(failed.response.status == web::HTTP_INTERNAL_SERVER_ERROR);
     assert(find(web::body_of(failed.response), "\"code\":\"template_error\"") >= 0);

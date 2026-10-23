@@ -1,9 +1,10 @@
 import src.constants.limits;
 namespace web;
 
-// Describe-pass state held by Ctx. Goose refuses to shrink a Ctx field while the routes
-// block (which captures c) is live, so every change to these structs is made on a local
-// copy and written back as a whole value. The growable buffer is the final field.
+// Describe-pass state, held in the AppScratch (context.goose) and reached from Ctx. Every change
+// to these structs is made on a local copy and written back as a whole value, since the routes
+// block (which captures c) is live. The describe text is not here: it is a growable buffer that
+// Ctx owns (oas_text), so it starts empty for each request and is never shrunk.
 const OAS_MAX_TITLE_BYTES = 128;
 const OAS_MAX_VERSION_BYTES = 32;
 const OAS_MAX_DESCRIPTION_BYTES = 512;
@@ -33,14 +34,13 @@ struct OasPending {
     params: u8[..OAS_MAX_FRAGMENT_BYTES],
 }
 
-// One finished operation. Its path and JSON object live in OpenApiState.text.
+// One finished operation. Its path and JSON object live in Ctx.oas_text.
 struct OpEntry { verb: u8[..8], path_start: i64, path_len: i64, op_start: i64, op_len: i64 }
 
+// Fixed-size, so it can sit in the scratch. The growable text is Ctx.oas_text.
 struct OpenApiState {
     config: OasConfig,
     pending: OasPending,
     ops: OpEntry[MAX_ROUTES],
     op_count: i64,
-    // Growable buffer is the final field: Goose requires that for resizable fields.
-    text: u8[>..],
 }

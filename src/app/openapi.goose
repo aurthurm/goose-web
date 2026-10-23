@@ -359,7 +359,7 @@ fn oas_add_operation(c: Ctx&, method: const u8[:], pattern: const u8[:]) {
         verb.push(if ch >= 'A' && ch <= 'Z' { ch | 32 } else { ch });
     }
     // The path is written as OpenAPI expects: ":id" becomes "{id}", and each becomes a parameter.
-    let path_start = c.oas.text.len;
+    let path_start = c.oas_text.len;
     var params: u8[>..] = [];
     var i: i64 = 0;
     while i < pattern.len {
@@ -368,22 +368,22 @@ fn oas_add_operation(c: Ctx&, method: const u8[:], pattern: const u8[:]) {
             var end = i + 1;
             while end < pattern.len && pattern[end] != '/' { end += 1; }
             let name = pattern[i + 1..end];
-            c.oas.text.push('{');
-            c.oas.text.append(name);
-            c.oas.text.push('}');
+            c.oas_text.push('{');
+            c.oas_text.append(name);
+            c.oas_text.push('}');
             if params.len > 0 { params.push(','); }
             oas_path_param(params, name);
             i = end;
         } else {
-            c.oas.text.push(pattern[i]);
+            c.oas_text.push(pattern[i]);
             i += 1;
         }
     }
-    let path_len = c.oas.text.len - path_start;
+    let path_len = c.oas_text.len - path_start;
     var op: u8[>..] = [];
     oas_write_operation(c, op, params[..]);
-    let op_start = c.oas.text.len;
-    c.oas.text.append(op[..]);
+    let op_start = c.oas_text.len;
+    c.oas_text.append(op[..]);
     c.oas.ops[c.oas.op_count] = OpEntry { verb: verb, path_start: path_start, path_len: path_len,
         op_start: op_start, op_len: op.len };
     c.oas.op_count += 1;
@@ -395,11 +395,11 @@ fn oas_add_operation(c: Ctx&, method: const u8[:], pattern: const u8[:]) {
 // Index of the first operation with the same path as operation i (so i is emitted once).
 fn oas_first_of_path(c: Ctx&, i: i64) -> i64 {
     let target = c.oas.ops[i];
-    let wanted = c.oas.text[target.path_start..target.path_start + target.path_len];
+    let wanted = c.oas_text[target.path_start..target.path_start + target.path_len];
     for j in c.oas.op_count {
         let entry = c.oas.ops[j];
         if entry.path_len == target.path_len &&
-           c.oas.text[entry.path_start..entry.path_start + entry.path_len] == wanted { return j; }
+           c.oas_text[entry.path_start..entry.path_start + entry.path_len] == wanted { return j; }
     }
     return i;
 }
@@ -421,17 +421,17 @@ fn oas_write_json(c: Ctx&, out: u8[>..]&) {
         let entry = c.oas.ops[i];
         if !first_path { out.push(','); }
         first_path = false;
-        json::format_key(out, c.oas.text[entry.path_start..entry.path_start + entry.path_len]);
+        json::format_key(out, c.oas_text[entry.path_start..entry.path_start + entry.path_len]);
         out.push('{');
         var first_op = true;
         for j in c.oas.op_count {
             let other = c.oas.ops[j];
             if other.path_len != entry.path_len ||
-               c.oas.text[other.path_start..other.path_start + other.path_len] != c.oas.text[entry.path_start..entry.path_start + entry.path_len] { continue; }
+               c.oas_text[other.path_start..other.path_start + other.path_len] != c.oas_text[entry.path_start..entry.path_start + entry.path_len] { continue; }
             if !first_op { out.push(','); }
             first_op = false;
             json::format_key(out, other.verb[..]);
-            out.append(c.oas.text[other.op_start..other.op_start + other.op_len]);
+            out.append(c.oas_text[other.op_start..other.op_start + other.op_len]);
         }
         out.push('}');
     }

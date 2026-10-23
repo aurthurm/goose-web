@@ -12,14 +12,16 @@ fn header_value(res: web::Response&, name: const u8[:]) -> const u8[:] {
 // One request from address, through rate_limit(limit, window_ms) around a text writer.
 fn limited(address: const u8[:], limit: i64, window_ms: i64) -> web::Response {
     var out = web::response();
-    var c = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n", peer: address }, out);
+    var scratch = web::AppScratch { .. };
+    var c = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n", peer: address }, out, scratch);
     c.rate_limit(limit, window_ms) { c.text("ok"); };
     return copy(out);
 }
 
 fn secured(csp: const u8[:], hsts: const u8[:]) -> web::Response {
     var out = web::response();
-    var c = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "" }, out);
+    var scratch = web::AppScratch { .. };
+    var c = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "" }, out, scratch);
     c.secure_headers(csp, hsts) { c.text("secure"); };
     return copy(out);
 }
@@ -38,7 +40,8 @@ fn main() {
     // The describe pass renders a wildcard as a {name} path parameter; host scopes are documented
     // like other routes.
     var spec_out = web::response();
-    var spec_request = web::new_ctx(web::Request { method: "GET", target: "/openapi.json", body: "", raw_headers: "" }, spec_out);
+    var spec_scratch = web::AppScratch { .. };
+    var spec_request = web::new_ctx(web::Request { method: "GET", target: "/openapi.json", body: "", raw_headers: "" }, spec_out, spec_scratch);
     described_routes(spec_request);
     let spec = web::body_of(spec_out);
     assert(spec_out.status == 200);

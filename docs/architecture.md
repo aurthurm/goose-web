@@ -45,6 +45,30 @@ Request slices and path parameters must not escape their owning request/router.
 Queue owned event arguments for work that survives the handler. No callback suspends;
 blocking a callback stalls the reactor.
 
+### Application state ownership
+
+The per-request `Ctx` (`src/app/context.goose`) is small: the request view, the borrowed
+response, the matched route, the group prefix stack, and the describe text buffer. Large state
+lives in an `AppScratch` that the caller owns, and `Ctx` refers to its parts:
+
+| State | Owner | How `Ctx` reaches it |
+| --- | --- | --- |
+| Route table (`Router`, 64 routes) | `AppScratch.table` | `Ctx.table: Router&` |
+| Session store (`SessionState`) | `AppScratch.session_state` | `Ctx.session_state` |
+| CSRF token (`CsrfState`) | `AppScratch.csrf_state` | `Ctx.csrf_state` |
+| OpenAPI config, pending annotations, operation index (`OpenApiState`) | `AppScratch.oas` | `Ctx.oas` |
+| OpenAPI document text (growable) | `Ctx.oas_text` | the `Ctx` itself, empty per request |
+
+- `run` / `run_with` own one `app_scratch` global (`src/app/run.goose`). Handlers run one at a time on
+  the reactor thread, so one scratch serves every request. Tests that hold several `Ctx` at once each
+  declare their own `AppScratch` and pass it to `new_ctx(request, response, scratch)`.
+- `new_ctx` calls `scratch_reset`, which clears only what a request reads before writing: the route
+  count, the session and CSRF flags and counts, the OpenAPI enable flag and operation count. Entries,
+  route patterns and OpenAPI fragments are not cleared; they are guarded by those counts.
+- The describe text is a growable buffer, so it is the last field of `Ctx`. A growable buffer in the
+  scratch could not be cleared while the request is live, because Goose cannot prove a caller-supplied
+  request holds no slice into it.
+
 ## Composition
 
 Goose function values exist at compile time. Middleware callbacks and runtime callbacks

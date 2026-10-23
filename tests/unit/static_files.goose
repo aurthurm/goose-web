@@ -51,14 +51,16 @@ fn test_read_bounded(directory: const u8[:]) {
 fn test_middleware_errors(directory: const u8[:]) {
     // Oversize files answer 500 file_too_large through the middleware, without Next.
     var response = web::response();
-    var c = web::new_ctx(web::Request { method: "GET", target: "/static/over.bin", body: "", raw_headers: "Host: x\r\n" }, response);
+    var scratch = web::AppScratch { .. };
+    var c = web::new_ctx(web::Request { method: "GET", target: "/static/over.bin", body: "", raw_headers: "Host: x\r\n" }, response, scratch);
     web::static_files(c, "/static", directory) { next_called(); };
     assert(c.written && c.response.status == web::HTTP_INTERNAL_SERVER_ERROR);
     assert(find(web::body_of(c.response), "\"code\":\"file_too_large\"") >= 0);
 
     // A missing file answers 404 not_found.
     var missing_response = web::response();
-    var missing = web::new_ctx(web::Request { method: "GET", target: "/static/absent.txt", body: "", raw_headers: "Host: x\r\n" }, missing_response);
+    var missing_scratch = web::AppScratch { .. };
+    var missing = web::new_ctx(web::Request { method: "GET", target: "/static/absent.txt", body: "", raw_headers: "Host: x\r\n" }, missing_response, missing_scratch);
     web::static_files(missing, "/static", directory) { next_called(); };
     assert(missing.response.status == web::HTTP_NOT_FOUND);
 }

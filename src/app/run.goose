@@ -8,13 +8,17 @@ namespace web;
 
 fn run_tick() {}
 
+// The reactor's scratch for routing, session, CSRF and OpenAPI state. Handlers run synchronously
+// on the reactor thread, one request at a time, so one scratch serves every request.
+var app_scratch: AppScratch;
+
 // Builds one Ctx per request around the server's request view. The app writes into
 // out, the runtime's reused response, so nothing is copied back.
 fn handle_app<App>(request: Request, out: Response&) {
     // App arrives as a trailing function argument; a type argument cannot name it.
     // Pass &c: an untyped block parameter would receive a copy of this Ctx,
     // and routing state written by the app would land in that copy.
-    var c = new_ctx(request, out);
+    var c = new_ctx(request, out, app_scratch);
     App(&c);
 }
 

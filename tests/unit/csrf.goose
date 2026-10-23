@@ -8,10 +8,11 @@ const OTHER_SECRET = "fedcba9876543210fedcba987654321z";
 
 // Each context borrows this response; a test finishes with one context before creating the next.
 var shared_response = web::response();
+var shared_scratch = web::AppScratch { .. };
 
 fn make_ctx(method: const u8[:], target: const u8[:], headers: const u8[:], body: const u8[:]) -> web::Ctx {
     shared_response = web::response();
-    return web::new_ctx(web::Request { method: method, target: target, body: body, raw_headers: headers }, shared_response);
+    return web::new_ctx(web::Request { method: method, target: target, body: body, raw_headers: headers }, shared_response, shared_scratch);
 }
 
 // Value of the gw_csrf Set-Cookie line in a response, or "" when there is none.

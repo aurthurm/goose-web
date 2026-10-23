@@ -13,10 +13,11 @@ fn web::json_put_value(out: u8[>..]&, v: Item&) -> bool { return web::json_put_f
 
 // Each context borrows this response; a test finishes with one context before creating the next.
 var shared_response = web::response();
+var shared_scratch = web::AppScratch { .. };
 
 fn make_ctx(method: const u8[:], target: const u8[:], headers: const u8[:], body: const u8[:]) -> web::Ctx {
     shared_response = web::response();
-    return web::new_ctx(web::Request { method: method, target: target, body: body, raw_headers: headers }, shared_response);
+    return web::new_ctx(web::Request { method: method, target: target, body: body, raw_headers: headers }, shared_response, shared_scratch);
 }
 
 fn header_value(res: web::Response&, name: const u8[:]) -> const u8[:] {
@@ -179,8 +180,10 @@ fn test_request_id() {
     // Two live contexts at once, so each borrows its own response.
     var out_a = web::response();
     var out_b = web::response();
-    var a = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, out_a);
-    var b = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, out_b);
+    var scratch_a = web::AppScratch { .. };
+    var scratch_b = web::AppScratch { .. };
+    var a = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, out_a, scratch_a);
+    var b = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, out_b, scratch_b);
     var reached = 0;
     request_id(a) { reached += 1; };
     request_id(b) { reached += 1; };

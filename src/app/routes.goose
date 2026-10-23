@@ -72,7 +72,7 @@ fn routes<F>(c: Ctx&) {
         describe_routes(c, kind, F);
         return;
     }
-    c.table = router();
+    c.table.count = 0;
     c.prefix_count = 0;
     c.host_scope = "";
     c.route_index = 0;

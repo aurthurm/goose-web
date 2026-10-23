@@ -16,8 +16,9 @@ fn app(c: web::Ctx&) {
 }
 fn invoke(method: const u8[:], target: const u8[:], body: const u8[:] = "") -> web::Response {
     var out = web::response();
+    var scratch = web::AppScratch { .. };
     var c = web::new_ctx(web::Request { method: method, target: target, body: body,
-        raw_headers: "Content-Type: application/json\r\n" }, out);
+        raw_headers: "Content-Type: application/json\r\n" }, out, scratch);
     app(c);
     return copy(out);
 }

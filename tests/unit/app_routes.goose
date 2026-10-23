@@ -10,7 +10,8 @@ var param_hits: i64 = 0;
 fn exchange_with<App>(method: const u8[:], target: const u8[:], raw_headers: const u8[:]) -> web::Response {
     let request = web::Request { method: method, target: target, body: "", raw_headers: raw_headers };
     var out = web::response();
-    var c = web::new_ctx(request, out);
+    var scratch = web::AppScratch { .. };
+    var c = web::new_ctx(request, out, scratch);
     App(c);
     return copy(out);
 }
@@ -282,7 +283,8 @@ fn main() {
 
     // done() reflects whether a writer has run; a fresh Ctx is not done.
     var fresh_out = web::response();
-    var fresh = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "" }, fresh_out);
+    var fresh_scratch = web::AppScratch { .. };
+    var fresh = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "" }, fresh_out, fresh_scratch);
     assert(!done(fresh) && fresh_out.status == 200);
     text(fresh, "hello");
     assert(done(fresh) && web::body_of(fresh_out) == "hello");

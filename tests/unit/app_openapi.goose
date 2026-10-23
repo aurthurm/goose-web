@@ -54,7 +54,8 @@ fn todo_app_described(c: web::Ctx&) {
 // Status and a copy of the body: the response is local, so only owned text leaves.
 fn exchange<App>(target: const u8[:]) -> i32, u8[>..] {
     var response = web::response();
-    var c = web::new_ctx(web::Request { method: "GET", target: target, body: "", raw_headers: "" }, response);
+    var scratch = web::AppScratch { .. };
+    var c = web::new_ctx(web::Request { method: "GET", target: target, body: "", raw_headers: "" }, response, scratch);
     App(c);
     var body: u8[>..] = [];
     body.append(web::body_of(response));

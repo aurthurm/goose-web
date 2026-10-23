@@ -9,10 +9,11 @@ struct Filter { limit: i32 = 10, q: u8[..16] = "none", active: bool = false }
 
 // Each context borrows this response; a test finishes with one context before creating the next.
 var shared_response = web::response();
+var shared_scratch = web::AppScratch { .. };
 
 fn ctx_for(target: const u8[:], headers: const u8[:]) -> web::Ctx {
     shared_response = web::response();
-    return web::new_ctx(web::Request { method: "GET", target: target, body: "", raw_headers: headers }, shared_response);
+    return web::new_ctx(web::Request { method: "GET", target: target, body: "", raw_headers: headers }, shared_response, shared_scratch);
 }
 
 // The error envelope carries the message as a JSON fragment.
@@ -391,7 +392,7 @@ fn form_ctx(content_type: const u8[:], body: const u8[:]) -> web::Ctx {
     form_headers.append("Host: x\r\nContent-Type: ");
     form_headers.append(content_type);
     form_headers.append("\r\n");
-    return web::new_ctx(web::Request { method: "POST", target: "/signup", body: body, raw_headers: form_headers[..] }, shared_response);
+    return web::new_ctx(web::Request { method: "POST", target: "/signup", body: body, raw_headers: form_headers[..] }, shared_response, shared_scratch);
 }
 
 fn test_form_binding() {

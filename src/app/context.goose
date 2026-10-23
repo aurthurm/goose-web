@@ -21,10 +21,22 @@ const PASS_MATCH = 1;
 const PASS_DISPATCH = 2;
 const PASS_DESCRIBE = 3;
 
+// Large per-request state lives in an AppScratch that the caller owns: the runtime keeps one
+// for the reactor (run.goose), and each test that holds several Ctx at once keeps its own.
+// Ctx refers to the pieces rather than embedding them, so building a Ctx copies only the
+// request, the response reference and a few small fields. Nothing here is zeroed per request;
+// new_ctx resets only the counts and flags that a request reads (scratch_reset).
+struct AppScratch {
+    table: Router,
+    session_state: SessionState,
+    csrf_state: CsrfState,
+    oas: OpenApiState,
+}
+
 // One value per request, owned by the server loop for the duration of the handler.
 // The response is borrowed: the runtime owns one reused Response (see run.goose), so a
-// Ctx stays a fixed-size value. Routing fields are scratch for c.routes(); c.routes()
-// resets them on every entry.
+// Ctx stays small. Routing fields are scratch for c.routes(); c.routes() resets them on
+// every entry.
 struct Ctx {
     request: Request,
     response: Response&,
@@ -32,20 +44,41 @@ struct Ctx {
     written: bool,
     pass: i32,
     route_index: i64,
-    table: Router,
     matched: RouteMatch,
     prefixes: const u8[:][MAX_GROUP_DEPTH],
     prefix_count: i64,
     host_scope: const u8[:],
+    // Borrowed from the AppScratch given to new_ctx.
+    table: Router&,
     // Session and CSRF middleware state (session.goose, csrf.goose); empty until installed.
-    session_state: SessionState,
-    csrf_state: CsrfState,
-    oas: OpenApiState,
+    session_state: SessionState&,
+    csrf_state: CsrfState&,
+    oas: OpenApiState&,
+    // The OpenAPI describe text (see openapi.goose). Per request, so it starts empty. It is the
+    // final field: Goose requires that for a resizable field.
+    oas_text: u8[>..],
 }
 
-// Routing state zeroed; the response is the caller's (tests and the runtime create it with response()).
-fn new_ctx(request: Request, response: Response&) -> Ctx {
-    return Ctx { request: request, response: response, .. };
+// Clears what a request reads before it writes anything: route count, session and CSRF flags,
+// and the OpenAPI enable flag and operation count. Entries, route patterns and OpenAPI fragments
+// are rewritten before they are read, guarded by those counts, so they are not cleared.
+fn scratch_reset(s: AppScratch&) {
+    s.table.count = 0;
+    s.session_state.active = false;
+    s.session_state.dirty = false;
+    s.session_state.count = 0;
+    s.csrf_state.active = false;
+    s.csrf_state.token = "";
+    s.oas.config.enabled = false;
+    s.oas.op_count = 0;
+}
+
+// Ctx for one request, backed by scratch (reset here). The response is the caller's (tests and
+// the runtime create it with response()). Two live Ctx must not share a scratch.
+fn new_ctx(request: Request, response: Response&, scratch: AppScratch&) -> Ctx {
+    scratch_reset(scratch);
+    return Ctx { request: request, response: response, table: scratch.table,
+        session_state: scratch.session_state, csrf_state: scratch.csrf_state, oas: scratch.oas, .. };
 }
 
 fn method(c: Ctx&) -> const u8[:] { return c.request.method; }

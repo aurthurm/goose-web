@@ -61,15 +61,18 @@ fn main() {
 
 ### `Ctx` (src/app/context.goose)
 
-One value per request, owned by the server loop for the duration of the handler.
+One value per request, built by `new_ctx` for the duration of the handler. The request view and
+the response are borrowed; routing, session, CSRF and OpenAPI state live in an `AppScratch` that
+the caller owns and `Ctx` refers to (see Implementation notes, v0.6).
 
 ```goose
 struct Ctx {
     request: Request,          // borrowed views, valid only during the handler
-    response: Response,        // owned; serialized after the app returns
-    // routing state (private by convention: names start with route_)
-    // path params of the selected route (bounded, MAX_PATH_PARAMS)
-    // user slot: a small fixed `locals` area, e.g. request_id: i64
+    response: Response&,      // borrowed; serialized after the app returns
+    matched: RouteMatch,       // path params of the selected route (bounded, MAX_PATH_PARAMS)
+    table: Router&,            // route table, in the AppScratch
+    session_state: SessionState&, csrf_state: CsrfState&, oas: OpenApiState&,
+    oas_text: u8[>..],         // OpenAPI describe text, per request (last field)
 }
 ```
 
@@ -403,3 +406,29 @@ event.
 after writing into connection chunks. The fan-out therefore happens one loop iteration later, which
 is at most one poll interval. `max_sse_clients` is clamped to `max_clients` at use instead of being
 validated against it, so existing configurations with a small `max_clients` stay valid.
+
+## v0.6 change: per-request state moved out of `Ctx`
+
+Problem: `Ctx` embedded the route table (64 routes, about 43 KB), the session store (about 5 KB),
+the OpenAPI pending fragments (about 12 KB) and its operation index. `new_ctx` zeroed all of it on every
+request, and `c.routes()` built a second table and copied it. Apps that used none of those features
+still paid for them.
+
+**Implementation notes (v0.6, as built).**
+
+- `AppScratch` (`src/app/context.goose`) holds `table`, `session_state`, `csrf_state` and `oas`. It is
+  fixed-size. `run`/`run_with` keep one in the `app_scratch` global, which is safe because handlers run
+  one at a time on the reactor thread. Tests that hold several `Ctx` at once declare their own.
+- `Ctx` holds references to those parts (`table: Router&`, `session_state: SessionState&`, and so on), so
+  field access such as `c.session_state.count` and `c.oas.config` is unchanged. Building a `Ctx` copies
+  only the request view, the response reference and a few small fields.
+- `new_ctx(request, response, scratch)` takes the scratch as its third argument. This is the one
+  signature change, and it affects only code that builds `Ctx` by hand (the unit tests).
+- `scratch_reset` clears only the counts and flags a request reads first. Route entries, session entries
+  and OpenAPI fragments are not cleared, because every read is bounded by a count that was reset.
+- Goose refuses to shrink a buffer while a caller-supplied request may hold a slice into it. The OpenAPI
+  describe text is therefore a growable field of `Ctx` (its last field), and it starts empty for each
+  request. The fixed-size OpenAPI state stays in the scratch.
+- `ServerControl` stays fixed-size. Applications build it with `default<web::ServerControl>()` for
+  `run_with`, so making its outbox growable would be a public API change. Its 256 KiB outbox is zeroed
+  once at startup, which is the main remaining startup RSS cost.
