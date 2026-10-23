@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operations: Goose Web</title>
+<meta name="description" content="Configuration, command-line and environment settings, deployment behind a proxy, and performance notes for Goose Web.">
+<style>
+:root{color-scheme:light dark;--bg:#fbfaf7;--fg:#1d1f23;--muted:#596070;--accent:#1f55a8;--border:#d8d4cb;--code-bg:#f1eee7;--note-bg:#eaf2fc;--note-border:#8fb0de;--warn-bg:#fcf3df;--warn-border:#d7ab4a;--card:#ffffff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+header.site{border-bottom:1px solid var(--border);padding:12px 16px;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center}
+header.site .brand{font-weight:700;text-decoration:none;color:var(--fg);margin-right:auto}
+header.site nav{display:flex;flex-wrap:wrap;gap:6px 16px}
+header.site nav a{text-decoration:none}
+main{max-width:52rem;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:2rem;line-height:1.2;margin:.2em 0 .4em}
+h2{font-size:1.4rem;margin:2.2em 0 .5em;padding-top:.4em;border-top:1px solid var(--border)}
+h3{font-size:1.08rem;margin:1.6em 0 .4em}
+p.lead{font-size:1.12rem;color:var(--muted)}
+code{font:.92em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code-bg);padding:.08em .3em;border-radius:4px}
+pre{background:var(--code-bg);padding:14px 16px;border-radius:8px;overflow-x:auto;border:1px solid var(--border)}
+pre code{background:none;padding:0;font-size:.88rem;line-height:1.5}
+table{width:100%;border-collapse:collapse;display:block;overflow-x:auto;font-size:.94rem;margin:1em 0}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.note,.warn{border-radius:8px;padding:10px 14px;margin:1.2em 0;border:1px solid}
+.note{background:var(--note-bg);border-color:var(--note-border)}
+.warn{background:var(--warn-bg);border-color:var(--warn-border)}
+.soon{display:inline-block;font-size:.8rem;font-weight:600;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:0 .6em;margin-left:.3em;vertical-align:middle}
+footer{max-width:52rem;margin:0 auto;padding:0 16px 32px;color:var(--muted);font-size:.9rem}
+ul,ol{padding-left:1.3em}
+li{margin:.25em 0}
+@media (max-width:480px){h1{font-size:1.7rem}}
+</style>
+</head>
+<body>
+<header class="site">
+  <a class="brand" href="index.html">Goose Web</a>
+  <nav>
+    <a href="getting-started.html">Getting started</a>
+    <a href="http.html">Requests and responses</a>
+    <a href="features.html">Features</a>
+    <a href="operations.html">Operations</a>
+    <a href="https://github.com/aurthurm/goose-web">GitHub</a>
+  </nav>
+</header>
+<main>
+<h1>Operations</h1>
+<p class="lead">How to configure a Goose Web server, run it behind a proxy, and what to expect from it under load.</p>
+
+<h2>Configuration</h2>
+<p><code>web::server_config()</code> returns the defaults. Set fields before <code>web::run</code>; <code>validate_server_config</code>
+rejects bad combinations before any socket opens. The most used fields:</p>
+<table>
+  <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
+  <tbody>
+    <tr><td><code>port</code></td><td>8080</td><td>1 to 65535</td></tr>
+    <tr><td><code>public_bind</code></td><td>false</td><td>false binds 127.0.0.1; true binds all IPv4 addresses</td></tr>
+    <tr><td><code>max_clients</code></td><td>64</td><td>open connections, at most 64</td></tr>
+    <tr><td><code>max_request_bytes</code></td><td>8192</td><td>headers and body of one request</td></tr>
+    <tr><td><code>max_response_bytes</code></td><td>1048576</td><td>one response body; up to 16 MiB</td></tr>
+    <tr><td><code>max_pool_bytes</code></td><td>8388608</td><td>serialized responses in flight, shared by all connections</td></tr>
+    <tr><td><code>read_timeout_ms</code>, <code>write_timeout_ms</code></td><td>5000</td><td>time to receive a request once it starts; time to write one response</td></tr>
+    <tr><td><code>idle_timeout_ms</code></td><td>5000</td><td>wait for the next request on a kept-alive connection</td></tr>
+    <tr><td><code>keep_alive</code>, <code>max_requests_per_connection</code></td><td>true, 100</td><td>connection reuse and its limit</td></tr>
+    <tr><td><code>shutdown_grace_ms</code></td><td>5000</td><td>how long shutdown waits for open connections</td></tr>
+    <tr><td><code>handle_signals</code></td><td>false</td><td>stop on SIGINT and SIGTERM with a drain</td></tr>
+    <tr><td><code>max_sse_clients</code>, <code>sse_heartbeat_ms</code></td><td>32, 15000</td><td>open event streams, and their heartbeat interval</td></tr>
+  </tbody>
+</table>
+<p>The full table, with valid ranges, is in the <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#runtime-configuration-and-lifecycle">API reference</a>.</p>
+
+<h2>Command line and environment</h2>
+<p><code>web::config_from_args(args())</code> reads the common options, and <code>web::config_from_env()</code> reads two
+environment variables. Unknown options are errors, so typos fail at startup.</p>
+<table>
+  <thead><tr><th>Argument</th><th>Environment</th><th>Effect</th></tr></thead>
+  <tbody>
+    <tr><td><code>[port]</code>, <code>--port N</code></td><td><code>GOOSE_WEB_PORT</code></td><td>the listening port</td></tr>
+    <tr><td><code>--host public</code> or <code>--host loopback</code></td><td><code>GOOSE_WEB_PUBLIC=1</code> or <code>0</code></td><td>all IPv4 addresses, or loopback only</td></tr>
+    <tr><td><code>--max-clients N</code></td><td>none</td><td>connection limit, 1 to 64</td></tr>
+    <tr><td><code>--max-requests N</code></td><td>none</td><td>stop after N completed responses; 0 means no limit</td></tr>
+  </tbody>
+</table>
+<p>An application that takes its own positional arguments passes only the prefix it owns to <code>config_from_args</code> and reads
+the rest itself, as the basic example does.</p>
+
+<h2>Deployment</h2>
+<h3>Bind and expose</h3>
+<p>The default is loopback. Use <code>--host public</code> only when the process should accept connections from other machines,
+and put it behind something you trust.</p>
+
+<h3>Behind a reverse proxy</h3>
+<ul>
+  <li><strong>TLS belongs to the proxy.</strong> Goose Web does not speak TLS yet. Serve HTTPS at the proxy, and set
+    <code>secure = true</code> on session cookies and <code>Strict-Transport-Security</code> through <code>secure_headers</code>.</li>
+  <li><strong>The client address is the proxy's.</strong> <code>c.peer()</code> is the TCP peer, and forwarded headers are not
+    trusted. A <code>rate_limit</code> behind a proxy therefore limits the proxy, not each user.</li>
+  <li><strong>Sessions are stateless.</strong> Every instance that should accept a session needs the same secret. Rotating the
+    secret signs every user out.</li>
+  <li><strong>Limits are per process.</strong> Rate limits, event streams and the response pool are not shared between instances.</li>
+</ul>
+
+<h3>Running and stopping</h3>
+<p>Set <code>handle_signals</code> so SIGTERM from a supervisor starts a drain: the listener closes, open requests finish, and
+streams receive their close event. Keep the grace period longer than your slowest handler. The <code>logger</code> middleware prints one line per
+response to standard output, so a supervisor or log shipper can collect it directly.</p>
+
+<h3>Several processes <span class="soon">coming</span></h3>
+<p>Pre-forked workers are being added, so that one binary can run several reactor processes on one port. That work is not
+released yet, and the configuration for it is not final. Until it lands, run one process per port and balance across them
+at the proxy. The <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md">API reference</a> is the place to watch
+for the final fields.</p>
+
+<h2>Performance notes</h2>
+<p>Goose Web is single-threaded per process: one readiness loop accepts, reads, runs handlers and writes. Memory is bounded by
+the configuration of each process. Some properties to design around:</p>
+<ul>
+  <li><strong>Handlers run on the reactor.</strong> Work that blocks (a slow file, a long SQLite query, a network call made
+    synchronously) delays every other connection in that process. Keep handlers short.</li>
+  <li><strong>SQLite calls block.</strong> Index the columns you filter on, keep <code>select</code> loops short, and cap list
+    sizes with <code>limit</code>. Worker offload is planned for the asynchronous milestone, not available now.</li>
+  <li><strong>Static files are read whole.</strong> A file is read on the reactor, bounded by <code>max_response_bytes</code>, so
+    serve small assets from the framework and large ones from a proxy or CDN.</li>
+  <li><strong>Responses are bounded.</strong> A body over the limit is a complete 500, and a response that does not fit the pool
+    gets a 503 and its connection closes. Both are visible failures, not silent truncation.</li>
+  <li><strong>Connections are bounded.</strong> Up to 64 at once, with read, write and idle deadlines. A slow client is closed
+    when its deadline passes rather than holding a slot.</li>
+  <li><strong>Event streams drop slow readers.</strong> A stream more than 256 KiB behind is closed and counted, so one slow browser
+    cannot hold up the others.</li>
+</ul>
+<div class="note">No benchmark results are published yet. The roadmap lists benchmarks for slow clients, queue saturation and
+memory bounds as part of the asynchronous work. Measure your own handlers before sizing a deployment.</div>
+</main>
+<footer>Documentation for release 0.6.0. Details: <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#runtime-configuration-and-lifecycle">runtime configuration</a>
+and the <a href="https://github.com/aurthurm/goose-web/blob/main/docs/architecture.md">architecture notes</a>.</footer>
+</body>
+</html>

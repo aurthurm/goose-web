@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Getting started: Goose Web</title>
+<meta name="description" content="Install the Goose compiler, declare Goose Web as a package, and run a first route or the starter project.">
+<style>
+:root{color-scheme:light dark;--bg:#fbfaf7;--fg:#1d1f23;--muted:#596070;--accent:#1f55a8;--border:#d8d4cb;--code-bg:#f1eee7;--note-bg:#eaf2fc;--note-border:#8fb0de;--warn-bg:#fcf3df;--warn-border:#d7ab4a;--card:#ffffff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+header.site{border-bottom:1px solid var(--border);padding:12px 16px;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center}
+header.site .brand{font-weight:700;text-decoration:none;color:var(--fg);margin-right:auto}
+header.site nav{display:flex;flex-wrap:wrap;gap:6px 16px}
+header.site nav a{text-decoration:none}
+main{max-width:52rem;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:2rem;line-height:1.2;margin:.2em 0 .4em}
+h2{font-size:1.4rem;margin:2.2em 0 .5em;padding-top:.4em;border-top:1px solid var(--border)}
+h3{font-size:1.08rem;margin:1.6em 0 .4em}
+p.lead{font-size:1.12rem;color:var(--muted)}
+code{font:.92em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code-bg);padding:.08em .3em;border-radius:4px}
+pre{background:var(--code-bg);padding:14px 16px;border-radius:8px;overflow-x:auto;border:1px solid var(--border)}
+pre code{background:none;padding:0;font-size:.88rem;line-height:1.5}
+table{width:100%;border-collapse:collapse;display:block;overflow-x:auto;font-size:.94rem;margin:1em 0}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.note,.warn{border-radius:8px;padding:10px 14px;margin:1.2em 0;border:1px solid}
+.note{background:var(--note-bg);border-color:var(--note-border)}
+.warn{background:var(--warn-bg);border-color:var(--warn-border)}
+footer{max-width:52rem;margin:0 auto;padding:0 16px 32px;color:var(--muted);font-size:.9rem}
+ul,ol{padding-left:1.3em}
+li{margin:.25em 0}
+@media (max-width:480px){h1{font-size:1.7rem}}
+</style>
+</head>
+<body>
+<header class="site">
+  <a class="brand" href="index.html">Goose Web</a>
+  <nav>
+    <a href="getting-started.html">Getting started</a>
+    <a href="http.html">Requests and responses</a>
+    <a href="features.html">Features</a>
+    <a href="operations.html">Operations</a>
+    <a href="https://github.com/aurthurm/goose-web">GitHub</a>
+  </nav>
+</header>
+<main>
+<h1>Getting started</h1>
+<p class="lead">Goose Web is a package. Your program's root file declares it, the Goose compiler fetches and
+builds it, and the result is an ordinary executable.</p>
+
+<h2>Requirements</h2>
+<ul>
+  <li>The Goose compiler. Goose Web is tested with upstream runtime <code>4d3da949e563</code>; the pinned source
+    revision is in <a href="https://github.com/aurthurm/goose-web/blob/main/docs/ci.md">docs/ci.md</a>. Put <code>goose</code> on your <code>PATH</code>,
+    or set <code>GOOSE=/path/to/goose</code> for the scripts.</li>
+  <li>A C compiler (<code>gcc</code> or <code>clang</code>). The compiler builds the runtime and your program's C with it.</li>
+  <li><code>git</code>, which the compiler uses to fetch a package. Linux is the tested platform.</li>
+</ul>
+
+<h2>Start from the starter</h2>
+<p>The starter is a small project with routes, middleware, JSON, a template, OpenAPI and an end-to-end test
+script. The generator copies it and writes the package import for you.</p>
+<pre><code>python3 scripts/new_project.py my-api ../my-api --source /path/to/goose-web
+cd ../my-api
+goose run server.goose -- 8080     # serve on port 8080
+python3 test.py                    # build, call every route, stop</code></pre>
+<p>Leave out <code>--source</code> to write the release form (<code>aurthurm/goose-web@v0.6.0</code>), which needs
+the tag to exist on GitHub. The <a href="https://github.com/aurthurm/goose-web/blob/main/templates/starter/README.md">starter README</a>
+describes the files.</p>
+
+<h2>Declare the package</h2>
+<p>A program that uses Goose Web declares it in its root file, the one you pass to <code>goose</code>. Only the
+root file declares packages. The source decides which version you get:</p>
+<table>
+  <thead><tr><th>Source</th><th>Use it when</th></tr></thead>
+  <tbody>
+    <tr><td><code>import goose_web from "aurthurm/goose-web@v0.6.0";</code></td><td>Release builds. A tag is a fixed version.</td></tr>
+    <tr><td><code>import goose_web from "github.com/aurthurm/goose-web@3f2c1a9";</code></td><td>A commit. The most reproducible pin.</td></tr>
+    <tr><td><code>import goose_web from "https://git.example.com/you/goose-web.git@v0.6.0";</code></td><td>Any other git host.</td></tr>
+    <tr><td><code>import goose_web from "../goose-web";</code></td><td>A checkout you are developing. Edits apply on the next build.</td></tr>
+  </tbody>
+</table>
+<div class="note"><strong>Before v0.6.0 is tagged</strong>, the GitHub forms stop at <code>goose fetch</code> with
+<code>Remote branch v0.6.0 not found</code>. Use the local checkout form. The checkout form was built and run as a
+consumer; the commit and other-host forms follow the Goose packaging guide and are not yet exercised against this
+repository.</div>
+
+<p>Then the compiler does the rest:</p>
+<pre><code>goose fetch program.goose      # optional: download everything the root file declares
+goose build program.goose      # compile, linking the package's C
+./program 8080</code></pre>
+<p>Fetched packages and their native builds live under <code>~/.goose</code>. Deleting that directory loses nothing a
+build does not make again.</p>
+
+<h3>The SQLite package</h3>
+<p>The SQLite layer is a second package, <code>goose_web_db</code>, that lives in the <code>db/</code> directory of the
+repository. A program that uses it declares both, from the same checkout or version:</p>
+<pre><code>import goose_web from "../goose-web";
+import goose_web_db from "../goose-web/db";</code></pre>
+<p>It links <code>libsqlite3</code>, so install <code>libsqlite3-dev</code> to build it. Programs that do not import
+<code>goose_web_db</code> need no SQLite library.</p>
+
+<h2>Your first route</h2>
+<p>Save this as <code>server.goose</code>, with the import line from above, and run it:</p>
+<pre><code>import goose_web from "../goose-web";
+import std;
+import os;
+
+struct Greeting { message: u8[..64] }
+
+fn app(c: web::Ctx&) {
+    request_id(c) { c.logger() {
+        c.routes() {
+            c.get("/hello/:name") {
+                let name = c.param("name");
+                guard name.len <= 56 else {
+                    c.fail(web::HTTP_UNPROCESSABLE_CONTENT, "name_too_long", "Name must be at most 56 bytes");
+                    return;
+                }
+                c.json(Greeting { message: str("Hello, ", name) });
+            };
+        };
+    }};
+}
+
+fn main() {
+    let config, ok, error = web::config_from_args(args());
+    if !ok { abort(error); }
+    let started = web::run(config) { c => app(c) };
+    if !started { abort("server failed"); }
+}</code></pre>
+<pre><code>goose run server.goose -- 8080
+curl http://127.0.0.1:8080/hello/Ada
+# {"message":"Hello, Ada"}</code></pre>
+
+<h2>Stop the server</h2>
+<p>With <code>config.handle_signals = true</code>, Ctrl+C or SIGTERM stops accepting connections and drains open ones for
+a grace period of five seconds by default. The starter sets it. Signal handling is off by default, so the example
+above exits at once on Ctrl+C; set the flag before <code>web::run</code> to get the drain.</p>
+
+<h2>Where next</h2>
+<ul>
+  <li><a href="http.html">Requests and responses</a>: routing, data in and out, middleware.</li>
+  <li><a href="features.html">Features</a>: templates, sessions and CSRF, OpenAPI, SQLite and server-sent events.</li>
+  <li><a href="operations.html">Operations</a>: configuration, deployment and performance notes.</li>
+  <li><a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md">API contracts</a>: every call, limit and error code.</li>
+</ul>
+</main>
+<footer>Documentation for release 0.6.0. Pages are plain HTML; no build step.</footer>
+</body>
+</html>

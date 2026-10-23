@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+</head>
+<body>
+<h1>{{title}}</h1>
+{{! Shown when the list is empty; the other branch lists each note. }}
+{{#empty}}<p>No notes yet. POST JSON to <code>/notes</code>.</p>{{/empty}}
+{{^empty}}
+<p>{{count}} note(s)</p>
+<ul>
+{{#each notes}}<li>{{text}}{{#pinned}} (pinned){{/pinned}}</li>{{/each}}
+</ul>
+{{/empty}}
+<p>API reference: <a href="/docs">/docs</a> · <a href="/openapi.json">openapi.json</a></p>
+</body>
+</html>

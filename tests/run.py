@@ -2,6 +2,7 @@
 """One entry point for debug builds, unit tests, native tests, and socket tests."""
 from pathlib import Path
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -22,8 +23,20 @@ def sqlite_available(cc):
         return result.returncode == 0
 
 
+def check_version():
+    """The VERSION file and web::VERSION in src/constants/runtime.goose must name the same release."""
+    version = (ROOT / "VERSION").read_text().strip()
+    declared = re.search(r'^const VERSION = "([^"]+)";$',
+                         (ROOT / "src/constants/runtime.goose").read_text(), re.MULTILINE)
+    if not declared or declared.group(1) != version:
+        raise SystemExit(f"VERSION file says {version!r}; src/constants/runtime.goose must declare the same")
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise SystemExit(f"VERSION must be MAJOR.MINOR.PATCH, not {version!r}")
+
+
 def main():
     BUILD.mkdir(exist_ok=True)
+    check_version()
     env = dict(os.environ)
     env.setdefault("GOOSE_HOME", str(BUILD / "cache"))
     compiler = os.environ.get("GOOSE", "goose")
@@ -88,6 +101,13 @@ def main():
     if with_sqlite:
         subprocess.run([sys.executable, str(ROOT / "tests/integration/sqlite_todos.py"), str(BUILD / "sqlite_todos")],
                        env=env, check=True)
+    # The starter a user copies: generate it against this checkout, then build and exercise it.
+    starter_env = dict(env, GOOSE=compiler)
+    with tempfile.TemporaryDirectory(prefix="goose-starter-") as directory:
+        project = Path(directory) / "starter"
+        subprocess.run([sys.executable, str(ROOT / "scripts/new_project.py"), "starter-check", str(project),
+                        "--source", str(ROOT)], check=True, cwd=ROOT)
+        subprocess.run([sys.executable, str(project / "test.py")], env=starter_env, check=True, cwd=project)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Requests and responses: Goose Web</title>
+<meta name="description" content="Routing, path parameters, query strings, bodies, forms, cookies, responses and middleware in Goose Web.">
+<style>
+:root{color-scheme:light dark;--bg:#fbfaf7;--fg:#1d1f23;--muted:#596070;--accent:#1f55a8;--border:#d8d4cb;--code-bg:#f1eee7;--note-bg:#eaf2fc;--note-border:#8fb0de;--warn-bg:#fcf3df;--warn-border:#d7ab4a;--card:#ffffff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+header.site{border-bottom:1px solid var(--border);padding:12px 16px;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center}
+header.site .brand{font-weight:700;text-decoration:none;color:var(--fg);margin-right:auto}
+header.site nav{display:flex;flex-wrap:wrap;gap:6px 16px}
+header.site nav a{text-decoration:none}
+main{max-width:52rem;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:2rem;line-height:1.2;margin:.2em 0 .4em}
+h2{font-size:1.4rem;margin:2.2em 0 .5em;padding-top:.4em;border-top:1px solid var(--border)}
+h3{font-size:1.08rem;margin:1.6em 0 .4em}
+p.lead{font-size:1.12rem;color:var(--muted)}
+code{font:.92em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code-bg);padding:.08em .3em;border-radius:4px}
+pre{background:var(--code-bg);padding:14px 16px;border-radius:8px;overflow-x:auto;border:1px solid var(--border)}
+pre code{background:none;padding:0;font-size:.88rem;line-height:1.5}
+table{width:100%;border-collapse:collapse;display:block;overflow-x:auto;font-size:.94rem;margin:1em 0}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.note,.warn{border-radius:8px;padding:10px 14px;margin:1.2em 0;border:1px solid}
+.note{background:var(--note-bg);border-color:var(--note-border)}
+.warn{background:var(--warn-bg);border-color:var(--warn-border)}
+.toc{font-size:.95rem;color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:10px 16px}
+.toc a{margin-right:.7em;white-space:nowrap}
+footer{max-width:52rem;margin:0 auto;padding:0 16px 32px;color:var(--muted);font-size:.9rem}
+ul,ol{padding-left:1.3em}
+li{margin:.25em 0}
+@media (max-width:480px){h1{font-size:1.7rem}}
+</style>
+</head>
+<body>
+<header class="site">
+  <a class="brand" href="index.html">Goose Web</a>
+  <nav>
+    <a href="getting-started.html">Getting started</a>
+    <a href="http.html">Requests and responses</a>
+    <a href="features.html">Features</a>
+    <a href="operations.html">Operations</a>
+    <a href="https://github.com/aurthurm/goose-web">GitHub</a>
+  </nav>
+</header>
+<main>
+<h1>Requests and responses</h1>
+<p class="lead">Routes, request data, responses and middleware. Every example here uses the same
+<code>app(c: web::Ctx&)</code> shape as the starter; the complete contracts are in the
+<a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md">API reference</a>.</p>
+
+<div class="toc">
+  <a href="#routing">Routing</a><a href="#request-data">Request data</a><a href="#responses">Responses</a><a href="#middleware">Middleware</a><a href="#errors">Errors</a>
+</div>
+
+<h2 id="routing">Routing</h2>
+<p>Routes are declared in a <code>c.routes()</code> block. Each method helper takes a pattern and a block:
+<code>c.get</code>, <code>c.post</code>, <code>c.put</code>, <code>c.patch</code>, <code>c.delete</code>, plus <code>c.head</code>,
+<code>c.options</code> and <code>c.any</code>.</p>
+<pre><code>fn app(c: web::Ctx&) {
+    c.routes() {
+        c.get("/") { c.text("home"); };
+        c.get("/users/:id") { c.text(c.param("id")); };
+        c.post("/users") { c.no_content(); };
+    };
+}</code></pre>
+
+<div class="warn"><strong>The routes block runs twice.</strong> The first pass only matches patterns, and the second runs the
+body of the one route that matched. Keep the block declarative: route calls, groups, and functions that declare routes.
+Do not branch on mutable state inside it, and do not put side effects there.</div>
+
+<p>A path that matches but has the wrong method gets <code>405 method_not_allowed</code> with an <code>Allow</code> header. A
+path that matches nothing gets <code>404 not_found</code>. Path matching is exact: case, trailing slashes and encoded bytes
+all count.</p>
+
+<h3>Groups</h3>
+<pre><code>c.group("/api/v1") {
+    c.get("/status") { c.text("ok"); };      // GET /api/v1/status
+};</code></pre>
+
+<h3>Path parameters</h3>
+<p>A segment written <code>:name</code> matches one nonempty segment and is not percent-decoded. Typed accessors check the
+value and write <code>422 invalid_param</code> when it does not fit:</p>
+<table>
+  <thead><tr><th>Call</th><th>Accepts</th></tr></thead>
+  <tbody>
+    <tr><td><code>c.param(name)</code></td><td>the raw segment</td></tr>
+    <tr><td><code>c.param_int(name)</code></td><td>a signed integer</td></tr>
+    <tr><td><code>c.param_u64(name)</code></td><td>a canonical unsigned 64-bit decimal</td></tr>
+    <tr><td><code>c.param_uuid(name)</code></td><td>8-4-4-4-12 hex, all lower or all upper case, returned as sent</td></tr>
+    <tr><td><code>c.param_slug(name)</code></td><td>1 to 64 bytes of <code>a-z</code>, <code>0-9</code> and <code>-</code></td></tr>
+  </tbody>
+</table>
+<p>A final segment written <code>*name</code> takes the rest of the path, slashes included, so
+<code>c.get("/files/*path")</code> matches <code>/files/a/b.txt</code> with <code>c.param("path") == "a/b.txt"</code>.</p>
+
+<h3>Host scopes</h3>
+<p><code>c.host("api.example.com") { ... }</code> and <code>c.host("*.example.com") { ... }</code> limit the routes inside them to one
+<code>Host</code> header. The port is ignored and the comparison ignores ASCII case. A request without a <code>Host</code> header
+matches only unscoped routes.</p>
+
+<h2 id="request-data">Request data</h2>
+<table>
+  <thead><tr><th>Need</th><th>Call</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr><td>Method, path, raw target</td><td><code>c.method()</code>, <code>c.path()</code>, <code>c.target()</code></td><td>views into the request</td></tr>
+    <tr><td>A header</td><td><code>c.header(name)</code></td><td>case-insensitive; empty when absent</td></tr>
+    <tr><td>Client address</td><td><code>c.peer()</code></td><td>the TCP peer, never a forwarded header</td></tr>
+    <tr><td>One query value</td><td><code>c.query(key)</code>, <code>c.query_int(key, default)</code></td><td><code>query_int</code> writes <code>400 invalid_query</code></td></tr>
+    <tr><td>Whole query, typed</td><td><code>query&lt;T&gt;(c)</code></td><td>strict: unknown and duplicate keys fail</td></tr>
+    <tr><td>JSON body, typed</td><td><code>body&lt;T&gt;(c)</code></td><td>strict decode; writes the error response</td></tr>
+    <tr><td>Form body, typed</td><td><code>form&lt;T&gt;(c)</code></td><td>urlencoded only; same rules as <code>query&lt;T&gt;</code></td></tr>
+    <tr><td>A cookie</td><td><code>c.cookie(name)</code></td><td>first cookie with that exact name, or empty</td></tr>
+  </tbody>
+</table>
+<p>Typed bindings are called as plain functions, not as methods. Missing keys keep the defaults declared on the struct.</p>
+
+<pre><code>struct Search { limit: i32 = 10, q: u8[..32] = "", active: bool = false }
+
+c.get("/search") {
+    let s, ok = query&lt;Search&gt;(c);     // called as a plain function
+    guard ok else { return; }           // 400 invalid_query is already written
+    c.json(s);
+};</code></pre>
+
+<pre><code>struct NewTodo { title: u8[..64] = "" }
+
+c.post("/todos") {
+    let form_value, ok = form&lt;NewTodo&gt;(c);
+    guard ok else { return; }           // 415 or 400 invalid_form is already written
+    c.redirect("/", web::HTTP_SEE_OTHER);
+};</code></pre>
+
+<p><code>body&lt;T&gt;</code> fails with these responses, already written for you:</p>
+<table>
+  <thead><tr><th>Failure</th><th>Status</th><th>Code</th></tr></thead>
+  <tbody>
+    <tr><td>Media type is not <code>application/json</code></td><td>415</td><td><code>unsupported_media_type</code></td></tr>
+    <tr><td>Empty body, or not JSON</td><td>400</td><td><code>invalid_json</code></td></tr>
+    <tr><td>Wrong field type, unknown key, out-of-range value</td><td>422</td><td><code>invalid_payload</code></td></tr>
+  </tbody>
+</table>
+<p>Use <code>body_result&lt;T&gt;</code> when a PATCH handler needs to know which fields were sent: <code>has&lt;T&gt;(result, "field")</code>.</p>
+
+<h2 id="responses">Responses</h2>
+<table>
+  <thead><tr><th>Call</th><th>Writes</th></tr></thead>
+  <tbody>
+    <tr><td><code>c.status(code)</code></td><td>sets the status; chains, for example <code>c.status(web::HTTP_CREATED).json(item)</code></td></tr>
+    <tr><td><code>c.json(value)</code></td><td>a struct or scalar as <code>application/json</code>, keeping the status already set</td></tr>
+    <tr><td><code>c.json_list(items)</code></td><td>an array or slice as a JSON array</td></tr>
+    <tr><td><code>c.text(s)</code>, <code>c.html(s)</code>, <code>c.json_raw(s)</code></td><td>a body with its content type</td></tr>
+    <tr><td><code>c.html_template(src, data)</code></td><td>a compiled template as HTML (see <a href="features.html#templates">Features</a>)</td></tr>
+    <tr><td><code>c.redirect(location, code)</code></td><td>a redirect; use <code>web::HTTP_SEE_OTHER</code> after a form post</td></tr>
+    <tr><td><code>c.no_content()</code></td><td>204 with no body</td></tr>
+    <tr><td><code>c.fail(status, code, message)</code></td><td>the error envelope <code>{"error":{"code":...,"message":...}}</code></td></tr>
+    <tr><td><code>c.set(name, value)</code></td><td>a response header; <code>c.set_cookie(name, value, opts)</code> adds <code>Set-Cookie</code></td></tr>
+  </tbody>
+</table>
+<p>Bodies are capped by <code>max_response_bytes</code> (1 MiB by default, 16 MiB at most). A larger body becomes a complete
+<code>500 response_too_large</code> rather than a truncated response. Responses are serialized into a bounded pool, so a
+response that does not fit is refused with <code>503</code>.</p>
+
+<h2 id="middleware">Middleware</h2>
+<p>Middleware wraps the routes it contains. A middleware function takes the <code>Next</code> type parameter and calls it
+where the inner work should run. Code before <code>Next()</code> runs on the way in, code after it runs on the way out, and
+not calling <code>Next()</code> stops the request:</p>
+<pre><code>fn timed&lt;Next&gt;(c: web::Ctx&amp;) {
+    c.set("X-Served-By", "goose-web");   // before: runs first
+    Next();                              // the routes and inner middleware run here
+    // after: runs last, even when a handler refused the request
+}
+
+fn app(c: web::Ctx&amp;) {
+    request_id(c) { c.logger() { timed(c) {
+        c.routes() { c.get("/") { c.text("hi"); }; };
+    }}};
+}</code></pre>
+
+<p>The built-in middleware:</p>
+<table>
+  <thead><tr><th>Call</th><th>Behavior</th></tr></thead>
+  <tbody>
+    <tr><td><code>request_id(c) { }</code></td><td>sets <code>X-Request-ID</code> from a process-wide counter</td></tr>
+    <tr><td><code>logger(c) { }</code></td><td>prints one line per response: method, path, status and bytes</td></tr>
+    <tr><td><code>cors(c, origin = "*") { }</code></td><td>sets <code>Access-Control-Allow-Origin</code> and answers preflight requests with 204</td></tr>
+    <tr><td><code>require_json(c) { }</code></td><td>415 unless the request's media type is <code>application/json</code></td></tr>
+    <tr><td><code>secure_headers(c, csp, hsts) { }</code></td><td>nosniff, DENY framing, a referrer policy, a Content-Security-Policy, and HSTS when given</td></tr>
+    <tr><td><code>rate_limit(c, limit, window_ms) { }</code></td><td>fixed window per client address; 429 with <code>Retry-After</code></td></tr>
+    <tr><td><code>session(c, config) { }</code>, <code>csrf(c, secret) { }</code></td><td>signed sessions and CSRF checks; see <a href="features.html#sessions">Features</a></td></tr>
+    <tr><td><code>c.static_files(prefix, dir) { }</code></td><td>serves files under a URL prefix; see the static-file contract in the API reference</td></tr>
+  </tbody>
+</table>
+
+<div class="note"><strong>Order matters.</strong> Put <code>request_id</code> and <code>logger</code> outside the other
+middleware so every response, including refusals, gets an ID and a log line. Wrap the <code>/docs</code> page in a
+<code>secure_headers</code> policy that allows the Swagger UI assets; the starter shows one.</div>
+
+<p><code>rate_limit</code> keys on <code>c.peer()</code>. Behind a reverse proxy every client shares the proxy's address, so
+limits do not separate users there; limits are per process, not shared between instances.</p>
+
+<h2 id="errors">Errors</h2>
+<p>Application errors share one shape, and the built-in refusals use the same one:</p>
+<pre><code>{"error":{"code":"not_found","message":"Route not found"}}</code></pre>
+<p>Unknown routes answer <code>404 not_found</code>, wrong methods <code>405</code>, and protocol violations are plain text and close
+the connection. Write your own with <code>c.fail(status, code, message)</code>; the codes you choose become part of your API, so
+document them with the route (the OpenAPI helpers do this, see <a href="features.html#openapi">Features</a>).</p>
+</main>
+<footer>Documentation for release 0.6.0. The API reference is the authority: <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#routing-dsl">routing</a>,
+<a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#middleware-and-application-errors">middleware</a>.</footer>
+</body>
+</html>

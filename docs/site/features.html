@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Features: Goose Web</title>
+<meta name="description" content="Templates, signed sessions, CSRF protection, OpenAPI generation, the SQLite layer and server-sent events in Goose Web.">
+<style>
+:root{color-scheme:light dark;--bg:#fbfaf7;--fg:#1d1f23;--muted:#596070;--accent:#1f55a8;--border:#d8d4cb;--code-bg:#f1eee7;--note-bg:#eaf2fc;--note-border:#8fb0de;--warn-bg:#fcf3df;--warn-border:#d7ab4a;--card:#ffffff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+header.site{border-bottom:1px solid var(--border);padding:12px 16px;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center}
+header.site .brand{font-weight:700;text-decoration:none;color:var(--fg);margin-right:auto}
+header.site nav{display:flex;flex-wrap:wrap;gap:6px 16px}
+header.site nav a{text-decoration:none}
+main{max-width:52rem;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:2rem;line-height:1.2;margin:.2em 0 .4em}
+h2{font-size:1.4rem;margin:2.2em 0 .5em;padding-top:.4em;border-top:1px solid var(--border)}
+h3{font-size:1.08rem;margin:1.6em 0 .4em}
+p.lead{font-size:1.12rem;color:var(--muted)}
+code{font:.92em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code-bg);padding:.08em .3em;border-radius:4px}
+pre{background:var(--code-bg);padding:14px 16px;border-radius:8px;overflow-x:auto;border:1px solid var(--border)}
+pre code{background:none;padding:0;font-size:.88rem;line-height:1.5}
+table{width:100%;border-collapse:collapse;display:block;overflow-x:auto;font-size:.94rem;margin:1em 0}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.note,.warn{border-radius:8px;padding:10px 14px;margin:1.2em 0;border:1px solid}
+.note{background:var(--note-bg);border-color:var(--note-border)}
+.warn{background:var(--warn-bg);border-color:var(--warn-border)}
+.toc{font-size:.95rem;color:var(--muted);border:1px solid var(--border);border-radius:8px;padding:10px 16px}
+.toc a{margin-right:.7em;white-space:nowrap}
+footer{max-width:52rem;margin:0 auto;padding:0 16px 32px;color:var(--muted);font-size:.9rem}
+ul,ol{padding-left:1.3em}
+li{margin:.25em 0}
+@media (max-width:480px){h1{font-size:1.7rem}}
+</style>
+</head>
+<body>
+<header class="site">
+  <a class="brand" href="index.html">Goose Web</a>
+  <nav>
+    <a href="getting-started.html">Getting started</a>
+    <a href="http.html">Requests and responses</a>
+    <a href="features.html">Features</a>
+    <a href="operations.html">Operations</a>
+    <a href="https://github.com/aurthurm/goose-web">GitHub</a>
+  </nav>
+</header>
+<main>
+<h1>Features</h1>
+<p class="lead">Templates, sessions and CSRF, OpenAPI, SQLite and server-sent events. Each one is an ordinary part of the
+application API; nothing here needs a separate server or a code generator.</p>
+
+<div class="toc">
+  <a href="#templates">Templates</a><a href="#sessions">Sessions</a><a href="#csrf">CSRF</a><a href="#openapi">OpenAPI</a><a href="#sqlite">SQLite</a><a href="#sse">Server-sent events</a>
+</div>
+
+<h2 id="templates">Templates</h2>
+<p>Templates are bytes embedded into the program at compile time. <code>embed_file("views/list.html")</code> reads the file
+relative to the source that calls it, so a missing file is a compile error. Check each template in <code>main</code>
+before the server starts, so a typo stops the program at startup rather than on a request:</p>
+<pre><code>struct Todo { id: i64, title: u8[..64], done: bool }
+struct ListPage { title: u8[..32], empty: bool, todos: Todo[..32] }
+
+fn main() {
+    let valid, problem = check_template&lt;ListPage&gt;(embed_file("views/list.html"));
+    if !valid { print(problem[..]); abort("views/list.html is not a valid template"); }
+    // ... web::run as usual
+}
+
+fn app(c: web::Ctx&amp;) {
+    c.routes() {
+        c.get("/") {
+            c.html_template(embed_file("views/list.html"), ListPage { title: "Todos", empty: true, todos: [] });
+        };
+    };
+}</code></pre>
+
+<table>
+  <thead><tr><th>Tag</th><th>Output</th></tr></thead>
+  <tbody>
+    <tr><td><code>{{name}}</code></td><td>the value, HTML-escaped</td></tr>
+    <tr><td><code>{{{name}}}</code></td><td>the value, unescaped. Only for trusted text</td></tr>
+    <tr><td><code>{{#name}}...{{/name}}</code>, <code>{{^name}}...{{/name}}</code></td><td>the body when a bool field is true or false</td></tr>
+    <tr><td><code>{{#each name}}...{{/each}}</code></td><td>the body once per element of an array field</td></tr>
+    <tr><td><code>{{! text }}</code></td><td>a comment, dropped from the output</td></tr>
+  </tbody>
+</table>
+<p>Escaping covers element content and quoted attributes. Put untrusted text in <code>{{name}}</code>, never in
+<code>{{{name}}}</code> or inside a script or style element. The templates must be valid UTF-8.</p>
+
+<h2 id="sessions">Sessions</h2>
+<p>A session is a small signed key/value store kept in a cookie. The middleware loads it before the routes run and
+writes the cookie back only when the store changed:</p>
+<pre><code>const SESSION_SECRET = "...";   // at least 32 bytes, from configuration: never commit a real key
+
+fn app(c: web::Ctx&amp;) {
+    session(c, web::SessionConfig { secret: SESSION_SECRET }) {
+        c.routes() {
+            c.post("/login") {
+                if !c.session_set("user", "alice") { c.fail(web::HTTP_CONFLICT, "session_full", "Session full"); return; }
+                c.no_content();
+            };
+            c.get("/me") { c.text(c.session_get("user")); };
+            c.post("/logout") { c.session_clear(); c.no_content(); };
+        };
+    };
+}</code></pre>
+<p>The store holds up to 16 entries, with keys up to 32 bytes and values up to 256 bytes. Cookies default to
+<code>gw_session</code>, <code>HttpOnly</code>, <code>Path=/</code>, <code>SameSite=Lax</code>, a one-day <code>Max-Age</code>, and
+an optional <code>secure</code> flag (set it under HTTPS).</p>
+
+<div class="warn"><strong>Signed is not encrypted.</strong> The payload is readable by the client, so store identifiers and
+small flags, and keep anything sensitive on the server. Signing stops forgery but not replay: a copied cookie stays valid
+until its <code>max_age</code> ends, even after <code>session_clear()</code> on another request. Rotating the secret signs everyone out.</div>
+
+<h2 id="csrf">CSRF</h2>
+<p><code>csrf(c, secret, check_origin)</code> protects unsafe methods (POST, PUT, PATCH, DELETE) with the double-submit pattern.
+Safe methods pass and receive a token cookie. Unsafe methods must echo the token in an <code>X-CSRF-Token</code> header or a
+<code>csrf_token</code> form field, or get <code>403 csrf_failed</code>:</p>
+<pre><code>c.get("/form") {
+    csrf(c, CSRF_SECRET) {
+        c.html(str("&lt;form method=post&gt;&lt;input type=hidden name=csrf_token value=\"", c.csrf_token(),
+                   "\"&gt;&lt;button&gt;Save&lt;/button&gt;&lt;/form&gt;"));
+    };
+};
+c.post("/form") { csrf(c, CSRF_SECRET, true) { c.text("saved"); }; };</code></pre>
+<p>With <code>check_origin</code> set, an <code>Origin</code> (or, without one, a <code>Referer</code>) must name the same host as the
+request's <code>Host</code>. The CSRF cookie has no <code>Secure</code> attribute in this version, so serve forms over HTTPS.
+Multipart forms are not parsed; send the token in the header from script in that case.</p>
+
+<h2 id="openapi">OpenAPI</h2>
+<p><code>web::openapi(c, info) { c.routes() { ... } }</code> serves an OpenAPI 3.1 document at <code>/openapi.json</code> and a
+Swagger UI page at <code>/docs</code>. The document is generated from the same routes block: annotations placed before a route
+describe it, and they do nothing when the server handles a normal request.</p>
+<pre><code>web::openapi(c, web::OpenApiInfo { title: "Todo API", version: "1.0.0", description: "A small todo service." }) {
+    c.routes() {
+        web::summary(c, "Create a todo");
+        web::accepts&lt;TodoInput&gt;(c);                 // requestBody, application/json
+        web::returns&lt;Todo&gt;(c, web::HTTP_CREATED);   // response schema
+        c.post("/todos") { /* ... */ };
+
+        web::summary(c, "List todos");
+        web::query_params&lt;ListParams&gt;(c);          // one optional query parameter per field
+        web::returns_list&lt;Todo&gt;(c, web::HTTP_OK);
+        c.get("/todos") { /* ... */ };
+    };
+};</code></pre>
+<p>Fields are required unless listed by a hook in the struct's namespace:</p>
+<pre><code>fn web::optional_fields(v: TodoInput&amp;) -> const u8[:] { return "completed"; }</code></pre>
+<p>Struct fields become schemas with their width-based bounds; <code>u8[..N]</code> becomes a string with <code>maxLength</code>. The
+error envelope is documented for 400, 404, 405, 415, 422 and 500 on each operation. Constraints beyond a type's width (for
+example <code>limit</code> between 1 and 8) are not expressible yet, so say them in the summary.</p>
+
+<h2 id="sqlite">SQLite</h2>
+<p>The SQLite layer is opt-in: import <code>goose_web_db</code> and link <code>libsqlite3</code>. It maps structs to tables with
+reflection, uses bound parameters for every value, and offers a small query builder, transactions and migrations.</p>
+<pre><code>struct Todo { id: i64, title: u8[..200], completed: bool }
+fn web::db_table(v: Todo&amp;) -> const u8[:] { return "todos"; }
+
+var database = default&lt;web::Db&gt;();
+guard web::db_open(database, "build/app.db") else { abort(web::db_error(database)); }
+web::create_table&lt;Todo&gt;(database);
+
+var item = Todo { id: 0, title: "Write docs", completed: false };
+let id, ok = web::insert(database, item);            // a zero key lets SQLite assign the rowid
+let row, found = web::find_row&lt;Todo&gt;(database, id);
+let open = web::count&lt;Todo&gt;(database, web::where_eq(web::query(), "completed", false));
+web::db_close(database);</code></pre>
+<ul>
+  <li>Integers and booleans are <code>INTEGER</code>, floats are <code>REAL</code>, and <code>u8[..N]</code> is <code>TEXT</code>. Reads
+    are checked: an out-of-range value is an error, never a silent truncation.</li>
+  <li><code>transaction(db) { ... }</code> commits when its block returns true and rolls back otherwise.</li>
+  <li><code>migrate(db, steps)</code> applies append-only steps, recording the version in <code>schema_version</code>.</li>
+  <li>Every call runs on the reactor thread. Keep statements short, index the columns you filter on, and do not hold a
+    <code>select</code> open across slow work.</li>
+</ul>
+<p>The <a href="https://github.com/aurthurm/goose-web/tree/main/examples/sqlite-todos">sqlite-todos example</a> is a complete
+Todo API with file persistence and restarts.</p>
+
+<h2 id="sse">Server-sent events</h2>
+<p>A route starts an event stream with <code>c.sse(channel)</code>. Any code on the reactor (a tick, an event handler, another route)
+can publish to that channel, and every subscribed stream receives the event:</p>
+<pre><code>var control = default&lt;web::ServerControl&gt;();
+
+fn tick() {
+    // One event to every stream on channel 1; the result counts the streams it was accepted for.
+    web::sse_publish(control, 1, "time", "12:00:00");
+}
+
+fn app(c: web::Ctx&amp;) {
+    c.routes() {
+        c.get("/events") { c.sse(1); };
+    };
+}
+
+fn main() {
+    var config = web::server_config();
+    config.handle_signals = true;
+    let started = web::run_with(config, control, app, tick, web::ignore_lifecycle);
+    if !started { abort("server failed"); }
+}</code></pre>
+<ul>
+  <li>Streams send a heartbeat comment every 15 seconds by default, and a stream that falls behind by more than 256 KiB is closed
+    while the others carry on.</li>
+  <li>Streams use HTTP/1.1 <code>GET</code> only, and do not count toward <code>max_requests</code>. At most 32 are open by default.</li>
+  <li>At shutdown each stream receives an <code>event: close</code> and a clean end of body.</li>
+</ul>
+<p>The <a href="https://github.com/aurthurm/goose-web/tree/main/examples/sse-clock">sse-clock example</a> adds a browser page
+that uses <code>EventSource</code>.</p>
+</main>
+<footer>Documentation for release 0.6.0. Details: <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md">API reference</a>.</footer>
+</body>
+</html>

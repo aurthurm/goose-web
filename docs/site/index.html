@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Goose Web: HTTP framework for Goose</title>
+<meta name="description" content="Goose Web is an HTTP framework for the Goose programming language: typed routes, reflective JSON, templates, sessions, CSRF, OpenAPI, SQLite and server-sent events.">
+<style>
+:root{color-scheme:light dark;--bg:#fbfaf7;--fg:#1d1f23;--muted:#596070;--accent:#1f55a8;--border:#d8d4cb;--code-bg:#f1eee7;--note-bg:#eaf2fc;--note-border:#8fb0de;--warn-bg:#fcf3df;--warn-border:#d7ab4a;--card:#ffffff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}}
+:root[data-theme="dark"]{color-scheme:dark;--bg:#14161a;--fg:#e6e8ec;--muted:#9ba3b0;--accent:#8fb6ff;--border:#2d323b;--code-bg:#1c2026;--note-bg:#162236;--note-border:#355b93;--warn-bg:#362b12;--warn-border:#8c6a22;--card:#1a1d23}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--accent)}
+header.site{border-bottom:1px solid var(--border);padding:12px 16px;display:flex;flex-wrap:wrap;gap:8px 20px;align-items:center}
+header.site .brand{font-weight:700;text-decoration:none;color:var(--fg);margin-right:auto}
+header.site nav{display:flex;flex-wrap:wrap;gap:6px 16px}
+header.site nav a{text-decoration:none}
+main{max-width:52rem;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:2rem;line-height:1.2;margin:.2em 0 .4em}
+h2{font-size:1.4rem;margin:2.2em 0 .5em;padding-top:.4em;border-top:1px solid var(--border)}
+h3{font-size:1.08rem;margin:1.6em 0 .4em}
+p.lead{font-size:1.12rem;color:var(--muted)}
+code{font:.92em ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;background:var(--code-bg);padding:.08em .3em;border-radius:4px}
+pre{background:var(--code-bg);padding:14px 16px;border-radius:8px;overflow-x:auto;border:1px solid var(--border)}
+pre code{background:none;padding:0;font-size:.88rem;line-height:1.5}
+table{width:100%;border-collapse:collapse;display:block;overflow-x:auto;font-size:.94rem;margin:1em 0}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
+th{color:var(--muted);font-weight:600}
+.note,.warn{border-radius:8px;padding:10px 14px;margin:1.2em 0;border:1px solid}
+.note{background:var(--note-bg);border-color:var(--note-border)}
+.warn{background:var(--warn-bg);border-color:var(--warn-border)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:1.4em 0}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.card a{font-weight:600;text-decoration:none}
+.card p{margin:.3em 0 0;color:var(--muted);font-size:.95rem}
+footer{max-width:52rem;margin:0 auto;padding:0 16px 32px;color:var(--muted);font-size:.9rem}
+ul,ol{padding-left:1.3em}
+li{margin:.25em 0}
+@media (max-width:480px){h1{font-size:1.7rem}}
+</style>
+</head>
+<body>
+<header class="site">
+  <a class="brand" href="index.html">Goose Web</a>
+  <nav>
+    <a href="getting-started.html">Getting started</a>
+    <a href="http.html">Requests and responses</a>
+    <a href="features.html">Features</a>
+    <a href="operations.html">Operations</a>
+    <a href="https://github.com/aurthurm/goose-web">GitHub</a>
+  </nav>
+</header>
+<main>
+<h1>Goose Web</h1>
+<p class="lead">An HTTP framework for the Goose programming language. Typed routes, reflective JSON,
+templates compiled into your program, signed sessions, CSRF protection, OpenAPI generation, a SQLite
+layer and server-sent events, on a nonblocking readiness loop.</p>
+
+<div class="warn"><strong>Experimental.</strong> Linux is tested and macOS is not yet verified. The transport is
+POSIX-only, and TLS and streamed request bodies are not implemented. The
+<a href="https://github.com/aurthurm/goose-web/blob/main/ROADMAP.md">roadmap</a> lists what is planned.</div>
+
+<h2>A complete program</h2>
+<p>This is the whole server: one health route, request IDs and access logs, and port selection from the
+command line.</p>
+<pre><code>import goose_web from "aurthurm/goose-web@v0.6.0";
+import std;
+import os;
+
+struct Health { status: u8[..8] }
+
+fn app(c: web::Ctx&) {
+    request_id(c) { c.logger() {
+        c.routes() {
+            c.get("/health") { c.json(Health { status: "ok" }); };
+        };
+    }};
+}
+
+fn main() {
+    let config, ok, error = web::config_from_args(args());
+    if !ok { abort(error); }
+    let started = web::run(config) { c => app(c) };
+    if !started { abort("server failed"); }
+}</code></pre>
+<p>Build and run it with <code>goose run server.goose -- 8080</code>, or <code>goose build server.goose</code>.
+The <a href="getting-started.html">getting started guide</a> covers the package declaration, the starter project
+and the local-checkout form to use until a release tag exists.</p>
+
+<h2>What is included</h2>
+<ul>
+  <li><strong>Routing:</strong> method helpers, <code>:param</code> and <code>*wildcard</code> segments, groups, host scopes,
+    typed path parameters, automatic 404 and 405 with <code>Allow</code>.</li>
+  <li><strong>Data:</strong> strict JSON bodies and responses, typed query strings and forms, cookies.</li>
+  <li><strong>Middleware:</strong> request IDs, logging, CORS, JSON checks, security headers, per-client rate limits,
+    and your own middleware in the same shape.</li>
+  <li><strong>Security:</strong> HMAC-signed cookie sessions and double-submit CSRF tokens, using native SHA-256,
+    HMAC and a CSPRNG.</li>
+  <li><strong>Documentation:</strong> an OpenAPI 3.1 document generated from the routes, with a Swagger UI page.</li>
+  <li><strong>Templates:</strong> HTML templates embedded at compile time, escaped by default, checked before the server starts.</li>
+  <li><strong>Data layer:</strong> an opt-in SQLite package with reflective CRUD, a query builder, transactions and migrations.</li>
+  <li><strong>Real time:</strong> server-sent events with per-channel fan-out, heartbeats and bounded queues.</li>
+  <li><strong>Operations:</strong> bounded memory and connections, read and write deadlines, graceful shutdown on SIGINT and SIGTERM.</li>
+</ul>
+
+<h2>Read next</h2>
+<div class="cards">
+  <div class="card"><a href="getting-started.html">Getting started</a><p>Install, declare the package, build the starter.</p></div>
+  <div class="card"><a href="http.html">Requests and responses</a><p>Routing, request data, responses, middleware.</p></div>
+  <div class="card"><a href="features.html">Features</a><p>Templates, sessions and CSRF, OpenAPI, SQLite, server-sent events.</p></div>
+  <div class="card"><a href="operations.html">Operations</a><p>Configuration, deployment, performance notes.</p></div>
+</div>
+<p>Reference material lives beside the code: the <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md">API
+contracts</a> list every call and limit, the <a href="https://github.com/aurthurm/goose-web/blob/main/docs/architecture.md">architecture</a>
+explains ownership, and the <a href="https://github.com/aurthurm/goose-web/blob/main/CHANGELOG.md">changelog</a> tracks releases.</p>
+</main>
+<footer>Goose Web is open source under the Apache License; see the <a href="https://github.com/aurthurm/goose-web/blob/main/LICENSE">license</a>.
+Documentation for release 0.6.0.</footer>
+</body>
+</html>

@@ -1,6 +1,8 @@
 import .limits;
 namespace web;
 
+// Release version; must match the VERSION file at the repository root (checked by tests/run.py).
+const VERSION = "0.6.0";
 const DEFAULT_PORT = 8080;
 const MIN_PORT = 1;
 const MAX_PORT = 65535;
