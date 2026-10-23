@@ -16,6 +16,8 @@ All modules declare `namespace web` because Goose imports files without creating
 | `src/http/errors.goose` | Bounded escaped JSON error responses | HTTP response |
 | `src/routing/router.goose` | Descriptors, path matching, query decoding | Goose stdlib |
 | `src/middleware/pipeline.goose` | Before/handler/after composition | HTTP types |
+| `src/json/codec.goose` | Reflective struct to JSON encode and strict decode over `fields<T>` | Goose stdlib `json`, HTTP errors |
+| `src/app/` | Application API: `Ctx`, `c.routes`/`c.group`, built-in middleware, JSON responses and bodies, `run` | HTTP, routing, JSON codec, runtime server |
 | `src/events/bus.goose` | Typed subscriptions and queued dispatch | Goose stdlib |
 | `src/runtime/server.goose` | Connections, deadlines, shutdown, lifecycle, counters | HTTP parsing/framing, native transport |
 | `native/posix/transport.c` | Nonblocking socket calls, readiness, optional signals | POSIX |
@@ -58,9 +60,12 @@ cannot continually enqueue work and starve the reactor. Cross-thread delivery is
 - Keep `tests/run.py` as the single complete verification command; register new unit programs there.
 - Keep generated binaries/cache under ignored `build/`; keep examples out of `src/`.
 
-The basic example is a Todo API: `server.goose` wires middleware, events and lifecycle;
-`todos/store.goose` owns records and atomic persistence, `todos/input.goose` validates
-payloads and query values, and `todos/api.goose` handles routes and transactional state swaps.
-Its OpenAPI contract and curl walkthrough live beside the example. File writes are
+The basic example is a Todo API built on the application API. `server.goose` declares the
+middleware chain (`request_id`, `logger`, a request event), the event bus and lifecycle, and
+calls `web::run_with`. `todos/api.goose` declares the routes under `c.group("/todos")` and
+commits each mutation transactionally; `todos/store.goose` owns the records, their invariants
+and atomic persistence through the JSON codec; `todos/query.goose` parses the strict list query.
+`examples/hello/server.goose` is the smallest app and is smoke-tested by `tests/integration/hello.py`.
+The Todo OpenAPI contract and curl walkthrough live beside the example. File writes are
 synchronous and bounded by the small store; callbacks still run on the reactor thread.
 The old routing/middleware feature demonstration is retained in `tests/fixtures/features.goose`.

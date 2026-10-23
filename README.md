@@ -4,6 +4,51 @@ An experimental HTTP framework for the [Goose programming language](https://gith
 with nonblocking network I/O, typed queued events, routing, and composable middleware.
 It uses a readiness loop rather than language-level async/await.
 
+## Hello world
+
+```goose
+import goose_web from "path/to/goose-web";
+import std;
+
+struct Health { status: u8[..8] }
+struct Note { text: u8[..64], pinned: bool = false }
+
+fn app(c: web::Ctx&) {
+    request_id(c) { c.logger() {
+        c.routes() {
+            c.get("/health") { c.json(Health { status: "ok" }); };
+            c.post("/notes") {
+                let note, ok = body<Note>(c);
+                guard ok else { return; }
+                c.status(web::HTTP_CREATED).json(note);
+            };
+        };
+    }};
+}
+
+fn main() {
+    var config = web::server_config();
+    config.port = 8080;
+    let started = web::run(config) { c => app(c) };
+    if !started { abort("server failed"); }
+}
+```
+
+`examples/hello/server.goose` is this program with a path-parameter route added.
+
+## Features
+
+- Typed routing DSL: `c.get`/`post`/`put`/`patch`/`delete`, `:param` segments, `c.group` prefixes, automatic 404 and 405 with `Allow`.
+- Reflective JSON in and out: `body<T>(c)` decodes strict structs (415, 400, 422 written for you); `c.json(value)` encodes any struct.
+- Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
+- Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
+- Bounded memory: fixed capacities for requests, headers, routes, responses, queues and clients.
+- Typed event bus: subscriptions, one-shot listeners, FIFO queue with visible backpressure.
+- Graceful shutdown: SIGINT and SIGTERM stop accepting, drain within a grace period, and report lifecycle stages.
+- Strict HTTP/1.1 request profile: bounded framing, validated targets and Host, explicit 400/413/417/501 rules.
+- Validated runtime configuration: ports, limits, timeouts and request caps are checked before a socket opens.
+- Tested end to end: unit contracts, native socket tests, real loopback integration tests and parser fuzz/property checks.
+
 ## Run locally
 
 Requires upstream Goose (tested with runtime `4d3da949e563`), a C compiler, and Linux
@@ -41,25 +86,28 @@ event queue returns 503 before a mutation can change data. The local contract is
 goose_web.goose           Public package entry
 goose_web.build           Native build definition
 src/
-  constants/             Public HTTP names, fixed limits, runtime defaults
-  http/                  Request parsing, response framing, headers, JSON errors
-  routing/               Route matching, path parameters, query decoding
-  middleware/            Compile-time request pipeline
-  events/                Typed bounded event bus
-  runtime/               Readiness loop, configuration, lifecycle, metrics
-native/posix/            Socket and signal shim
-examples/basic/          Todo API, OpenAPI contract, and application modules
+  constants/              Public HTTP names, fixed limits, runtime defaults
+  http/                   Request parsing, response framing, headers, JSON errors
+  json/                   Reflective struct codec over fields<T>
+  routing/                Route matching, path parameters, query decoding
+  middleware/             Compile-time request pipeline
+  app/                    Application API: Ctx, c.routes/c.group, middleware, responses, run
+  events/                 Typed bounded event bus
+  runtime/                Readiness loop, configuration, lifecycle, metrics
+native/posix/             Socket and signal shim
+examples/hello/           Smallest app: health, path parameter, typed POST
+examples/basic/           Todo API, OpenAPI contract, and application modules
 tests/
-  unit/                  Goose contract tests
-  native/                C socket tests
-  fixtures/              Server programs used by integration tests
-  integration/           Real HTTP and runtime checks
-  fuzz/                  Reproducible parser fuzz/property corpus
-  run.py                 Complete test entry point
-docs/                    Architecture and API contracts
-scripts/                 Pinned compiler bootstrap
-.github/workflows/       Linux CI with GCC and Clang
-build/                   Ignored binaries and compiler cache
+  unit/                   Goose contract tests
+  native/                 C socket tests
+  fixtures/               Server programs used by integration tests
+  integration/            Real HTTP and runtime checks
+  fuzz/                   Reproducible parser fuzz/property corpus
+  run.py                  Complete test entry point
+docs/                     Architecture and API contracts
+scripts/                  Pinned compiler bootstrap
+.github/workflows/        Linux CI with GCC and Clang
+build/                    Ignored binaries and compiler cache
 ```
 
 Applications use `import goose_web from "../..";` from `examples/basic/`, or a

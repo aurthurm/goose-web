@@ -58,8 +58,8 @@ check the status before using the value. No Unicode normalization is applied.
 
 `valid_utf8(text)` checks that bytes form valid UTF-8, rejecting truncated, overlong,
 surrogate, and out-of-range encodings. It does not reject control characters;
-the consuming format or application applies that policy. The Todo example checks
-JSON request encoding before passing it to the standard-library JSON parser.
+the consuming format or application applies that policy. The JSON codec checks UTF-8
+before it parses a request body.
 
 `pipeline(request, response, before, handler, after)` calls before first. Its boolean
 result controls whether handler runs. After always runs when callbacks return normally,

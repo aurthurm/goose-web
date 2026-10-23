@@ -17,6 +17,20 @@
 - [x] Package example with multiple event handlers and domain payloads.
 - [x] Responsibility-based source folders and separate unit/native/integration test layers.
 
+## Milestone 2.5: application API
+
+- [x] Application DSL: `c.routes()` with route blocks, `c.group` prefixes, path parameters, automatic 404 and 405 with `Allow`.
+- [x] Reflective JSON codec: `json_encode` and strict `json_decode<T>` over `fields<T>`, with PATCH presence through `has<T>`.
+- [x] Typed request bodies (`body<T>`, `body_result<T>`) and JSON responses (`c.json`, `c.json_list`) with 415, 400 and 422 handled.
+- [x] Built-in middleware (`request_id`, `logger`, `cors`, `require_json`) and user middleware as `fn name<Next>(c)`.
+- [x] Todo example rewritten onto the application API; `examples/hello` smoke test; unit contracts for routes, bodies and store.
+- Next: keep-alive connections.
+- Next: chunked and streaming bodies for responses larger than 8 KiB.
+- Next: static file serving.
+- Next: cookies.
+- Next: automatic OpenAPI generation from structs.
+- Next: typed configuration from environment variables.
+
 ## Milestone 3: protocol and platform coverage
 
 - [x] Strict request profile, malformed-input/prefix regressions, and deterministic parser fuzz/property checks.

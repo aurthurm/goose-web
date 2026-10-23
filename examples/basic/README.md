@@ -86,6 +86,15 @@ changing the Todo store. Domain events are enqueued only for successful mutation
 
 The earlier `/echo`, `/greet`, and `/users` routes are not part of this API.
 
+## Code
+
+- `server.goose` declares the middleware chain (`request_id`, `logger`, a request event),
+  the event bus, lifecycle callbacks, and `web::run_with`.
+- `todos/api.goose` declares the routes under `c.group("/todos")` and holds the handlers.
+  Mutations gate on event capacity, persist a candidate store, then swap it in.
+- `todos/store.goose` owns records, invariants (title rules, IDs, capacity) and the JSON file.
+- `todos/query.goose` parses the list query strictly; request bodies go through `body<T>`.
+
 ## Verify
 
 The repository runner builds the example and includes its real HTTP tests:
