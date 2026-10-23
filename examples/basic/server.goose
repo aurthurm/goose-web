@@ -1,59 +1,57 @@
 import goose_web from "../..";
 import todo_app from "./todos";
 import std;
-import os;
 
+// Domain and request events share one bounded bus. Topics are plain constants.
 const REQUEST_HANDLED = 1;
 const SERVER_LIFECYCLE = 2;
 const TODO_CHANGED = 3;
+// A mutation reserves one slot for its domain event and one for the request event.
 const MUTATION_EVENT_SLOTS = 2;
 struct AppEvent { status: i32, request_id: i64, stage: i32, action: i32, todo_id: i64 }
+struct Health { status: u8[..8] }
+
 var events = web::event_bus<AppEvent>();
 var control = default<web::ServerControl>();
-var request_listener: i64 = web::INVALID_SUBSCRIPTION;
-var counter_listener: i64 = web::INVALID_SUBSCRIPTION;
 var first_listener: i64 = web::INVALID_SUBSCRIPTION;
+var requests_listener: i64 = web::INVALID_SUBSCRIPTION;
 var lifecycle_listener: i64 = web::INVALID_SUBSCRIPTION;
 var todo_listener: i64 = web::INVALID_SUBSCRIPTION;
-var request_id: i64 = 0;
 var observed_requests: i64 = 0;
 
-fn before_request(request: web::Request, response: web::Response&) -> bool {
-    request_id += 1;
-    assert(web::set_header(response, web::HEADER_REQUEST_ID, str(request_id)));
-    return true;
-}
-
 fn can_mutate() -> bool {
-    // Reserve one domain event and the request event before any file/state write.
-    // The reactor cannot interleave another callback while a handler is running.
+    // The reactor cannot interleave another callback while a handler runs, so
+    // capacity checked here is still available when the mutation publishes.
     return events.count <= web::MAX_QUEUED_EVENTS - MUTATION_EVENT_SLOTS;
 }
 
-fn on_mutation(action: i32, id: i64) {
+fn on_mutation(request_id: i64, action: i32, id: i64) {
     assert(web::dispatch(events, TODO_CHANGED,
         AppEvent { status: 0, request_id: request_id, stage: 0, action: action, todo_id: id }));
 }
 
-fn route_request(request: web::Request, response: web::Response&) {
-    todo::handle(request, response, can_mutate, on_mutation);
-}
-
-fn after_request(request: web::Request, response: web::Response&) {
+// Publishes one event per completed response. A full queue turns the response into 503,
+// which is why mutations reserve capacity before they change any state.
+fn publish_request<Next>(c: web::Ctx&) {
+    Next();
     if !web::dispatch(events, REQUEST_HANDLED,
-        AppEvent { status: response.status, request_id: request_id, stage: 0, action: 0, todo_id: 0 }) {
-        web::application_error(response, web::HTTP_SERVICE_UNAVAILABLE, "event_queue_full", "Required event queue is full");
+        AppEvent { status: c.response.status, request_id: c.request_id, stage: 0, action: 0, todo_id: 0 }) {
+        c.fail(web::HTTP_SERVICE_UNAVAILABLE, "event_queue_full", "Required event queue is full");
     }
 }
 
-fn handle(request: web::Request, response: web::Response&) {
-    web::pipeline(request, response, before_request, route_request, after_request);
+fn app(c: web::Ctx&) {
+    request_id(c) { c.logger() { publish_request(c) {
+        c.routes() {
+            c.get("/health") { c.json(Health { status: "ok" }); };
+            todo::mount(c, can_mutate, on_mutation);
+        };
+    }}};
 }
 
 fn tick() {
     web::drain(events) { subscription, event =>
-        if subscription == request_listener { print("request ", event.args.request_id, " status=", event.args.status); }
-        if subscription == counter_listener { observed_requests += 1; }
+        if subscription == requests_listener { observed_requests += 1; }
         if subscription == first_listener { print("first request handled"); }
         if subscription == lifecycle_listener { print("server lifecycle stage=", event.args.stage); }
         if subscription == todo_listener { print("todo action=", event.args.action, " id=", event.args.todo_id); }
@@ -66,7 +64,7 @@ fn lifecycle(stage: i32, stats: web::ServerStats) {
         print("lifecycle event queue full");
     }
     if stage == web::SERVER_STOPPED {
-        print("completed=", stats.completed, " rejected=", stats.rejected, " timeouts=", stats.timeouts);
+        print("observed=", observed_requests, " completed=", stats.completed, " rejected=", stats.rejected, " timeouts=", stats.timeouts);
     }
 }
 
@@ -88,13 +86,12 @@ fn main() {
     if !todo::setup(if path == todo::MEMORY_OPTION { "" } else { path }) {
         abort("cannot initialize todo store: invalid file, inaccessible data, or path too long");
     }
-    request_listener = web::subscribe(events, REQUEST_HANDLED);
-    counter_listener = web::subscribe(events, REQUEST_HANDLED);
+    requests_listener = web::subscribe(events, REQUEST_HANDLED);
     first_listener = web::subscribe(events, REQUEST_HANDLED, true);
     lifecycle_listener = web::subscribe(events, SERVER_LIFECYCLE);
     todo_listener = web::subscribe(events, TODO_CHANGED);
     config.handle_signals = true;
     print("Goose Todo API listening on http://127.0.0.1:", config.port);
-    if !web::serve_config(config, control, handle, tick, lifecycle) { abort("server transport failed"); }
+    if !web::run_with(config, control, app, tick, lifecycle) { abort("server transport failed"); }
     tick();
 }

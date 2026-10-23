@@ -18,7 +18,7 @@ fn main() {
     let first, created = todo::create(state, "Buy \"milk\" \\ bread", false);
     assert(created == 201 && first.id == 1 && todo::count(state, 0) == 1);
     var wire: u8[>..] = [];
-    todo::encode_item(wire, first);
+    web::json_encode(wire, first);
     assert(find(wire, "\\\"milk\\\"") >= 0 && find(wire, "\\\\ bread") >= 0);
     let changed, updated = todo::update(state, first.id, "Done", true);
     assert(updated == 200 && changed.completed && todo::count(state, 1) == 1);
@@ -70,7 +70,7 @@ fn main() {
     format(oversized_document, "{\"version\":1,\"next_id\":130,\"todos\":[");
     for i in 129 {
         if i > 0 { oversized_document.push(','); }
-        todo::encode_item(oversized_document, todo::Todo { id: i + 1, title: "Task", completed: false });
+        web::json_encode(oversized_document, todo::Todo { id: i + 1, title: "Task", completed: false });
     }
     oversized_document.append("]}");
     bad(oversized_document);

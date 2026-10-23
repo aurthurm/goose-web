@@ -1,4 +1,4 @@
-import goose_web from "../../..";
+import goose_web;
 import .store;
-import .input;
+import .query;
 import .api;

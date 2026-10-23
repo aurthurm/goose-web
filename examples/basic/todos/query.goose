@@ -1,88 +1,34 @@
+import goose_web;
 import .store;
-import json;
 import std;
 namespace todo;
 
-const INPUT_CREATE = 1;
-const INPUT_REPLACE = 2;
-const INPUT_PATCH = 3;
+// The list query is not JSON, so it keeps its own strict parser. The codec handles bodies.
 const DEFAULT_PAGE_SIZE = 8;
 const MAX_PAGE_SIZE = 8;
 const FILTER_ALL = -1;
 const FILTER_INCOMPLETE = 0;
 const FILTER_COMPLETED = 1;
-const MAX_INPUT_INTEGER = 9223372036854775807;
+const MAX_QUERY_INTEGER = 9223372036854775807;
 
-struct TodoInput {
-    title: u8[..MAX_TITLE_BYTES], completed: bool,
-    has_title: bool, has_completed: bool, status: i32
-}
 struct ListOptions { status: i32, limit: i64, offset: i64, completed: i32 }
 
-// Parse the whole document first. DOM keys are decoded, so escaped equivalents
-// participate in duplicate detection just like ordinary keys. The returned
-// value owns every byte needed after the document buffers go out of scope.
-fn read_input(body: const u8[:], mode: i32) -> TodoInput {
-    var result = default<TodoInput>();
-    result.status = web::HTTP_BAD_REQUEST;
-    if !web::valid_utf8(body) { return result; }
-    var nodes: json::Node[>..] = [];
-    var decoded: u8[>..] = [];
-    let root, error = json::parse(body, nodes, decoded);
-    if !root { return result; }
-    // The JSON library preserves lone surrogate escapes as invalid UTF-8.
-    // Validate every decoded key/string before applying the Todo schema.
-    for &node in nodes {
-        if !web::valid_utf8(node.key) { return result; }
-        match node.val {
-            Str text => { if !web::valid_utf8(text.s) { return result; } },
-            _ => {}
-        }
-    }
-    result.status = web::HTTP_UNPROCESSABLE_CONTENT;
-    match root.val { Obj => {}, _ => { return result; } }
-    if mode != INPUT_CREATE && mode != INPUT_REPLACE && mode != INPUT_PATCH { return result; }
-    var child = root.first;
-    while child {
-        if child.key == "title" {
-            if result.has_title { return result; }
-            let title, valid_type = json::as_string(child);
-            if !valid_type || !title_valid(title) { return result; }
-            result.title = title;
-            result.has_title = true;
-        } else if child.key == "completed" {
-            if result.has_completed { return result; }
-            let completed, valid_type = json::as_bool(child);
-            if !valid_type { return result; }
-            result.completed = completed;
-            result.has_completed = true;
-        } else { return result; }
-        child .= child.next;
-    }
-    if mode == INPUT_CREATE && !result.has_title { return result; }
-    if mode == INPUT_REPLACE && (!result.has_title || !result.has_completed) { return result; }
-    if mode == INPUT_PATCH && !result.has_title && !result.has_completed { return result; }
-    result.status = web::HTTP_OK;
-    return result;
+fn passes_filter(item: Todo, filter: i32) -> bool {
+    return filter == FILTER_ALL || (filter == FILTER_COMPLETED && item.completed) || (filter == FILTER_INCOMPLETE && !item.completed);
 }
 
 // Decimal arithmetic is bounded before multiplying, including the last digit
-// of the largest signed 64-bit integer. Query numbers may have leading zeros.
+// of the largest signed 64-bit integer.
 fn parse_nonnegative(text: const u8[:]) -> i64, bool {
     if text.len == 0 { return 0, false; }
     var value: i64 = 0;
     for c in text {
         if c < '0' || c > '9' { return 0, false; }
         let digit: i64 = c - '0';
-        if value > (MAX_INPUT_INTEGER - digit) / 10 { return 0, false; }
+        if value > (MAX_QUERY_INTEGER - digit) / 10 { return 0, false; }
         value = value * 10 + digit;
     }
     return value, true;
-}
-fn parse_id(text: const u8[:]) -> i64, bool {
-    if text.len == 0 || text[0] == '0' { return 0, false; }
-    let value, valid = parse_nonnegative(text);
-    return value, valid && value > 0;
 }
 
 // Decode each pair once and retain explicit presence flags. Percent-encoded

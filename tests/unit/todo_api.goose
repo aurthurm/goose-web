@@ -2,22 +2,26 @@ import goose_web from "../..";
 import todo_app from "../../examples/basic/todos";
 import std;
 
+// Drives the Todo routes through the same c.routes() dispatch the server uses. The gates
+// are test doubles for the server's event-capacity check and mutation hook.
 var allow_mutations = false;
 var mutations: i64 = 0;
 var last_action: i32 = 0;
 var last_id: i64 = 0;
 fn permitted() -> bool { return allow_mutations; }
-fn changed(action: i32, id: i64) { mutations += 1; last_action = action; last_id = id; }
-fn request(method: const u8[:], target: const u8[:], body: const u8[:] = "") -> web::Request {
-    return web::Request { method: method, target: target, body: body,
-        raw_headers: "Content-Type: application/json\r\n" };
+fn changed(request_id: i64, action: i32, id: i64) { mutations += 1; last_action = action; last_id = id; }
+
+fn app(c: web::Ctx&) {
+    c.routes() { todo::mount(c, permitted, changed); };
 }
 fn invoke(method: const u8[:], target: const u8[:], body: const u8[:] = "") -> web::Response {
-    var result = web::response();
-    todo::handle(request(method, target, body), result, permitted, changed);
-    return result;
+    var c = web::new_ctx(web::Request { method: method, target: target, body: body,
+        raw_headers: "Content-Type: application/json\r\n" });
+    app(c);
+    return c.response;
 }
-fn main() {
+
+fn test_gating_and_events() {
     assert(todo::setup(""));
     let blocked_create = invoke(web::METHOD_POST, "/todos", "{\"title\":\"First\"}");
     assert(blocked_create.status == web::HTTP_SERVICE_UNAVAILABLE);
@@ -38,16 +42,69 @@ fn main() {
     allow_mutations = true;
     let patched = invoke(web::METHOD_PATCH, "/todos/1", "{\"completed\":true}");
     assert(patched.status == web::HTTP_OK && mutations == 2 && last_action == todo::ACTION_UPDATED);
-    let invalid_put = invoke(web::METHOD_PUT, "/todos/1", "{\"title\":\"Missing completed\"}");
-    assert(invalid_put.status == web::HTTP_UNPROCESSABLE_CONTENT && mutations == 2);
-    let invalid_id = invoke(web::METHOD_GET, "/todos/01");
-    assert(invalid_id.status == web::HTTP_UNPROCESSABLE_CONTENT);
-    let absent = invoke(web::METHOD_DELETE, "/todos/2");
-    assert(absent.status == web::HTTP_NOT_FOUND && mutations == 2);
-    let far_page = invoke(web::METHOD_GET, "/todos?offset=9223372036854775807");
-    assert(far_page.status == web::HTTP_OK && ::find(far_page.body, "\"items\":[]") >= 0);
     let deleted = invoke(web::METHOD_DELETE, "/todos/1");
     assert(deleted.status == web::HTTP_NO_CONTENT && deleted.body.len == 0 && mutations == 3);
     assert(last_action == todo::ACTION_DELETED && todo::count(todo::database) == 0);
-    print("Todo API unit tests passed: mutation backpressure, events, routing, schema errors, offset overflow safety");
+}
+
+// Each body is checked against the route it would reach, so one table covers POST, PUT and PATCH.
+fn test_body_schema() {
+    assert(todo::setup(""));
+    allow_mutations = true;
+    let seeded = invoke(web::METHOD_POST, "/todos", "{\"title\":\"seed\"}");
+    assert(seeded.status == web::HTTP_CREATED);
+    let before = mutations;
+    for body in ["", "{", "{\"title\":\"a\",}", "{\"title\":\"\\x\"}", "{\"title\":\"unterminated}", "{\"title\":\"a\"} false",
+                 "{\"title\":\"raw\nnewline\"}", "{\"title\":NaN}", "{\"title\":\"a\xff\"}", "{\"\xff\":true}"] {
+        assert(invoke(web::METHOD_POST, "/todos", body).status == web::HTTP_BAD_REQUEST);
+        assert(invoke(web::METHOD_PUT, "/todos/1", body).status == web::HTTP_BAD_REQUEST);
+    }
+    for body in ["null", "[]", "false", "42", "\"title\"", "{}", "{\"completed\":true}", "{\"title\":null}",
+                 "{\"title\":123}", "{\"title\":\"\"}", "{\"title\":\"   \"}", "{\"title\":\"\\u00a0\\u2003\"}",
+                 "{\"title\":\"a\",\"completed\":0}", "{\"title\":\"a\",\"completed\":\"false\"}",
+                 "{\"title\":\"a\",\"unknown\":1}", "{\"Title\":\"a\"}", "{\"title\":\"a\",\"title\":\"b\"}",
+                 "{\"title\":\"a\",\"ti\\u0074le\":\"b\"}", "{\"title\":\"a\\n\"}", "{\"title\":\"a\\u0000\"}",
+                 "{\"title\":\"a\\u007f\"}", "{\"title\":\"a\\ud800\"}", "{\"title\":\"a\\ud800\",\"completed\":true}"] {
+        assert(invoke(web::METHOD_POST, "/todos", body).status == web::HTTP_UNPROCESSABLE_CONTENT);
+    }
+    assert(invoke(web::METHOD_PUT, "/todos/1", "{\"title\":\"a\"}").status == web::HTTP_UNPROCESSABLE_CONTENT);
+    assert(invoke(web::METHOD_PUT, "/todos/1", "{\"completed\":true}").status == web::HTTP_UNPROCESSABLE_CONTENT);
+    assert(invoke(web::METHOD_PATCH, "/todos/1", "{}").status == web::HTTP_UNPROCESSABLE_CONTENT);
+    assert(invoke(web::METHOD_PATCH, "/todos/1", "{\"title\":\"\"}").status == web::HTTP_UNPROCESSABLE_CONTENT);
+    assert(invoke(web::METHOD_PATCH, "/todos/1", "{\"completed\":1}").status == web::HTTP_UNPROCESSABLE_CONTENT);
+    assert(mutations == before && todo::count(todo::database) == 1);
+    var title: u8[todo::MAX_TITLE_BYTES + 1] = ['x'; todo::MAX_TITLE_BYTES + 1];
+    var body: u8[>..] = [];
+    format(body, "{\"title\":\"", title[..todo::MAX_TITLE_BYTES], "\"}");
+    assert(invoke(web::METHOD_POST, "/todos", body[..]).status == web::HTTP_CREATED);
+    body.clear();
+    format(body, "{\"title\":\"", title, "\"}");
+    assert(invoke(web::METHOD_POST, "/todos", body[..]).status == web::HTTP_UNPROCESSABLE_CONTENT);
+    // The decoded title is copied into the store, so later changes to the request text cannot alter it.
+    var borrowed: u8[..128] = "{\"title\":\"owned\\u0020title\"}";
+    let owned = invoke(web::METHOD_POST, "/todos", borrowed[..]);
+    borrowed = "destroyed";
+    assert(owned.status == web::HTTP_CREATED && ::find(owned.body, "\"title\":\"owned title\"") >= 0);
+}
+
+fn test_routing_and_ids() {
+    assert(todo::setup(""));
+    for target in ["/todos/0", "/todos/00", "/todos/01", "/todos/+1", "/todos/-1", "/todos/1x", "/todos/9223372036854775808"] {
+        assert(invoke(web::METHOD_GET, target).status == web::HTTP_UNPROCESSABLE_CONTENT);
+    }
+    assert(invoke(web::METHOD_GET, "/todos/999").status == web::HTTP_NOT_FOUND);
+    assert(invoke(web::METHOD_GET, "/missing").status == web::HTTP_NOT_FOUND);
+    let wrong = invoke(web::METHOD_OPTIONS, "/todos");
+    assert(wrong.status == web::HTTP_METHOD_NOT_ALLOWED && ::find(wrong.headers[0].value, "POST") >= 0);
+    let far_page = invoke(web::METHOD_GET, "/todos?offset=9223372036854775807");
+    assert(far_page.status == web::HTTP_OK && ::find(far_page.body, "\"items\":[]") >= 0);
+    let empty = invoke(web::METHOD_GET, "/todos");
+    assert(empty.status == web::HTTP_OK && ::find(empty.body, "\"total\":0") >= 0);
+}
+
+fn main() {
+    test_gating_and_events();
+    test_body_schema();
+    test_routing_and_ids();
+    print("Todo API unit tests passed: mutation backpressure, events, routes, body schema, ids, offset overflow safety");
 }

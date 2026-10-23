@@ -1,7 +1,6 @@
 import goose_web;
 import std;
 import os;
-import json;
 namespace todo;
 
 const MAX_TODOS = 128;
@@ -14,6 +13,12 @@ const MAX_STORE_BYTES = MAX_TODOS * (MAX_TITLE_BYTES * 6 + 128) + 128;
 struct Todo { id: i64, title: u8[..MAX_TITLE_BYTES], completed: bool }
 struct Slot { used: bool, item: Todo }
 struct Store { slots: Slot[MAX_TODOS], next_id: i64 }
+// The persisted document. Its JSON shape is the codec's shape for this struct.
+struct StoreFile { version: i64, next_id: i64, todos: Todo[..MAX_TODOS] }
+
+// A Todo is a JSON object wherever it appears: in responses, lists and the store file.
+fn web::json_put_value(out: u8[>..]&, v: todo::Todo&) -> bool { return web::json_put_fields(out, v); }
+fn web::json_read_value(d: web::JsonDecoder&, out: todo::Todo&) { web::json_read_fields(d, out); }
 
 fn store() -> Store {
     return Store { slots: [default<Slot>(); MAX_TODOS], next_id: 1 };
@@ -35,7 +40,8 @@ fn title_space(cp: i64) -> bool {
     return cp == 32 || cp == 0x85 || cp == 0xa0 || cp == 0x1680 ||
         (cp >= 0x2000 && cp <= 0x200a) || cp == 0x2028 || cp == 0x2029 || cp == 0x202f || cp == 0x205f || cp == 0x3000;
 }
-// Reject truncated, overlong and surrogate encodings, and codepoints > U+10FFFF.
+// Reject control bytes, truncated, overlong and surrogate encodings, and codepoints > U+10FFFF.
+// A title must also contain something other than Unicode whitespace.
 fn title_valid(text: const u8[:]) -> bool {
     if text.len == 0 || text.len > MAX_TITLE_BYTES { return false; }
     var pos: i64 = 0;
@@ -89,17 +95,11 @@ fn remove(state: Store&, id: i64) -> i32 {
     state.slots[index] = default<Slot>();
     return web::HTTP_NO_CONTENT;
 }
-fn encode_item(out: u8[>..]&, item: Todo) {
-    format(out, "{\"id\":", item.id, ",\"title\":");
-    json::format_string(out, item.title);
-    out.append(",\"completed\":");
-    json::format_bool(out, item.completed);
-    out.push('}');
-}
+
+// Writes the file in ascending ID order, so the bytes do not depend on slot reuse.
 fn encode_store(out: u8[>..]&, state: Store&) {
-    format(out, "{\"version\":", STORE_VERSION, ",\"next_id\":", state.next_id, ",\"todos\":[");
+    var list: Todo[..MAX_TODOS] = [];
     var previous: i64 = 0;
-    var first = true;
     loop {
         var selected: i64 = -1;
         var next = MAX_NEXT_ID;
@@ -109,44 +109,31 @@ fn encode_store(out: u8[>..]&, state: Store&) {
             }
         }
         if selected < 0 { break; }
-        if !first { out.push(','); }
-        encode_item(out, state.slots[selected].item);
-        first = false;
+        list.push(state.slots[selected].item);
         previous = next;
     }
-    out.append("]}\n");
+    web::json_encode(out, StoreFile { version: STORE_VERSION, next_id: state.next_id, todos: list });
+    out.push('\n');
 }
-fn object_fields(node: json::Node?, expected: i64) -> bool {
-    if !node { return false; }
-    match node.val { Obj value => { return value.count == expected; }, _ => { return false; } }
-}
+
+// Strict decode through the codec (unknown, duplicate or mistyped keys fail), then the
+// store's own invariants: a known version, IDs below next_id, unique IDs, valid titles.
 fn decode_store(raw: const u8[:]) -> Store, bool {
     if raw.len > MAX_STORE_BYTES { return store(), false; }
-    var nodes: json::Node[>..] = [];
-    var decoded: u8[>..] = [];
-    let root, error = json::parse(raw, nodes, decoded);
-    if !object_fields(root, 3) { return store(), false; }
-    let version, version_ok = json::as_i64(json::member(root, "version"));
-    let next, next_ok = json::as_i64(json::member(root, "next_id"));
-    let todos = json::member(root, "todos");
-    if !version_ok || version != STORE_VERSION || !next_ok || next < 1 || !todos { return store(), false; }
-    match todos.val { Arr value => { if value.count > MAX_TODOS { return store(), false; } }, _ => { return store(), false; } }
-    var result = store();
-    result.next_id = next;
-    var entry = todos.first;
-    var index: i64 = 0;
-    while entry {
-        if !object_fields(entry, 3) { return store(), false; }
-        let id, id_ok = json::as_i64(json::member(entry, "id"));
-        let title, title_ok = json::as_string(json::member(entry, "title"));
-        let completed, completed_ok = json::as_bool(json::member(entry, "completed"));
-        if !id_ok || id < 1 || id >= next || !title_ok || !title_valid(title) || !completed_ok ||
-           find(result, id) >= 0 || index >= MAX_TODOS { return store(), false; }
-        result.slots[index] = Slot { used: true, item: Todo { id: id, title: title, completed: completed } };
-        index += 1;
-        entry .= entry.next;
+    let file, result = web::json_decode<StoreFile>(raw);
+    if !result.ok || file.version != STORE_VERSION || file.next_id < 1 || !web::has<StoreFile>(result, "todos") {
+        return store(), false;
     }
-    return result, true;
+    var state = store();
+    state.next_id = file.next_id;
+    for i in file.todos.len {
+        let item = file.todos[i];
+        if item.id < 1 || item.id >= file.next_id || !title_valid(item.title[..]) || find(state, item.id) >= 0 {
+            return store(), false;
+        }
+        state.slots[i] = Slot { used: true, item: item };
+    }
+    return state, true;
 }
 fn save(state: Store&, path: const u8[:]) -> bool {
     var text: u8[>..] = [];
