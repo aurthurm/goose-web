@@ -249,6 +249,10 @@ there. Inside namespace `web` call `web::name(c, ...)` directly.
 | --- | --- |
 | `c.method()`, `c.path()`, `c.target()`, `c.header(name)` | request views |
 | `c.param(name)`, `c.param_int(name)` | path parameter; `param_int` writes 422 `invalid_param` on failure |
+| `c.param_u64(name)` | canonical unsigned 64-bit decimal; 422 `invalid_param` otherwise |
+| `c.param_uuid(name)` | `u8[..36]`, 8-4-4-4-12 hex digits, all lowercase or all uppercase; returned as sent; 422 `invalid_param` otherwise |
+| `c.param_slug(name)` | `u8[..64]`, 1 to 64 bytes of `a-z`, `0-9` and `-`; 422 `invalid_param` otherwise |
+| `c.peer()` | numeric client address (IPv4 or IPv6 text, no port); `""` for a `Request` built by hand |
 | `c.query(key)`, `c.query_int(key, default)` | query value; `query_int` writes 400 `invalid_query` on failure |
 | `c.status(code)` | sets the status and returns `Ctx&` for chaining |
 | `c.set(name, value)` | response header (asserts on an invalid header) |
@@ -280,6 +284,18 @@ Consequences:
   branch on mutable state between passes.
 - `return` inside a route body leaves the enclosing named function, which ends that route.
 - Invalid patterns abort with the pattern in the message.
+- **Wildcards.** A final segment `*name` takes the rest of the path, slashes included:
+  `c.get("/files/*path")` matches `/files/a/b.txt` with `c.param("path") == "a/b.txt"`. The rest
+  must be nonempty (`/files/` is a 404), is not decoded, and `*name` must be the last segment.
+  Static segments and `:name` at the same position both win over `*name`, and a method missing
+  on the winning shape is still 405, as with any other route. OpenAPI renders it as `{name}`.
+- **Host scopes.** `c.host("api.example.com") { ... }` and `c.host("*.example.com") { ... }` limit
+  the routes inside them to a Host header. The port is stripped, and the comparison ignores ASCII
+  case. `*.example.com` matches exactly one label before `.example.com`. Scopes do not nest. The
+  path shape is chosen first; host scope only breaks ties (exact, then wildcard, then unscoped).
+  When no scoped or unscoped route matches the host, the answer is 404 (or 405, for a method that
+  is registered for the path on that host). A request without a Host header matches unscoped
+  routes only. OpenAPI documents scoped routes like any others and does not record the host.
 
 ### Middleware
 
@@ -293,6 +309,12 @@ short-circuits. Nesting gives the order: the outer middleware's `before` runs fi
 | `logger(c) { }` | after `Next`, prints one line: `METHOD path status bytes`; control bytes are masked |
 | `cors(c, origin = "*") { }` | sets `Access-Control-Allow-Origin` (plus `Vary: Origin` for a non-wildcard origin). A preflight (OPTIONS with `Access-Control-Request-Method`) gets 204 with Allow-Methods, Allow-Headers (echoes the request's headers when valid, else `Content-Type`) and `Max-Age: 600`, and `Next` is not called |
 | `require_json(c) { }` | 415 `unsupported_media_type` unless the media type is `application/json` (parameters ignored, case-insensitive). It applies to every request in its block, so wrap body-carrying routes |
+| `rate_limit(c, limit, window_ms) { }` | fixed window per client address (`c.peer()`): at most `limit` requests per `window_ms`. A refused request gets 429 `rate_limited` with `Retry-After` in whole seconds. Each `(limit, window_ms)` pair counts separately. The table is process-wide and bounded at 1024 clients; when it is full, the least recently seen client is recycled. Requests with no known peer share one bucket. Limits are per process, so several instances do not share a count |
+| `secure_headers(c, content_security_policy = "default-src 'self'", hsts = "") { }` | sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin` and `Content-Security-Policy` (an empty policy leaves it unset). `Strict-Transport-Security` is sent only when `hsts` is nonempty. Headers are set before `Next`, so a handler can replace one with `c.set`. The default policy blocks the CDN script on the `/docs` page, so wrap that page with `""` or a policy that allows it |
+
+The runtime fills `Request.peer` from `getpeername` when it accepts a connection
+(`gw_peer_address` in `native/posix/transport.c`). It is the TCP peer, never a forwarded header,
+so behind a proxy every client shares the proxy's address.
 
 ### JSON responses and request bodies
 

@@ -37,7 +37,7 @@ def main():
     programs = [("core", "tests/unit/core.goose"), ("router", "tests/unit/router.goose"),
                 ("application", "tests/unit/application.goose"), ("constants", "tests/unit/constants.goose"),
                 ("http_parser", "tests/unit/http_parser.goose"),
-                ("app_routes", "tests/unit/app_routes.goose"),
+                ("app_routes", "tests/unit/app_routes.goose"), ("app_security", "tests/unit/app_security.goose"),
                 ("json_codec", "tests/unit/json_codec.goose"),
                 ("app_middleware", "tests/unit/app_middleware.goose"),
                 ("app_params", "tests/unit/app_params.goose"),
@@ -48,14 +48,15 @@ def main():
                 ("app_openapi", "tests/unit/app_openapi.goose"),
                 ("app_templates", "tests/unit/app_templates.goose"),
                 ("parser_fuzz", "tests/fuzz/parser.goose"), ("features", "tests/fixtures/features.goose"),
-                ("app", "tests/fixtures/app.goose"), ("hello", "examples/hello/server.goose"),
+                ("app", "tests/fixtures/app.goose"), ("routing", "tests/fixtures/routing.goose"),
+                ("hello", "examples/hello/server.goose"),
                 ("pages", "examples/pages/server.goose"), ("server", "examples/basic/server.goose")]
     if with_sqlite:
         programs += [("db", "tests/unit/db.goose"), ("sqlite_todos", "examples/sqlite-todos/server.goose")]
     for name, source in programs:
         subprocess.run([compiler, "build", str(ROOT / source), "--debug", "-o", str(BUILD / name)],
                        env=env, check=True, cwd=ROOT)
-    for name in ("core", "router", "application", "app_routes", "app_middleware", "app_params", "constants",
+    for name in ("core", "router", "application", "app_routes", "app_security", "app_middleware", "app_params", "constants",
                  "http_parser", "json_codec", "todo_query", "todo_api", "app_openapi", "app_templates", "parser_fuzz",
                  "app_config", "global_names") + (("db",) if with_sqlite else ()):
         # Run from the repository root: the static file checks use tests/fixtures/static.
@@ -72,6 +73,7 @@ def main():
     subprocess.run([str(BUILD / "system")], check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/http.py"), str(BUILD / "features")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/app.py"), str(BUILD / "app")], env=env, check=True)
+    subprocess.run([sys.executable, str(ROOT / "tests/integration/routing.py"), str(BUILD / "routing")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/hello.py"), str(BUILD / "hello")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/pages.py"), str(BUILD / "pages")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/todos.py"), str(BUILD / "server")], env=env, check=True)

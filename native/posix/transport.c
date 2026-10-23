@@ -8,6 +8,8 @@
 #include <poll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+#include <string.h>
 #include <unistd.h>
 #include <signal.h>
 #include "constants.h"
@@ -51,6 +53,23 @@ int32_t gw_accept(int32_t listener) {
     int fd = accept(listener, NULL, NULL);
     if (fd >= 0) return gw_nonblock(fd);
     return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? GW_IO_WOULD_BLOCK : GW_IO_ERROR;
+}
+
+/* Writes the peer's numeric address (IPv4 or IPv6 text) into out. Returns its length, or -1. */
+int64_t gw_peer_address(int32_t fd, gw_bytes out) {
+    struct sockaddr_storage peer;
+    socklen_t length = sizeof(peer);
+    if (getpeername(fd, (struct sockaddr *)&peer, &length) < 0) return -1;
+    const void *address;
+    if (peer.ss_family == AF_INET) address = &((struct sockaddr_in *)&peer)->sin_addr;
+    else if (peer.ss_family == AF_INET6) address = &((struct sockaddr_in6 *)&peer)->sin6_addr;
+    else return -1;
+    char text[INET6_ADDRSTRLEN];
+    if (inet_ntop(peer.ss_family, address, text, sizeof(text)) == NULL) return -1;
+    size_t n = strlen(text);
+    if ((int64_t)n > out.len) return -1;
+    memcpy(out.data, text, n);
+    return (int64_t)n;
 }
 
 int64_t gw_recv(int32_t fd, gw_bytes bytes) {

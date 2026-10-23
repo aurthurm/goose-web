@@ -39,12 +39,14 @@ fn main() {
 ## Features
 
 - Typed routing DSL: `c.get`/`post`/`put`/`patch`/`delete`, `:param` segments, `c.group` prefixes, automatic 404 and 405 with `Allow`.
+- Routing extras: `*name` wildcards for the rest of a path, `c.host(...)` scopes by Host (exact or `*.example.com`), and typed `param_int`, `param_u64`, `param_uuid` and `param_slug` path parameters. See [routing](docs/api.md#routing-dsl).
 - OpenAPI 3.1 from the routes block and struct reflection, served at `/openapi.json` with a `/docs` page (`web::openapi`).
 - Field names and skipping for JSON, typed queries and OpenAPI: `web::json_key` renames a field (`completed` as `done`), `web::json_skip` leaves it out. See [API contracts](docs/api.md#field-names-and-skipping).
 - Reflective JSON in and out: `body<T>(c)` decodes strict structs (415, 400, 422 written for you); `c.json(value)` encodes any struct.
 - Typed forms and query strings: `form<T>(c)` binds urlencoded bodies and `query<T>(c)` binds the query, both strict.
 - Compile-time HTML templates: `embed_file("views/page.html")` with `{{escaped}}`, `{{{raw}}}`, sections, `each` over struct arrays and comments; `check_template` validates them at startup. See [Templates](docs/api.md#templates).
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
+- Edge middleware: `secure_headers` (CSP, nosniff, frame DENY, referrer policy, optional HSTS) and a bounded per-client `rate_limit` that answers 429 with `Retry-After`. `c.peer()` gives the TCP peer address.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
 - Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
 - Bounded memory: fixed capacities for requests, headers, routes, queues and clients; response bodies grow on demand up to `max_response_bytes` (1 MiB default, 16 MiB ceiling) and in-flight responses share a pool capped by `max_pool_bytes`.

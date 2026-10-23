@@ -363,7 +363,8 @@ fn oas_add_operation(c: Ctx&, method: const u8[:], pattern: const u8[:]) {
     var params: u8[>..] = [];
     var i: i64 = 0;
     while i < pattern.len {
-        if pattern[i] == ':' && (i == 0 || pattern[i - 1] == '/') {
+        // :name and *name (a wildcard, which takes the rest of the path) both render as {name}.
+        if (pattern[i] == ':' || pattern[i] == '*') && (i == 0 || pattern[i - 1] == '/') {
             var end = i + 1;
             while end < pattern.len && pattern[end] != '/' { end += 1; }
             let name = pattern[i + 1..end];

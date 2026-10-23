@@ -141,6 +141,33 @@ fn empty_app(c: web::Ctx&) {
     c.routes() {};
 }
 
+// Wildcards take the rest of the path; :name still wins for one segment.
+fn wildcard_app(c: web::Ctx&) {
+    c.routes() {
+        c.get("/files/*path") { c.text(c.param("path")); };
+        c.get("/files/:name") { c.text(str("name:", c.param("name"))); };
+    };
+}
+
+// Host scopes: exact, one-label wildcard, unscoped fallback, and a scope with no fallback.
+fn host_app(c: web::Ctx&) {
+    c.routes() {
+        c.host("api.example.com") { c.get("/v1") { c.text("api v1"); }; };
+        c.host("*.example.com") { c.get("/v1") { c.text("wild v1"); }; };
+        c.host("only.test") { c.get("/private") { c.text("private"); }; };
+        c.get("/v1") { c.text("plain v1"); };
+    };
+}
+
+// Typed path parameters: a successful bind writes the value, a failure writes 422.
+fn typed_app(c: web::Ctx&) {
+    c.routes() {
+        c.get("/n/:id") { let id, ok = c.param_u64("id"); guard ok else { return; } c.text(str(id)); };
+        c.get("/u/:id") { let id, ok = c.param_uuid("id"); guard ok else { return; } c.text(id[..]); };
+        c.get("/s/:id") { let id, ok = c.param_slug("id"); guard ok else { return; } c.text(id[..]); };
+    };
+}
+
 fn main() {
     // Static segments beat params; only the selected body runs.
     let s = exchange("GET", "/static", basic_app);
@@ -260,5 +287,51 @@ fn main() {
     text(fresh, "hello");
     assert(done(fresh) && web::body_of(fresh_out) == "hello");
 
-    print("App route tests passed: priority, groups, 404/405/Allow, HEAD, any, params, int/query parsing, writers, return");
+    // Wildcard through the DSL: raw rest of path, no decoding; empty rest is a 404.
+    assert(text_of(exchange("GET", "/files/a/b.txt", wildcard_app)) == "a/b.txt");
+    assert(text_of(exchange("GET", "/files/x", wildcard_app)) == "name:x");
+    assert(text_of(exchange("GET", "/files/a%20b/c", wildcard_app)) == "a%20b/c");
+    assert(exchange("GET", "/files/", wildcard_app).status == 404);
+    assert(exchange("POST", "/files/a/b", wildcard_app).status == 405);
+
+    // Host scopes: Host is compared without its port and ignoring case.
+    assert(text_of(exchange_with("GET", "/v1", "Host: API.example.com:8443\r\n", host_app)) == "api v1");
+    assert(text_of(exchange_with("GET", "/v1", "Host: www.example.com\r\n", host_app)) == "wild v1");
+    assert(text_of(exchange_with("GET", "/v1", "Host: a.b.example.com\r\n", host_app)) == "plain v1");
+    assert(text_of(exchange_with("GET", "/v1", "Host: other.test\r\n", host_app)) == "plain v1");
+    assert(text_of(exchange("GET", "/v1", host_app)) == "plain v1");
+    assert(text_of(exchange_with("GET", "/private", "Host: only.test\r\n", host_app)) == "private");
+    assert(exchange_with("GET", "/private", "Host: other.test\r\n", host_app).status == 404);
+    assert(exchange("GET", "/private", host_app).status == 404);
+    var scoped_allow = exchange_with("POST", "/v1", "Host: api.example.com\r\n", host_app);
+    assert(scoped_allow.status == 405 && header_value(scoped_allow, "Allow") == "GET, HEAD");
+
+    // Typed path parameters: canonical forms bind, everything else is 422 invalid_param.
+    assert(text_of(exchange("GET", "/n/18446744073709551615", typed_app)) == "18446744073709551615");
+    assert(text_of(exchange("GET", "/n/0", typed_app)) == "0");
+    for bad in ["18446744073709551616", "007", "-1", "+1", "1e3", "abc"] {
+        let r = exchange("GET", str("/n/", bad), typed_app);
+        assert(r.status == 422 && r.content_type == web::CONTENT_TYPE_JSON);
+        assert(web::body_of(r) == "{\"error\":{\"code\":\"invalid_param\",\"message\":\"Path parameter must be a canonical unsigned 64-bit integer\"}}\n");
+    }
+    let uuid_lower = "123e4567-e89b-12d3-a456-426614174000";
+    assert(text_of(exchange("GET", str("/u/", uuid_lower), typed_app)) == uuid_lower);
+    assert(text_of(exchange("GET", "/u/123E4567-E89B-12D3-A456-426614174000", typed_app)) == "123E4567-E89B-12D3-A456-426614174000");
+    for bad in ["123E4567-e89b-12d3-a456-426614174000", "123e4567e89b12d3a456426614174000", "123e4567-e89b-12d3-a456-42661417400",
+                "123e4567-e89b-12d3-a456-42661417400g", "123e4567-e89b-12d3-a456-4266141740000"] {
+        let r = exchange("GET", str("/u/", bad), typed_app);
+        assert(r.status == 422 && web::body_len(r) > 0);
+    }
+    assert(text_of(exchange("GET", "/s/hello-world-2", typed_app)) == "hello-world-2");
+    for bad in ["Hello", "a_b", "a.b", "a%20b"] {
+        let r = exchange("GET", str("/s/", bad), typed_app);
+        assert(r.status == 422);
+    }
+    var long_slug: u8[>..] = [];
+    for i in 65 { long_slug.push('a'); }
+    assert(exchange("GET", str("/s/", long_slug[..]), typed_app).status == 422);
+    long_slug.pop_n(1);
+    assert(text_of(exchange("GET", str("/s/", long_slug[..]), typed_app)).len == 64);
+
+    print("App route tests passed: priority, groups, 404/405/Allow, HEAD, any, params, int/query parsing, writers, return, wildcards, host scopes, typed params");
 }

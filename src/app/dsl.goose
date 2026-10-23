@@ -20,6 +20,7 @@ fn ::delete<F>(c: web::Ctx&, pattern: const u8[:]) { web::delete(c, pattern, F);
 fn ::head<F>(c: web::Ctx&, pattern: const u8[:]) { web::head(c, pattern, F); }
 fn ::options<F>(c: web::Ctx&, pattern: const u8[:]) { web::options(c, pattern, F); }
 fn ::any<F>(c: web::Ctx&, pattern: const u8[:]) { web::any(c, pattern, F); }
+fn ::host<F>(c: web::Ctx&, pattern: const u8[:]) { web::host(c, pattern, F); }
 
 fn ::method(c: web::Ctx&) -> const u8[:] { return web::method(c); }
 fn ::target(c: web::Ctx&) -> const u8[:] { return web::target(c); }
@@ -27,6 +28,10 @@ fn ::path(c: web::Ctx&) -> const u8[:] { return web::path(c); }
 fn ::header(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::header(c, name); }
 fn ::param(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::param(c, name); }
 fn ::param_int(c: web::Ctx&, name: const u8[:]) -> i64, bool { return web::param_int(c, name); }
+fn ::param_u64(c: web::Ctx&, name: const u8[:]) -> u64, bool { return web::param_u64(c, name); }
+fn ::param_uuid(c: web::Ctx&, name: const u8[:]) -> u8[..36], bool { return web::param_uuid(c, name); }
+fn ::param_slug(c: web::Ctx&, name: const u8[:]) -> u8[..64], bool { return web::param_slug(c, name); }
+fn ::peer(c: web::Ctx&) -> const u8[:] { return web::peer(c); }
 fn ::query(c: web::Ctx&, key: const u8[:]) -> web::QueryValue { return web::query(c, key); }
 fn ::query_int(c: web::Ctx&, key: const u8[:], fallback: i64) -> i64, bool { return web::query_int(c, key, fallback); }
 // Typed query binding: query<Filter>(c) -> Filter, bool; query_result<Filter>(c) also returns the DecodeResult.
@@ -63,6 +68,10 @@ fn ::logger<F>(c: web::Ctx&) { web::logger(c, F); }
 fn ::cors<F>(c: web::Ctx&, origin: const u8[:] = "*") { web::cors(c, origin, F); }
 fn ::require_json<F>(c: web::Ctx&) { web::require_json(c, F); }
 fn ::static_files<F>(c: web::Ctx&, url_prefix: const u8[:], directory: const u8[:]) { web::static_files(c, url_prefix, directory, F); }
+fn ::rate_limit<F>(c: web::Ctx&, limit: i64, window_ms: i64) { web::rate_limit(c, limit, window_ms, F); }
+fn ::secure_headers<F>(c: web::Ctx&, content_security_policy: const u8[:] = "default-src 'self'", hsts: const u8[:] = "") {
+    web::secure_headers(c, content_security_policy, hsts, F);
+}
 
 // Cookies. c.cookie(name) reads the request; c.set_cookie(name, value, opts) returns false when
 // the name, value or options are invalid (nothing is set in that case).

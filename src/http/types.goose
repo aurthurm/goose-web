@@ -2,8 +2,10 @@ import std;
 import src.constants.limits;
 namespace web;
 
+// peer is the client's numeric address, set by the runtime after parsing; "" when unknown.
 struct Request {
-    method: const u8[:], target: const u8[:], body: const u8[:], raw_headers: const u8[:]
+    method: const u8[:], target: const u8[:], body: const u8[:], raw_headers: const u8[:],
+    peer: const u8[:] = ""
 }
 struct Header { name: u8[..MAX_HEADER_NAME_BYTES], value: u8[..MAX_HEADER_VALUE_BYTES] }
 // The body is body[body_start..]. Writes only append (see response.goose), so the buffer
