@@ -132,6 +132,9 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | max_requests_per_connection | 100 | 0..1000000; 0 unlimited; the last allowed response says `Connection: close` |
 | keep_alive | true | false answers every request with `Connection: close` |
 | handle_signals | false | opt-in process-wide SIGINT/SIGTERM ownership |
+| max_sse_clients | 32 | 0..64; open event streams; the effective limit is `min(max_sse_clients, max_clients)`, and 0 disables streams |
+| sse_heartbeat_ms | 15000 | 1..86400000, interval of the `: ping` comment on each stream |
+| sse_max_queued_bytes | 262144 | 256..4194304, unsent bytes one stream may hold before it is dropped |
 
 `validate_server_config(config)` rejects invalid combinations before opening a socket.
 `serve_config(config, control, handler, tick, lifecycle)` returns false on invalid
@@ -152,11 +155,68 @@ a fresh control, before restarting. Stats reset on a successful new run.
 forced_closes (grace/fatal cleanup), bytes_read, bytes_written, and reused. Protocol errors
 are not capacity rejections. Idle timeout closes the socket without a response.
 `reused` counts responses served on a connection that had already completed one.
+Event streams add `sse_active` (open streams), `sse_sent` (events queued to streams) and
+`sse_dropped` (streams closed because they fell behind or the pool ran out).
 
 Signals are optional for embedding; the basic example enables them. Only one
 signal-owning server may run in the process, and previous handlers are restored on
 normal exit. Multithreaded embedders should manage signals externally. The legacy
 `serve(port, max_requests, handler, tick)` wrapper keeps loopback defaults.
+
+## Server-sent events
+
+A handler starts a stream with `c.sse(channel)`. The reactor then sends the head and keeps the
+connection open. Application code publishes events on a channel from a tick, an event drain or a
+handler, and each event reaches every stream subscribed to that channel. Design and bounds are in
+[docs/design/app-api.md](design/app-api.md#v05-design-server-sent-events).
+
+```goose
+var control = default<web::ServerControl>();
+
+fn tick() {
+    // One event to every stream on channel 1; returns how many streams it was accepted for.
+    web::sse_publish(control, 1, "time", "12:00:00");
+}
+
+fn app(c: web::Ctx&) {
+    c.routes() {
+        c.get("/events") { c.sse(1); };    // headers set with c.set go into the stream head
+    };
+}
+
+fn main() {
+    var config = web::server_config();
+    config.handle_signals = true;
+    let started = web::run_with(config, control, app, tick, web::ignore_lifecycle);
+    if !started { abort("server failed"); }
+}
+```
+
+- `c.sse(channel: i32) -> bool` returns false, changing nothing, when a response was already
+  written. Return from the route straight after it. The stream head is `200`,
+  `Content-Type: text/event-stream`, `Cache-Control: no-cache` and `Transfer-Encoding: chunked`.
+- `web::sse_publish(control: ServerControl&, channel: i32, event: const u8[:], data: const u8[:]) -> i64`
+  frames one message: an `event:` line when `event` is not empty, one `data:` line per line of `data`
+  (CR, LF and CRLF all end a line), and a blank line. `-1` means refused: the event name contains CR or
+  LF or is longer than 128 bytes, the data exceeds 65536 bytes, the framed message exceeds
+  `sse_max_queued_bytes`, or the outbox is full. `0` means nothing could receive it: the server is not
+  running, is stopping, or no stream subscribes to the channel. Otherwise the result is the number of
+  streams on the channel when the message was accepted.
+- Publishing is staged in a bounded outbox (256 KiB, 64 messages) and copied to each stream at the
+  start of the next loop iteration, so events reach the sockets in publish order.
+- Heartbeats: every `sse_heartbeat_ms` each stream gets a `: ping` comment. Streams have no read or idle
+  timeout. Bytes the client sends on a stream are discarded.
+- A stream whose unsent bytes would pass `sse_max_queued_bytes`, or when the pool has no chunks left,
+  is closed and counted in `sse_dropped`. Other streams are unaffected.
+- Limits: HTTP/1.1 GET only. HTTP/1.0 and HEAD requests asking for a stream get `400`. A stream
+  refused because the server is stopping or `max_sse_clients` streams are open gets `503`. Streams do
+  not count toward `max_requests`, and `keep_alive` does not apply to them.
+- Shutdown: when stopping begins, each stream receives `event: close` and the terminating chunk
+  `0\r\n\r\n`, then closes. Grace still applies, so a stream that never reads is force-closed when
+  the grace period ends.
+
+A complete example that sends the time every second, with a browser page using `EventSource`, is in
+[examples/sse-clock](../examples/sse-clock/README.md).
 
 ## JSON codec
 

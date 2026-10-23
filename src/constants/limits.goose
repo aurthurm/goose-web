@@ -28,3 +28,12 @@ const MAX_QUERY_FIELD_BYTES = 1024;
 const MAX_EVENT_LISTENERS = 64;
 const MAX_QUEUED_EVENTS = 256;
 const INVALID_SUBSCRIPTION = 0;
+// Server-sent events. A stream queues at most sse_max_queued_bytes of unsent data; the close
+// event may use SSE_CLOSE_RESERVE_BYTES beyond that. Publishes stage in a bounded outbox.
+const MAX_SSE_QUEUED_BYTES = 4194304;
+const MIN_SSE_QUEUED_BYTES = 256;
+const SSE_CLOSE_RESERVE_BYTES = 128;
+const MAX_SSE_EVENT_BYTES = 128;
+const MAX_SSE_MESSAGE_BYTES = 65536;
+const MAX_SSE_OUTBOX_BYTES = 262144;
+const MAX_SSE_OUTBOX_MESSAGES = 64;

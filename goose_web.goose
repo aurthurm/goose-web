@@ -10,6 +10,7 @@ import .src.routing.router;
 import .src.middleware.pipeline;
 import .src.events.bus;
 import .src.runtime.server;
+import .src.http.sse;
 import .src.app.context;
 import .src.app.respond;
 import .src.app.middleware;

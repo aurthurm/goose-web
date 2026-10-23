@@ -77,6 +77,16 @@ They are never scanned as headers. Missing Content-Length means an empty body.
 The parser exposes borrowed slices valid while the caller's input remains alive
 and unchanged. The server completes its handler before reusing that buffer.
 
+## Server-sent event responses
+
+The only chunked responses the server produces are server-sent event streams started with
+`c.sse(channel)`. Such a response is HTTP/1.1 only, answers GET requests only, and sends
+`Transfer-Encoding: chunked` with no Content-Length. Each event is one chunk, and the stream ends
+with the terminating chunk `0`, after the `event: close` message, when the server shuts down. A
+heartbeat is the chunk for the comment `: ping`. HTTP/1.0 and HEAD requests asking for a stream get
+400. Trailers are never sent. Clients that send bytes on a stream are not parsed: the bytes are
+discarded. Other responses keep Content-Length framing.
+
 ## Connection and error boundaries
 
 Connections persist by default. Keep-alive rules:
@@ -93,7 +103,7 @@ Connections persist by default. Keep-alive rules:
 - Read deadlines apply per request from its first byte. An idle connection that sends
   nothing within `idle_timeout_ms` closes silently, with no response.
 
-Streaming bodies, chunked responses, CONNECT tunnels, TLS, and HTTP/2 are outside this
+Streaming bodies other than server-sent events, CONNECT tunnels, TLS, and HTTP/2 are outside this
 profile. Parser errors bypass application middleware and use the server's parser error
 response; application JSON errors are a separate layer. For inputs containing
 multiple independent faults, the parser returns the first detected failure,

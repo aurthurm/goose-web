@@ -21,6 +21,11 @@ const DEFAULT_MAX_RESPONSE_BYTES = 1048576;
 // at most max_pool_bytes (default 8 MiB); a response that does not fit gets a 503.
 const RESPONSE_CHUNK_BYTES = 16384;
 const DEFAULT_MAX_POOL_BYTES = 8388608;
+// Streams are limited to min(max_sse_clients, max_clients); see docs/design/app-api.md.
+const DEFAULT_MAX_SSE_CLIENTS = 32;
+const MAX_SSE_CLIENTS = MAX_CLIENTS;
+const DEFAULT_SSE_HEARTBEAT_MS = 15000;
+const DEFAULT_SSE_MAX_QUEUED_BYTES = 262144;
 const MAX_POOL_CHUNKS = MAX_RESPONSE_POOL_BYTES / RESPONSE_CHUNK_BYTES;
 const NO_CHUNK = -1;
 const DEFAULT_HANDLE_SIGNALS = false;

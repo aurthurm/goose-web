@@ -39,6 +39,8 @@ fn ::no_content(c: web::Ctx&) { web::no_content(c); }
 fn ::redirect(c: web::Ctx&, location: const u8[:], code: i32 = web::HTTP_FOUND) { web::redirect(c, location, code); }
 fn ::fail(c: web::Ctx&, code: i32, error_code: const u8[:], message: const u8[:]) { web::fail(c, code, error_code, message); }
 fn ::done(c: web::Ctx&) -> bool { return web::done(c); }
+// Server-sent events: c.sse(channel) upgrades the connection; web::sse_publish(control, channel, event, data) sends.
+fn ::sse(c: web::Ctx&, channel: i32) -> bool { return web::sse(c, channel); }
 
 // Responses and bodies. c.json takes a struct or scalar by value; c.json_list takes an
 // array or slice. c.body<T>() writes 415/400/422 and returns false on failure.
