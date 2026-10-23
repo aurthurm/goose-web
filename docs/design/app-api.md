@@ -179,3 +179,68 @@ Reflective via `const for <N, A> in fields<T>`; zero metadata, monomorphized.
 - Nested structs need a registered `web::json_put_value` / `web::json_read_value` pair (see api.md):
   Goose has no compile-time predicate to tell a struct from a limited string.
 - When the match pass yields 404/405 the dispatch pass is skipped.
+
+## v0.3 design: growable response body
+
+Problem: `Response.body` is an inline `u8[..MAX_RESPONSE_BODY_BYTES]`, so every request pays
+for the full capacity (1 MiB measured ~4x slower than 8 KiB; ceiling is 64 KiB today).
+
+Decision (prototyped and compiling): `Response.body` becomes an owned grow array `u8[>..]` plus
+`body_start: i64`. The *current* body is `body[body_start..]`.
+
+- Within a request the buffer is **append-only**. Replacing the body appends the new bytes and
+  moves `body_start` to where they begin. Goose's checker refuses `clear()`/shrink on a value while
+  any slice that might alias it is live (`text(c, c.param("x"))` would be rejected), but growing is
+  allowed. This also makes `set_body(r, body_of(r))` safe.
+- The server truncates/clears the buffer after the handler returns and the response is serialized,
+  when no views are live. Memory is proportional to what the request actually wrote.
+- All writes go through functions: `set_body(r, text) -> bool`, `append_body(r, text) -> bool`,
+  `body_of(r) -> const u8[:]`, `body_len(r) -> i64`. Each enforces a per-response cap
+  (`r.max_body`, set by the runtime from `config.max_response_bytes`; default 1 MiB, ceiling 16 MiB)
+  and returns false at the cap; app helpers turn that into 500 `response_too_large`.
+  Direct `r.body = ...` / `r.body.len` uses in src, examples and tests are migrated.
+- `Response`/`Ctx` are no longer fixed-size: pass by reference (`App(&c)` already does), and use
+  `copy()` where a copy is really wanted. The runtime hands the handler a Response it owns per
+  connection slot or a single reactor-owned scratch Response reused across requests (handlers are
+  synchronous; only one runs at a time).
+- Acceptance: hello benchmark (3000 fresh connections, `GET /health`) within 10% of the 8 KiB
+  build (~11k req/s on the dev box), and a 1 MiB body round-trips intact over a socket.
+
+## v0.3 design: OpenAPI from routes and structs
+
+Goal: FastAPI-style `/openapi.json` (+ a `/docs` page) generated from the same `c.routes()` block.
+
+- A third routing pass, **describe**, runs the routes block without executing bodies; each route
+  call appends an operation (method, path with `:id` → `{id}` and a string path parameter).
+- Annotations are plain calls placed *before* the route they describe; they are no-ops in the match
+  and dispatch passes and attach to the next route in the describe pass (generic type args need the
+  non-UFCS form):
+
+```goose
+c.routes() {
+    web::summary(c, "Create a todo");
+    web::accepts<TodoIn>(c);                    // requestBody application/json schema
+    web::returns<Todo>(c, web::HTTP_CREATED);   // response schema per status
+    c.post("/todos") { ... };
+    web::returns_list<Todo>(c, web::HTTP_OK);   // array schema
+    web::query_params<ListQuery>(c);            // query parameters from struct fields
+    c.get("/todos") { ... };
+};
+```
+
+- Groups contribute their prefix and a default tag (the first prefix segment). `web::tag(c, name)`
+  overrides.
+- Schemas come from `fields<T>` reflection: ints → `integer` (with min/max for the width), floats →
+  `number`, bool → `boolean`, `u8[..N]` → `string` with `maxLength: N`, limited arrays → `array`
+  with `maxItems`. Fields with declared defaults are optional, others required: since reflection
+  cannot see defaults, compare against `default<T>()` is NOT used; instead every field is listed in
+  `required` unless `T` provides `fn web::optional_fields(v: T&) -> const u8[:]` (comma list) —
+  same registration idiom as nested structs, which also need a `json_schema_value` overload.
+  Schemas are inline (no `$ref`; Goose cannot reflect type names).
+- Every operation also documents the framework's error envelope for 400/404/405/415/422/500.
+- Wiring: `web::openapi(c, OpenApiInfo { title: "Todo API", version: "1.0", .. }) { c.routes() { ... } }`.
+  It sets ctx fields so `routes()` answers `GET /openapi.json` (JSON, OpenAPI 3.1) and
+  `GET /docs` (a small HTML page loading a pinned Scalar or Swagger UI from a CDN) by running
+  the describe pass. Paths configurable in `OpenApiInfo`.
+- Output must stay within the response cap; generation is pure and testable via a unit test that
+  validates the JSON parses and contains expected paths/schemas.
