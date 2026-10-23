@@ -29,8 +29,8 @@
 - [x] Typed query binding: `query<T>(c)` and `query_result<T>(c)` with strict keys and `invalid_query` errors.
 - [x] Keep-alive connections: persistent HTTP/1.1 and opt-in HTTP/1.0, in-order pipelining, idle and per-connection limits.
 - [x] Response bodies up to 64 KiB through a pooled, bounded response buffer (`max_response_bytes`).
+- [x] OpenAPI 3.1 generated from the routes block and struct reflection (`web::openapi`), with a `/docs` page.
 - Next: move the response body out of the inline `Response` struct so capacity no longer costs every request; then chunked/streaming bodies.
-- Next: automatic OpenAPI generation from structs.
 - Next: typed configuration from environment variables.
 
 ## Milestone 3: protocol and platform coverage

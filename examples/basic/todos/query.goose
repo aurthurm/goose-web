@@ -12,6 +12,9 @@ const FILTER_COMPLETED = 1;
 const MAX_QUERY_INTEGER = 9223372036854775807;
 
 struct ListOptions { status: i32, limit: i64, offset: i64, completed: i32 }
+// Documents the list query for OpenAPI only: parse_list_query does the parsing. An omitted
+// completed key means all todos, which the schema cannot express beyond true or false.
+struct TodoListParams { limit: i64 = DEFAULT_PAGE_SIZE, offset: i64 = 0, completed: bool = false }
 
 fn passes_filter(item: Todo, filter: i32) -> bool {
     return filter == FILTER_ALL || (filter == FILTER_COMPLETED && item.completed) || (filter == FILTER_INCOMPLETE && !item.completed);

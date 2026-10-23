@@ -40,11 +40,17 @@ fn publish_request<Next>(c: web::Ctx&) {
     }
 }
 
+// Served at /openapi.json and /docs, generated from the routes below (src/app/openapi.goose).
 fn app(c: web::Ctx&) {
     request_id(c) { c.logger() { publish_request(c) {
-        c.routes() {
-            c.get("/health") { c.json(Health { status: "ok" }); };
-            todo::mount(c, can_mutate, on_mutation);
+        web::openapi(c, web::OpenApiInfo { title: "Goose Todo API", version: "1.0.0",
+            description: "A small JSON Todo API. Errors use {\"error\":{\"code\",\"message\"}}." }) {
+            c.routes() {
+                web::summary(c, "Check that the server is running");
+                web::returns<Health>(c, web::HTTP_OK);
+                c.get("/health") { c.json(Health { status: "ok" }); };
+                todo::mount(c, can_mutate, on_mutation);
+            };
         };
     }}};
 }

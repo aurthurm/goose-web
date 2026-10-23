@@ -60,3 +60,14 @@ fn ::cookie(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::cookie
 fn ::set_cookie(c: web::Ctx&, name: const u8[:], value: const u8[:], opts: web::CookieOptions = web::CookieOptions { .. }) -> bool {
     return web::set_cookie(c, name, value, opts);
 }
+
+// OpenAPI. web::openapi(c, info) { c.routes() { ... } } serves the document; annotations
+// are no-ops except in the describe pass. Generic type arguments need the web:: form.
+fn ::openapi<F>(c: web::Ctx&, info: web::OpenApiInfo) { web::openapi(c, info, F); }
+fn ::summary(c: web::Ctx&, text: const u8[:]) { web::summary(c, text); }
+fn ::tag(c: web::Ctx&, name: const u8[:]) { web::tag(c, name); }
+fn ::accepts<T>(c: web::Ctx&) { web::accepts<T>(c); }
+fn ::returns<T>(c: web::Ctx&, status: i32) { web::returns<T>(c, status); }
+fn ::returns_list<T>(c: web::Ctx&, status: i32) { web::returns_list<T>(c, status); }
+fn ::returns_empty(c: web::Ctx&, status: i32) { web::returns_empty(c, status); }
+fn ::query_params<T>(c: web::Ctx&) { web::query_params<T>(c); }

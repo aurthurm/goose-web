@@ -248,6 +248,51 @@ def test_capacity(executable):
         assert added["id"] == 129
 
 
+def read_framed(client, buffer):
+    """One response from a keep-alive socket, framed by Content-Length. Returns the rest of the bytes."""
+    while b"\r\n\r\n" not in buffer:
+        chunk = client.recv(16384)
+        assert chunk, "connection closed before the headers ended"
+        buffer += chunk
+    header_bytes, rest = buffer.split(b"\r\n\r\n", 1)
+    lines = header_bytes.split(b"\r\n")
+    status = int(lines[0].split(b" ")[1])
+    fields = {key.decode().lower(): val.decode() for key, val in (line.split(b": ", 1) for line in lines[1:])}
+    length = int(fields["content-length"])
+    while len(rest) < length:
+        chunk = client.recv(16384)
+        assert chunk, "connection closed inside the body"
+        rest += chunk
+    return status, fields, rest[:length], rest[length:]
+
+
+def test_openapi(executable):
+    with server(executable, "--memory") as port:
+        with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
+            # Two documents and a normal request on one keep-alive connection.
+            client.sendall(b"GET /openapi.json HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            status, fields, payload, rest = read_framed(client, b"")
+            assert status == 200 and fields["content-type"] == "application/json", fields
+            assert len(payload) < 65536, "the document must fit the response cap"
+            spec = json.loads(payload)
+            assert spec["openapi"] == "3.1.0" and spec["info"]["title"] == "Goose Todo API"
+            assert sorted(spec["paths"]) == ["/health", "/todos", "/todos/{id}"]
+            assert sorted(spec["paths"]["/todos"]) == ["get", "post"]
+            assert sorted(spec["paths"]["/todos/{id}"]) == ["delete", "get", "patch", "put"]
+            assert spec["paths"]["/todos"]["post"]["requestBody"]["content"]["application/json"]["schema"]["required"] == ["title"]
+            assert "/openapi.json" not in spec["paths"] and "/docs" not in spec["paths"]
+
+            client.sendall(b"GET /docs HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            status, fields, page, rest = read_framed(client, rest)
+            assert status == 200 and fields["content-type"].startswith("text/html"), fields
+            assert b'url: "/openapi.json"' in page and b"cdn.jsdelivr.net/npm/swagger-ui-dist@" in page
+
+            client.sendall(b"GET /todos HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            status, fields, payload, rest = read_framed(client, rest)
+            assert status == 200 and json.loads(payload) == {"items": [], "total": 0, "limit": 8, "offset": 0}
+            assert rest == b""
+
+
 def main():
     executable = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory(prefix="goose-todos-") as temporary:
@@ -257,7 +302,8 @@ def main():
         test_storage_failure(executable, directory)
         test_corrupt_startup(executable, directory)
         test_capacity(executable)
-    print("Todo API tests passed: CRUD, pagination, validation, UTF-8, persistence, failure rollback, capacity")
+        test_openapi(executable)
+    print("Todo API tests passed: CRUD, pagination, validation, UTF-8, persistence, failure rollback, capacity, OpenAPI and docs")
 
 
 if __name__ == "__main__":

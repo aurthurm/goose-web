@@ -244,3 +244,16 @@ c.routes() {
   the describe pass. Paths configurable in `OpenApiInfo`.
 - Output must stay within the response cap; generation is pure and testable via a unit test that
   validates the JSON parses and contains expected paths/schemas.
+
+### Implementation notes (v0.3 OpenAPI, as built)
+
+- Goose requires a resizable field to be the last field of its struct, so the describe state
+  (`OpenApiState` in `src/app/openapi_state.goose`) keeps its fixed-capacity fragments first and its
+  growable text buffer last.
+- The routes block captures `c`, so Goose refuses to shrink `c` (`clear()`) while the block is live.
+  Describe state is therefore changed only by building a local copy and assigning it back whole.
+- The describe pass is entered from `routes()` when the request is for the document or the docs page
+  (`oas_kind`). Annotations check `c.pass == PASS_DESCRIBE` first, so they are free elsewhere.
+- Path parameters are documented as strings, as designed; query parameters are all optional.
+- Still open: per-field constraints beyond the integer width (for example `limit` 1..8), per-status
+  error codes such as 409 and 503, and `$ref` reuse. `examples/basic/openapi.yaml` is kept for those.

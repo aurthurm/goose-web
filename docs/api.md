@@ -391,3 +391,76 @@ served while that happens. The `os` stdlib has no file size query, so the read i
 bounded by the response capacity. The response is: a body over `MAX_RESPONSE_BODY_BYTES` becomes
 500 `response_too_large`. Keep served trees small and trusted, or serve large assets elsewhere.
 Symbolic links inside the directory are followed.
+
+### OpenAPI
+
+`web::openapi(c, info) { c.routes() { ... } }` serves an OpenAPI 3.1 document at `info.json_path`
+(default `/openapi.json`) and a Swagger UI page at `info.docs_path` (default `/docs`, loading a pinned
+`swagger-ui-dist` build from cdn.jsdelivr.net). The document is generated from the same routes block:
+the routes run once more in a *describe* pass in which no route body runs. The document paths are
+answered only when `openapi` wraps the routes; otherwise they are ordinary 404s.
+
+```goose
+web::openapi(c, web::OpenApiInfo { title: "Todo API", version: "1.0.0", description: "..." }) {
+    c.routes() {
+        web::summary(c, "Create a todo");
+        web::accepts<TodoInput>(c);                  // requestBody (application/json)
+        web::returns<Todo>(c, web::HTTP_CREATED);    // response schema for one status
+        c.post("/todos") { ... };
+        web::query_params<ListParams>(c);            // query parameters from struct fields
+        web::returns_list<Todo>(c, web::HTTP_OK);    // array response
+        c.get("/todos") { ... };
+    };
+};
+```
+
+Annotations are plain calls placed before the route they describe. Outside the describe pass they do
+nothing, so they cost normal requests nothing and may be used in any app. They attach to the next
+route only:
+
+| Call | Documents |
+| --- | --- |
+| `web::summary(c, text)` | operation summary |
+| `web::tag(c, name)` | tag; default is the first segment of the enclosing `c.group` prefix |
+| `web::accepts<T>(c)` | `requestBody` (`application/json`, required) from struct `T` |
+| `web::returns<T>(c, status)` | response `status` with the schema of struct `T` |
+| `web::returns_list<T>(c, status)` | response with an array of `T` |
+| `web::returns_empty(c, status)` | response with no body (for example 204) |
+| `web::query_params<T>(c)` | optional query parameters, one per field of `T` |
+
+Generic calls are written in the non-UFCS form (`web::accepts<T>(c)`), since UFCS takes no explicit
+type arguments (as with `body<T>(c)`).
+
+Schemas are inline (no `$ref`), built from `fields<T>`:
+
+- integers are `integer` with `minimum`/`maximum` for their width (`u64` up to `i64` max, as the
+  codec accepts); `f32`/`f64` are `number`; `bool` is `boolean`.
+- `u8[..N]` text is `string` with `maxLength: N`; other limited arrays are `array` with `maxItems: N`.
+- A struct nested in another struct needs a registration in namespace `web`, next to its JSON one:
+
+```goose
+fn web::json_schema_value(out: u8[>..]&, v: Inner&) { web::json_schema_fields(out, v); }
+```
+
+- Every field is `required` unless the struct lists its optional fields with a registered hook (a
+  comma list; Goose cannot see declared defaults, so this is explicit):
+
+```goose
+fn web::optional_fields(v: TodoInput&) -> const u8[:] { return "completed"; }
+```
+
+Each operation also documents the framework's error envelope (`{"error":{"code","message"}}`) for
+400, 404, 405 (with `Allow`), 415, 422 and 500, unless the route declares that status itself.
+Path parameters `:id` become `{id}` and are documented as required strings.
+
+Limits, stated so they are not a surprise:
+
+- Constraints beyond the width (for example `limit` is 1..8) are not expressible; write them in the
+  `summary` or in the docs.
+- One schema per request body. PUT and PATCH therefore use separate documentation structs when their
+  required fields differ from POST's.
+- `any()` routes have no OpenAPI method and are not documented.
+- Annotation fragments are bounded (4 KiB per request body, responses or query parameters). Overflow
+  aborts while `/openapi.json` is generated, which is a programmer error; the document itself must
+  fit the response cap (`MAX_RESPONSE_BODY_BYTES`, 64 KiB today).
+- The document is compact JSON with no whitespace and is regenerated per request.
