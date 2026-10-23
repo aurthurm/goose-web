@@ -15,11 +15,17 @@ an empty view when missing. Empty and absent values are not distinguished.
 state unchanged. Capacity is 16 headers, names 64 bytes, values 256 bytes. Invalid names,
 controls, framing headers, and content-type overrides are rejected; use `content_type`
 for that field. Serialization also validates direct struct mutations and rejects duplicates.
-The response body is an inline array of up to 64 KiB (`MAX_RESPONSE_BODY_BYTES`); every request
-pays for that inline capacity, which is why it is not larger (1 MiB measured ~4x slower). The
-runtime also enforces `max_response_bytes`; a larger body becomes a complete 500
-`response_too_large` JSON error. Serialized responses live in a shared chunk pool, so
-the body limit does not multiply per connection slot.
+The body is a growable buffer, read with `body_of(response)` (a `const u8[:]` view) and `body_len(response)`.
+Writes are `set_body(response, bytes) -> bool` (replaces the body) and `append_body(response, bytes) -> bool`
+(extends it). Each returns false, leaving the response unchanged, when the write would exceed
+`response.max_body`. The runtime sets `max_body` from `config.max_response_bytes` (default 1 MiB, ceiling
+`MAX_RESPONSE_BODY_BYTES` = 16 MiB); an over-limit body becomes a complete 500 `response_too_large` JSON
+error. Error envelopes may use `MAX_ERROR_BODY_BYTES` (64 KiB) beyond `max_body`, so a refused write can
+still be replaced by its 500. `drop_body(response)` discards the body. Writes only append during a request
+(the buffer never shrinks while a handler may hold views); the runtime clears it after the response is
+serialized, and keeps its capacity for the next request, so memory tracks the largest response served
+(bounded by the ceiling). `max_body` counts every byte the buffer holds, including bodies that were replaced,
+so the bound holds however many writes a handler makes.
 
 `append_header(response, name, value)` is `set_header` except for `Set-Cookie`, which may repeat:
 each call adds one line (RFC 6265). Serialization allows repeated `Set-Cookie` and still rejects
@@ -115,7 +121,8 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | public_bind | false | loopback; true explicitly binds IPv4 wildcard |
 | max_clients | 64 | 1..64 |
 | max_request_bytes | 8192 | 1..8192, includes headers and body |
-| max_response_bytes | 65536 | 1..65536, response body limit; larger bodies become a 500 |
+| max_response_bytes | 1048576 | 1..16777216, response body limit; larger bodies become a 500 |
+| max_pool_bytes | 8388608 | `max_response_bytes` + 8192 .. 67108864, bytes of serialized responses in flight; a response that does not fit gets a 503 and the connection closes |
 | read_timeout_ms | 5000 | 1..86400000, time to receive each request once its first byte arrives |
 | write_timeout_ms | 5000 | 1..86400000, total write phase per response |
 | idle_timeout_ms | 5000 | 1..86400000, wait for the next request's first byte on a persistent connection |
@@ -389,16 +396,15 @@ application's origin.
 Size and blocking: the file is read on the reactor thread, so no request is served while that
 happens. Each read is bounded before any byte of the file is copied:
 
-1. `stat` reports the regular file's size. A size over `MAX_RESPONSE_BODY_BYTES` (64 KiB) is
-   refused with 500 `file_too_large` and the file is never read.
+1. `stat` reports the regular file's size. A size over the response's `max_body` (the configured
+   `max_response_bytes`, default 1 MiB) is refused with 500 `file_too_large` and the file is never read.
 2. Otherwise the reader asks for `size + 1` bytes (the spare byte detects a file that changed
    during the read). The count must equal the stat size; any other count is a failed read.
 3. A missing entry, directory, FIFO or other non-regular file is 404 `not_found`. A file that
    exists but cannot be opened or read, or that changed size during the read, is 500
    `file_read_failed`. Before this change these cases answered 404.
 
-A lower `max_response_bytes` in `ServerConfig` still applies: the runtime answers a larger
-serialized response with 500 `response_too_large`. Keep served trees small and trusted, or serve
+Keep served trees small and trusted, or serve
 large assets elsewhere. Symbolic links inside the directory are followed.
 
 The framework reads files and the environment through `src/sys/`, not the `os` stdlib. Importing

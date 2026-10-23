@@ -50,22 +50,22 @@ fn route_request(request: web::Request, response: web::Response&) {
     match matched.handler_id {
         ROUTE_HEALTH => {
             response.content_type = web::CONTENT_TYPE_JSON;
-            response.body = "{\"status\":\"ok\"}\n";
+            web::set_body(response, "{\"status\":\"ok\"}\n");
         },
-        ROUTE_ECHO => { response.body = request.body; },
+        ROUTE_ECHO => { web::set_body(response, request.body); },
         ROUTE_GREETING => {
             let name = web::query_value(request.target, "name");
             if name.status == web::HTTP_BAD_REQUEST || name.status == web::HTTP_CONTENT_TOO_LARGE {
                 web::application_error(response, name.status, "invalid_query", "Query could not be decoded within its limit");
             } else {
-                response.body = "Hello, ";
-                if name.status == web::HTTP_OK { response.body.append(name.value); }
-                else { response.body.append("Goose"); }
-                response.body.append("!\n");
+                web::set_body(response, "Hello, ");
+                if name.status == web::HTTP_OK { web::append_body(response, name.value); }
+                else { web::append_body(response, "Goose"); }
+                web::append_body(response, "!\n");
             }
         },
-        ROUTE_USER => { response.body = web::path_param(matched, "id"); },
-        ROUTE_NEW_USER => { response.body = "New user form\n"; },
+        ROUTE_USER => { web::set_body(response, web::path_param(matched, "id")); },
+        ROUTE_NEW_USER => { web::set_body(response, "New user form\n"); },
         _ => { web::application_error(response, web::HTTP_INTERNAL_SERVER_ERROR, "unknown_handler", "Route handler is unavailable"); }
     }
 }

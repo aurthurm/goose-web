@@ -206,6 +206,22 @@ Decision (prototyped and compiling): `Response.body` becomes an owned grow array
 - Acceptance: hello benchmark (3000 fresh connections, `GET /health`) within 10% of the 8 KiB
   build (~11k req/s on the dev box), and a 1 MiB body round-trips intact over a socket.
 
+Implementation notes (v0.3, as built):
+
+- `Response` is `{ status, content_type, headers, body_start, max_body, body: u8[>..] }`; the body is the
+  last field. `Ctx.response` is `Response&`, so `Ctx` stays fixed-size and the runtime passes its one
+  reused scratch response into every handler (no per-request copy back). Tests own the response they
+  build a `Ctx` on.
+- Cap: `max_body` bounds every byte the buffer holds, including replaced bodies. Error envelopes may
+  exceed it by `MAX_ERROR_BODY_BYTES`, so a refused write can still be replaced by its 500.
+- Pool: serialized responses are linked chunk lists (`pool.next`), and a connection slot keeps only its
+  head chunk, so 64 idle slots cost no response storage. The head is serialized into a reused buffer and
+  the body is copied straight from the scratch response, so there is no 16 MiB wire buffer.
+  `max_pool_bytes` (default 8 MiB, validated to hold one maximal response) caps the pool; when a response
+  does not fit, the runtime answers 503 `Service Unavailable` and closes the connection.
+- Memory bound: scratch body capacity (up to `max_response_bytes`, 16 MiB ceiling) + pool
+  (`max_pool_bytes`, 64 MiB ceiling) + head buffer (under 8 KiB) + 8 KiB input per slot.
+
 ## v0.3 design: OpenAPI from routes and structs
 
 Goal: FastAPI-style `/openapi.json` (+ a `/docs` page) generated from the same `c.routes()` block.

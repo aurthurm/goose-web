@@ -48,10 +48,12 @@ Completed parsing and successful routing/query lookup use `HTTP_OK`.
 | --- | --- |
 | `MAX_CLIENTS` | 64 connections |
 | `MAX_REQUEST_BYTES` | 8192 bytes, including headers and body |
-| `MAX_RESPONSE_BODY_BYTES` | 65536 bytes (64 KiB), the hard ceiling for `max_response_bytes` |
+| `MAX_RESPONSE_BODY_BYTES` | 16777216 bytes (16 MiB), the hard ceiling for `max_response_bytes` |
+| `MAX_ERROR_BODY_BYTES` | 65536 bytes: error envelope size, and room beyond `max_body` for error envelopes |
 | `MAX_RESPONSE_HEADER_BYTES` | 8192 bytes for serialized status line and headers |
-| `MAX_RESPONSE_WIRE_BYTES` | 64 KiB body plus header bytes |
-| `RESPONSE_CHUNK_BYTES` / `MAX_RESPONSE_CHUNKS` | 16384 bytes per pooled chunk / chunks one response may span |
+| `MAX_RESPONSE_WIRE_BYTES` | 16 MiB body plus header bytes, the wire size bound |
+| `MAX_RESPONSE_POOL_BYTES` | 67108864 bytes (64 MiB), the ceiling for `max_pool_bytes` |
+| `RESPONSE_CHUNK_BYTES` / `MAX_POOL_CHUNKS` | 16384 bytes per pooled chunk / pool capacity in chunks (`MAX_RESPONSE_POOL_BYTES` / chunk size) |
 | `MAX_RESPONSE_HEADERS` | 16 headers |
 | `MAX_HEADER_NAME_BYTES` / `MAX_HEADER_VALUE_BYTES` | 64 / 256 bytes |
 | `MAX_CONTENT_TYPE_BYTES` | 128 bytes |
@@ -72,8 +74,8 @@ Constants can also size application-owned fixed arrays at compile time.
 `server_config()`: `DEFAULT_PORT`, `DEFAULT_PUBLIC_BIND`, `DEFAULT_MAX_CLIENTS`,
 `DEFAULT_MAX_REQUEST_BYTES`, `DEFAULT_READ_TIMEOUT_MS`, `DEFAULT_WRITE_TIMEOUT_MS`,
 `DEFAULT_POLL_TIMEOUT_MS`, `DEFAULT_SHUTDOWN_GRACE_MS`, `DEFAULT_IDLE_TIMEOUT_MS`,
-`DEFAULT_KEEP_ALIVE`, `DEFAULT_MAX_REQUESTS_PER_CONNECTION`, `DEFAULT_MAX_RESPONSE_BYTES`,
-and `DEFAULT_HANDLE_SIGNALS`.
+`DEFAULT_KEEP_ALIVE`, `DEFAULT_MAX_REQUESTS_PER_CONNECTION`, `DEFAULT_MAX_RESPONSE_BYTES` (1 MiB),
+`DEFAULT_MAX_POOL_BYTES` (8 MiB), and `DEFAULT_HANDLE_SIGNALS`.
 `UNLIMITED_REQUESTS` disables the response-count shutdown trigger.
 
 Use `ServerConfig` to select runtime values within the fixed limits. `DEFAULT_*`

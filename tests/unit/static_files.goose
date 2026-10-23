@@ -16,7 +16,7 @@ fn expect_read(directory: const u8[:], name: const u8[:], expected: i32, body_le
     var path: u8[>..] = [];
     path_in(path, directory, name);
     var out: u8[>..] = [];
-    let status = web::read_bounded_file(path[..], web::MAX_RESPONSE_BODY_BYTES, out);
+    let status = web::read_bounded_file(path[..], web::DEFAULT_MAX_RESPONSE_BYTES, out);
     assert(status == expected);
     assert(out.len == body_len);
     return out;
@@ -36,13 +36,13 @@ fn test_read_bounded(directory: const u8[:]) {
 
     // Exactly the cap is served; one byte over is refused before any byte is read.
     var cap: u8[>..] = [];
-    cap.resize(web::MAX_RESPONSE_BODY_BYTES, 'x');
+    cap.resize(web::DEFAULT_MAX_RESPONSE_BYTES, 'x');
     path_in(path, directory, "cap.bin");
     assert(write_file(path[..], cap[..]));
-    expect_read(directory, "cap.bin", web::FILE_READ_OK, web::MAX_RESPONSE_BODY_BYTES);
+    expect_read(directory, "cap.bin", web::FILE_READ_OK, web::DEFAULT_MAX_RESPONSE_BYTES);
 
     var over: u8[>..] = [];
-    over.resize(web::MAX_RESPONSE_BODY_BYTES + 1, 'y');
+    over.resize(web::DEFAULT_MAX_RESPONSE_BYTES + 1, 'y');
     path_in(path, directory, "over.bin");
     assert(write_file(path[..], over[..]));
     expect_read(directory, "over.bin", web::FILE_READ_TOO_LARGE, 0);
@@ -50,13 +50,15 @@ fn test_read_bounded(directory: const u8[:]) {
 
 fn test_middleware_errors(directory: const u8[:]) {
     // Oversize files answer 500 file_too_large through the middleware, without Next.
-    var c = web::new_ctx(web::Request { method: "GET", target: "/static/over.bin", body: "", raw_headers: "Host: x\r\n" });
+    var response = web::response();
+    var c = web::new_ctx(web::Request { method: "GET", target: "/static/over.bin", body: "", raw_headers: "Host: x\r\n" }, response);
     web::static_files(c, "/static", directory) { next_called(); };
     assert(c.written && c.response.status == web::HTTP_INTERNAL_SERVER_ERROR);
-    assert(find(c.response.body[..], "\"code\":\"file_too_large\"") >= 0);
+    assert(find(web::body_of(c.response), "\"code\":\"file_too_large\"") >= 0);
 
     // A missing file answers 404 not_found.
-    var missing = web::new_ctx(web::Request { method: "GET", target: "/static/absent.txt", body: "", raw_headers: "Host: x\r\n" });
+    var missing_response = web::response();
+    var missing = web::new_ctx(web::Request { method: "GET", target: "/static/absent.txt", body: "", raw_headers: "Host: x\r\n" }, missing_response);
     web::static_files(missing, "/static", directory) { next_called(); };
     assert(missing.response.status == web::HTTP_NOT_FOUND);
 }

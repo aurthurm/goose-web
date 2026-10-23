@@ -90,7 +90,7 @@ fn test_http() {
     expect_status(big, 431);
 
     var r = web::response();
-    r.body = "hello";
+    assert(web::set_body(r, "hello"));
     var wire: u8[>..] = [];
     web::serialize_response(wire, r);
     assert(find(wire, "Content-Length: 5\r\n") >= 0);

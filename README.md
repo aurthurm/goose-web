@@ -42,7 +42,7 @@ fn main() {
 - Reflective JSON in and out: `body<T>(c)` decodes strict structs (415, 400, 422 written for you); `c.json(value)` encodes any struct.
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
 - Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
-- Bounded memory: fixed capacities for requests, headers, routes, responses, queues and clients.
+- Bounded memory: fixed capacities for requests, headers, routes, queues and clients; response bodies grow on demand up to `max_response_bytes` (1 MiB default, 16 MiB ceiling) and in-flight responses share a pool capped by `max_pool_bytes`.
 - Typed event bus: subscriptions, one-shot listeners, FIFO queue with visible backpressure.
 - Graceful shutdown: SIGINT and SIGTERM stop accepting, drain within a grace period, and report lifecycle stages.
 - Strict HTTP/1.1 request profile: bounded framing, validated targets and Host, explicit 400/413/417/501 rules.

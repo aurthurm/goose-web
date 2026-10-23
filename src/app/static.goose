@@ -21,7 +21,7 @@ namespace web;
 // directories without index.html.
 //
 // Size and blocking: the file's size is read from stat before any byte is read. A file over
-// MAX_RESPONSE_BODY_BYTES is refused with 500 file_too_large and is never read. Otherwise at most
+// the response cap (c.response.max_body) is refused with 500 file_too_large and is never read. Otherwise at most
 // size + 1 bytes are read (see read_bounded_file), on the reactor thread. A file that cannot be
 // read answers 500 file_read_failed. Keep served trees small and trusted. Symlinks are followed.
 
@@ -147,7 +147,7 @@ fn static_files<Next>(c: Ctx&, url_prefix: const u8[:], directory: const u8[:]) 
         return;
     }
     var body: u8[>..] = [];
-    let read = read_bounded_file(full[..], MAX_RESPONSE_BODY_BYTES, body);
+    let read = read_bounded_file(full[..], c.response.max_body, body);
     if read == FILE_READ_MISSING {
         fail(c, HTTP_NOT_FOUND, "not_found", "File not found");
         return;

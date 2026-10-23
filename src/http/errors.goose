@@ -33,13 +33,13 @@ fn error_valid_utf8(text: const u8[:]) -> bool {
 // Control-character policy belongs to the consuming format, not this function.
 fn valid_utf8(text: const u8[:]) -> bool { return error_valid_utf8(text); }
 
-fn error_append(out: u8[..MAX_RESPONSE_BODY_BYTES]&, text: const u8[:]) -> bool {
-    if text.len > MAX_RESPONSE_BODY_BYTES - out.len { return false; }
+fn error_append(out: u8[..MAX_ERROR_BODY_BYTES]&, text: const u8[:]) -> bool {
+    if text.len > MAX_ERROR_BODY_BYTES - out.len { return false; }
     out.append(text);
     return true;
 }
 
-fn error_append_string(out: u8[..MAX_RESPONSE_BODY_BYTES]&, text: const u8[:]) -> bool {
+fn error_append_string(out: u8[..MAX_ERROR_BODY_BYTES]&, text: const u8[:]) -> bool {
     if !error_append(out, "\"") { return false; }
     let hex = "0123456789abcdef";
     for c in text {
@@ -59,7 +59,8 @@ fn error_append_string(out: u8[..MAX_RESPONSE_BODY_BYTES]&, text: const u8[:]) -
 fn error_fallback(result: Response&) -> bool {
     result.status = HTTP_INTERNAL_SERVER_ERROR;
     result.content_type = CONTENT_TYPE_JSON;
-    result.body = "{\"error\":{\"code\":\"internal_error\",\"message\":\"Unable to encode application error\"}}\n";
+    drop_body(result);
+    error_set_body(result, "{\"error\":{\"code\":\"internal_error\",\"message\":\"Unable to encode application error\"}}\n");
     return false;
 }
 
@@ -71,13 +72,13 @@ fn application_error(result: Response&, status: i32, code: const u8[:], message:
     if status < HTTP_MIN_ERROR_STATUS || status > HTTP_MAX_STATUS || !error_valid_utf8(code) || !error_valid_utf8(message) {
         return error_fallback(result);
     }
-    // Inputs may borrow result.body or result.content_type. Consume both in
-    // full before replacing any response fields that could back these views.
-    var body: u8[..MAX_RESPONSE_BODY_BYTES] = [];
+    // Inputs may borrow the response body or content type. Consume both in
+    // full into a local before the response is changed.
+    var body: u8[..MAX_ERROR_BODY_BYTES] = [];
     if !error_append(body, "{\"error\":{\"code\":") || !error_append_string(body, code) ||
        !error_append(body, ",\"message\":") || !error_append_string(body, message) ||
        !error_append(body, "}}\n") { return error_fallback(result); }
-    result.body = body;
+    if !error_set_body(result, body[..]) { return error_fallback(result); }
     result.content_type = CONTENT_TYPE_JSON;
     result.status = status;
     return true;

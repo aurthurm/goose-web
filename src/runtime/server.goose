@@ -18,7 +18,7 @@ struct ServerConfig {
     port: i32, public_bind: bool, max_clients: i64, max_request_bytes: i64, max_response_bytes: i64,
     read_timeout_ms: i64, write_timeout_ms: i64, idle_timeout_ms: i64, poll_timeout_ms: i32,
     shutdown_grace_ms: i64, max_requests: i64, max_requests_per_connection: i64, keep_alive: bool,
-    handle_signals: bool
+    handle_signals: bool, max_pool_bytes: i64
 }
 struct ServerStats {
     accepted: i64, active: i64, completed: i64, rejected: i64,
@@ -34,13 +34,15 @@ fn server_config() -> ServerConfig {
         idle_timeout_ms: DEFAULT_IDLE_TIMEOUT_MS, poll_timeout_ms: DEFAULT_POLL_TIMEOUT_MS,
         shutdown_grace_ms: DEFAULT_SHUTDOWN_GRACE_MS, max_requests: UNLIMITED_REQUESTS,
         max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION, keep_alive: DEFAULT_KEEP_ALIVE,
-        handle_signals: DEFAULT_HANDLE_SIGNALS };
+        handle_signals: DEFAULT_HANDLE_SIGNALS, max_pool_bytes: DEFAULT_MAX_POOL_BYTES };
 }
 // Millisecond durations are capped at one day to keep nanosecond arithmetic safe.
+// The pool must hold one maximal response, so a single response never needs more than the pool.
 fn validate_server_config(c: ServerConfig) -> bool {
     return c.port >= MIN_PORT && c.port <= MAX_PORT && c.max_clients >= 1 && c.max_clients <= MAX_CLIENTS &&
         c.max_request_bytes >= 1 && c.max_request_bytes <= MAX_REQUEST_BYTES &&
         c.max_response_bytes >= 1 && c.max_response_bytes <= MAX_RESPONSE_BODY_BYTES &&
+        c.max_pool_bytes >= c.max_response_bytes + MAX_RESPONSE_HEADER_BYTES && c.max_pool_bytes <= MAX_RESPONSE_POOL_BYTES &&
         c.max_requests >= UNLIMITED_REQUESTS &&
         c.max_requests_per_connection >= UNLIMITED_REQUESTS && c.max_requests_per_connection <= MAX_REQUESTS_PER_CONNECTION &&
         c.read_timeout_ms >= 1 && c.read_timeout_ms <= MAX_TIMEOUT_MS &&
@@ -56,19 +58,24 @@ extern fn gw_send(fd: i32, buffer: const u8[:]) -> i64;
 extern fn gw_poll(fds: const i32[:], interests: const i32[:], ready: i32[:], timeout: i32) -> i32;
 extern fn gw_close(fd: i32);
 
-// Shared store for serialized responses. Chunk k is bytes [k*C, (k+1)*C) of bytes.
-// Freed chunks are reused, so memory tracks the peak of in-flight response bytes.
-// Bounded by MAX_CLIENTS * MAX_RESPONSE_CHUNKS, the most chunks any slot set can hold.
-const MAX_POOL_CHUNKS = MAX_CLIENTS * MAX_RESPONSE_CHUNKS;
+// Shared store for serialized responses in flight. A response is a linked list of
+// chunks: pool.next[id] is the chunk after id, NO_CHUNK at the end. Freed chunks are
+// reused, so memory tracks the peak of in-flight bytes, which never exceeds max_pool_bytes.
 struct ChunkPool {
-    count: i64, free_count: i64, free: i64[MAX_POOL_CHUNKS], bytes: u8[>..]
+    count: i64, free_count: i64, max_chunks: i64, free: i64[MAX_POOL_CHUNKS], next: i64[MAX_POOL_CHUNKS],
+    bytes: u8[>..]
 }
+// head is the first chunk not yet fully sent; head_start is the byte offset of head's first byte.
 struct Connection {
     fd: i32, used: i64, sent: i64, wire_len: i64, writing: bool, keep: bool, pipelined: bool,
-    idle: bool, deadline: i64, served: i64, chunk_count: i64, chunks: i64[MAX_RESPONSE_CHUNKS],
+    idle: bool, deadline: i64, served: i64, head: i64, head_start: i64,
     input: u8[MAX_REQUEST_BYTES]
 }
 
+// Chunks that a new response could still take: freed ones plus never-used capacity.
+fn pool_available(pool: ChunkPool&) -> i64 { return pool.free_count + pool.max_chunks - pool.count; }
+
+// Caller checks pool_available first.
 fn chunk_take(pool: ChunkPool&) -> i64 {
     if pool.free_count > 0 {
         pool.free_count -= 1;
@@ -80,12 +87,19 @@ fn chunk_take(pool: ChunkPool&) -> i64 {
     return id;
 }
 
+// Returns the chain starting at c.head to the pool. A connection with no staged
+// response has wire_len 0 and no chain.
 fn release_chunks(c: Connection&, pool: ChunkPool&) {
-    for i in c.chunk_count {
-        pool.free[pool.free_count] = c.chunks[i];
-        pool.free_count += 1;
+    if c.wire_len > 0 {
+        while c.head != NO_CHUNK {
+            let next = pool.next[c.head];
+            pool.free[pool.free_count] = c.head;
+            pool.free_count += 1;
+            c.head = next;
+        }
     }
-    c.chunk_count = 0;
+    c.head = NO_CHUNK;
+    c.head_start = 0;
     c.wire_len = 0;
     c.sent = 0;
 }
@@ -103,25 +117,36 @@ fn close_connection(c: Connection&, stats: ServerStats&, pool: ChunkPool&) {
     c.served = 0;
 }
 
-// Serializes r into the pool and arms the write phase. Consumes the request bytes
-// before `consumed` on keep-alive, so the next pipelined request starts at index 0.
-fn stage_response(c: Connection&, pool: ChunkPool&, r: Response&, head: bool, close: bool, keep_alive: bool, timeout_ms: i64) {
-    var wire: u8[>..] = [];
-    serialize_response(wire, r, head, close, keep_alive);
+// Serializes r (head into head_buf, body straight from r) into pool chunks and arms the
+// write phase. Returns false, taking nothing, when the pool lacks chunks for the whole response.
+fn stage_response(c: Connection&, pool: ChunkPool&, head_buf: u8[>..]&, r: Response&, head: bool, close: bool, keep_alive: bool, timeout_ms: i64) -> bool {
     release_chunks(c, pool);
+    head_buf.clear();
+    prepare_response(r);
+    serialize_head(head_buf, r, close, keep_alive);
+    let body = if sends_body(r, head) { body_of(r) } else { "" };
+    let total = head_buf.len + body.len;
+    if (total + RESPONSE_CHUNK_BYTES - 1) / RESPONSE_CHUNK_BYTES > pool_available(pool) { return false; }
     var pos: i64 = 0;
-    while pos < wire.len {
+    var prev: i64 = NO_CHUNK;
+    while pos < total {
         let id = chunk_take(pool);
-        let n = if wire.len - pos < RESPONSE_CHUNK_BYTES { wire.len - pos } else { RESPONSE_CHUNK_BYTES };
-        for i in n { pool.bytes[id * RESPONSE_CHUNK_BYTES + i] = wire[pos + i]; }
-        c.chunks[c.chunk_count] = id;
-        c.chunk_count += 1;
+        let n = if total - pos < RESPONSE_CHUNK_BYTES { total - pos } else { RESPONSE_CHUNK_BYTES };
+        for i in n {
+            let at = pos + i;
+            pool.bytes[id * RESPONSE_CHUNK_BYTES + i] = if at < head_buf.len { head_buf[at] } else { body[at - head_buf.len] };
+        }
+        pool.next[id] = NO_CHUNK;
+        if prev == NO_CHUNK { c.head = id; } else { pool.next[prev] = id; }
+        prev = id;
         pos += n;
     }
-    c.wire_len = wire.len;
+    c.head_start = 0;
+    c.wire_len = total;
     c.sent = 0;
     c.writing = true;
     c.deadline = clock_ns() + timeout_ms * NANOSECONDS_PER_MILLISECOND;
+    return true;
 }
 
 // Drops the first `consumed` bytes of input. Bytes move forward, so overlap is safe.
@@ -143,7 +168,13 @@ fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
     control.stopping = false;
     var clients: Connection[MAX_CLIENTS] = [default<Connection>(); MAX_CLIENTS];
     for i in clients.len { clients[i].fd = INVALID_SOCKET; }
-    var pool = ChunkPool { count: 0, free_count: 0, free: [0; MAX_POOL_CHUNKS], bytes: [] };
+    var pool = ChunkPool { count: 0, free_count: 0, max_chunks: (config.max_pool_bytes + RESPONSE_CHUNK_BYTES - 1) / RESPONSE_CHUNK_BYTES,
+        free: [0; MAX_POOL_CHUNKS], next: [0; MAX_POOL_CHUNKS], bytes: [] };
+    // One response and one head buffer serve every request. Handlers run one at a time, and
+    // the body buffer is cleared after each response is staged, so its capacity is reused.
+    var scratch = response();
+    scratch.max_body = config.max_response_bytes;
+    var head_buf: u8[>..] = [];
     var grace_deadline: i64 = 0;
     var success = true;
     Lifecycle(SERVER_STARTED, control.stats);
@@ -211,17 +242,28 @@ fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
             if ready[i + 1] < 0 { close_connection(c, control.stats, pool); continue; }
             if c.writing {
                 if ready[i + 1] == 0 { continue; }
-                // Send from the chunk holding byte `sent`; the chunk's bytes end at chunk end or wire end.
-                let offset = c.sent % RESPONSE_CHUNK_BYTES;
-                let base = c.chunks[c.sent / RESPONSE_CHUNK_BYTES] * RESPONSE_CHUNK_BYTES;
+                // Send from the head chunk; it holds bytes [head_start, head_start + C) of the wire, or up to wire end.
+                let offset = c.sent - c.head_start;
                 let left = c.wire_len - c.sent;
-                let limit = if left < RESPONSE_CHUNK_BYTES - offset { left } else { RESPONSE_CHUNK_BYTES - offset };
-                let n = gw_send(c.fd, pool.bytes[base + offset..base + offset + limit]);
+                let room = RESPONSE_CHUNK_BYTES - offset;
+                let limit = if left < room { left } else { room };
+                let base = c.head * RESPONSE_CHUNK_BYTES + offset;
+                let n = gw_send(c.fd, pool.bytes[base..base + limit]);
                 if n == IO_WOULD_BLOCK { continue; }
                 if n <= 0 { close_connection(c, control.stats, pool); continue; }
                 c.sent += n;
                 control.stats.bytes_written += n;
-                if c.sent < c.wire_len { continue; }
+                if c.sent < c.wire_len {
+                    // A finished chunk goes back to the pool and the chain moves on.
+                    if c.sent - c.head_start == RESPONSE_CHUNK_BYTES {
+                        let next = pool.next[c.head];
+                        pool.free[pool.free_count] = c.head;
+                        pool.free_count += 1;
+                        c.head = next;
+                        c.head_start += RESPONSE_CHUNK_BYTES;
+                    }
+                    continue;
+                }
                 control.stats.completed += 1;
                 release_chunks(c, pool);
                 c.writing = false;
@@ -259,12 +301,9 @@ fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
                 status = if find(c.input[..c.used], "\r\n\r\n") < 0 { HTTP_REQUEST_HEADER_FIELDS_TOO_LARGE } else { HTTP_CONTENT_TOO_LARGE };
             }
             if status == PARSE_INCOMPLETE { continue; }
-            var r = response();
-            if status == HTTP_OK { H(request, r); }
-            else { r.status = status; r.body = reason(status); }
-            if r.body.len > config.max_response_bytes {
-                application_error(r, HTTP_INTERNAL_SERVER_ERROR, "response_too_large", "Response body exceeds configured limit");
-            }
+            // scratch is empty here: the previous response was reset after staging.
+            if status == HTTP_OK { H(request, scratch); }
+            else { scratch.status = status; set_body(scratch, reason(status)); }
             // Parser errors always close: the byte boundary of the next request is unknown.
             let http10 = status == HTTP_OK && request_http10(c.input[..c.used]);
             let head = status == HTTP_OK && request.method == METHOD_HEAD;
@@ -286,7 +325,17 @@ fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
             if c.served > 0 { control.stats.reused += 1; }
             c.served += 1;
             let consumed = if status == HTTP_OK { find(c.input[..c.used], "\r\n\r\n") + 4 + request.body.len } else { c.used };
-            stage_response(c, pool, r, head, !keep, keep && http10, config.write_timeout_ms);
+            var staged = stage_response(c, pool, head_buf, scratch, head, !keep, keep && http10, config.write_timeout_ms);
+            if !staged {
+                // The pool is full of in-flight responses. Answer 503 and close, which fits in a chunk.
+                keep = false;
+                reset_response(scratch);
+                scratch.status = HTTP_SERVICE_UNAVAILABLE;
+                set_body(scratch, "Service Unavailable\n");
+                staged = stage_response(c, pool, head_buf, scratch, false, true, false, config.write_timeout_ms);
+            }
+            reset_response(scratch);
+            if !staged { close_connection(c, control.stats, pool); continue; }
             c.keep = keep;
             if keep { consume_input(c, consumed); }
         }
