@@ -81,7 +81,8 @@ fn test_http() {
     expect_status("GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\nContent-Length: 1\r\n\r\nx", 400);
     expect_status("GET / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n", 501);
     expect_status("POST / HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n\r\n", 417);
-    expect_status("GET / HTTP/1.0\r\nHost: x\r\n\r\n", 505);
+    expect_status("GET / HTTP/1.0\r\nHost: x\r\n\r\n", 200);
+    expect_status("GET / HTTP/2.0\r\nHost: x\r\n\r\n", 505);
     expect_status("GET / HTTP/1.1\r\nHost : x\r\n\r\n", 400);
     expect_status("GET / HTTP/1.1\r\nHost: x\r\n folded: value\r\n\r\n", 400);
     expect_status("GET / HTTP/1.1\r\nHost: x\r\nX: bad\x00value\r\n\r\n", 400);
@@ -141,9 +142,25 @@ fn test_headers() {
     assert(full.headers[0].value == "replace");
 }
 
+// Keep-alive framing: the default is silent HTTP/1.1 persistence; close and HTTP/1.0 keep-alive
+// add their Connection field only when asked.
+fn test_connection_framing() {
+    var r = web::response();
+    var wire: u8[>..] = [];
+    web::serialize_response(wire, r, false, false, false);
+    assert(find(wire, "Connection") < 0 && find(wire, "Content-Length: 0\r\n") >= 0);
+    wire.clear();
+    web::serialize_response(wire, r, false, true, false);
+    assert(find(wire, "Connection: close\r\n") >= 0);
+    wire.clear();
+    web::serialize_response(wire, r, false, false, true);
+    assert(find(wire, "Connection: keep-alive\r\n") >= 0 && find(wire, "Connection: close") < 0);
+}
+
 fn main() {
     test_events();
     test_http();
     test_headers();
+    test_connection_framing();
     print("Core tests passed: events, HTTP parsing, response framing");
 }

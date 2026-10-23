@@ -8,7 +8,27 @@ import subprocess
 import sys
 import time
 
+def read_response(client, head=False):
+    # Frames one response by Content-Length, so persistent connections stay usable.
+    buffer = b""
+    while b"\r\n\r\n" not in buffer:
+        chunk = client.recv(16384)
+        assert chunk, "connection closed before response headers"
+        buffer += chunk
+    headers, body = buffer.split(b"\r\n\r\n", 1)
+    status = int(headers.split(b" ", 2)[1])
+    fields = dict(line.split(b": ", 1) for line in headers.split(b"\r\n")[1:])
+    length = 0 if head else int(fields.get(b"Content-Length", b"0"))
+    while len(body) < length:
+        chunk = client.recv(16384)
+        assert chunk, "connection closed inside response body"
+        body += chunk
+    assert len(body) == length, (headers, body[:80])
+    return status, fields, body[:length]
+
+
 def exchange(port, raw, fragments=False):
+    # One request per call; the socket is discarded afterwards. The server may keep it open.
     with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
         if fragments:
             for start in range(0, len(raw), 7):
@@ -16,17 +36,7 @@ def exchange(port, raw, fragments=False):
                 time.sleep(0.001)
         else:
             client.sendall(raw)
-        chunks = []
-        while chunk := client.recv(16384):
-            chunks.append(chunk)
-    wire = b"".join(chunks)
-    headers, body = wire.split(b"\r\n\r\n", 1)
-    status = int(headers.split(b" ", 2)[1])
-    fields = dict(line.split(b": ", 1) for line in headers.split(b"\r\n")[1:])
-    assert fields[b"Connection"] == b"close"
-    if not raw.startswith(b"HEAD "):
-        assert int(fields[b"Content-Length"]) == len(body), wire
-    return status, fields, body
+        return read_response(client, raw.startswith(b"HEAD "))
 
 
 def health(port):
@@ -84,16 +94,20 @@ def test_server(executable):
                 time.sleep(0.02)
         health(port)
         malformed_requests(port)
+        # HTTP/1.1 persists by default, so an explicit close must be honored on the wire.
+        status, fields, _ = exchange(port, b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
+        assert status == 200 and fields[b"Connection"] == b"close"
         with socket.create_connection(("127.0.0.1", port), timeout=3) as slow:
             slow.sendall(b"GET /health HTTP/1.1\r\nHost:")
             start = time.monotonic()
             health(port)
             assert time.monotonic() - start < 1, "incomplete client blocked another request"
             slow.sendall(b" localhost\r\n\r\n")
-            result = b""
-            while chunk := slow.recv(4096):
-                result += chunk
-            assert b"200 OK" in result
+            status, _, _ = read_response(slow)
+            assert status == 200
+            # Same socket, second request: keep-alive is the default.
+            slow.sendall(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            assert read_response(slow)[0] == 200
         with ThreadPoolExecutor(max_workers=24) as pool:
             list(pool.map(health, [port] * 48))
         payload = b"hello\x00from goose\xff"
@@ -158,7 +172,7 @@ def test_server(executable):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-    print("Socket tests passed: concurrency, fragmentation, limits, routing, query decoding, middleware, errors, headers, timeout")
+    print("Socket tests passed: concurrency, fragmentation, limits, routing, query decoding, middleware, errors, headers, timeout, keep-alive")
 
 
 if __name__ == "__main__":

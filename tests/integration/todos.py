@@ -18,7 +18,8 @@ def free_port():
 
 def request(port, method, target, value=None, *, raw=None, content_type="application/json"):
     body = raw if raw is not None else (json.dumps(value, ensure_ascii=False).encode() if value is not None else b"")
-    headers = f"{method} {target} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {len(body)}\r\n"
+    # One exchange per socket: ask for close so the response ends at EOF, as this helper expects.
+    headers = f"{method} {target} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {len(body)}\r\n"
     if content_type is not None:
         headers += f"Content-Type: {content_type}\r\n"
     with socket.create_connection(("127.0.0.1", port), timeout=3) as client:

@@ -6,7 +6,7 @@ import std;
 struct Item { id: i64, title: u8[..16], done: bool }
 struct ItemIn { title: u8[..16], done: bool = false }
 struct Patch { title: u8[..16] = "keep", done: bool = false }
-struct Big { data: u8[..8192] }
+struct Big { data: u8[..web::MAX_RESPONSE_BODY_BYTES] }
 
 // Nested-struct registration (docs/api.md): lists of Item encode through this pair.
 fn web::json_put_value(out: u8[>..]&, v: Item&) -> bool { return web::json_put_fields(out, v); }
@@ -157,7 +157,7 @@ fn test_json_list() {
 fn test_json_too_large() {
     var c = make_ctx("GET", "/big", "Host: x\r\n", "");
     var big = Big { data: [] };
-    for i in 8192 { big.data.push('a'); }
+    for i in web::MAX_RESPONSE_BODY_BYTES { big.data.push('a'); }
     c.json(big);
     expect_error(c, web::HTTP_INTERNAL_SERVER_ERROR, "\"code\":\"response_too_large\"");
 }

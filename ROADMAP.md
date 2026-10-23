@@ -24,11 +24,12 @@
 - [x] Typed request bodies (`body<T>`, `body_result<T>`) and JSON responses (`c.json`, `c.json_list`) with 415, 400 and 422 handled.
 - [x] Built-in middleware (`request_id`, `logger`, `cors`, `require_json`) and user middleware as `fn name<Next>(c)`.
 - [x] Todo example rewritten onto the application API; `examples/hello` smoke test; unit contracts for routes, bodies and store.
-- Next: keep-alive connections.
-- Next: chunked and streaming bodies for responses larger than 8 KiB.
 - [x] Static file serving as middleware (`c.static_files`): GET/HEAD, index.html, content types, traversal and encoding refusals.
 - [x] Cookies: `c.cookie` reads the Cookie header; `c.set_cookie` emits validated Set-Cookie lines (repeatable).
 - [x] Typed query binding: `query<T>(c)` and `query_result<T>(c)` with strict keys and `invalid_query` errors.
+- [x] Keep-alive connections: persistent HTTP/1.1 and opt-in HTTP/1.0, in-order pipelining, idle and per-connection limits.
+- [x] Response bodies up to 64 KiB through a pooled, bounded response buffer (`max_response_bytes`).
+- Next: move the response body out of the inline `Response` struct so capacity no longer costs every request; then chunked/streaming bodies.
 - Next: automatic OpenAPI generation from structs.
 - Next: typed configuration from environment variables.
 
@@ -37,7 +38,8 @@
 - [x] Strict request profile, malformed-input/prefix regressions, and deterministic parser fuzz/property checks.
 - [x] Pinned upstream compiler and Linux CI definition for GCC and Clang.
 - Broader conformance and coverage-guided fuzzing before public deployment.
-- Streaming, keep-alive, and chunked encoding with explicit ownership/backpressure.
+- [x] Keep-alive with explicit idle, per-request, and per-connection limits.
+- Streaming and chunked encoding with explicit ownership/backpressure.
 - Windows transport, then evaluate epoll/kqueue under measured load.
 - TLS integration and deployment guidance.
 

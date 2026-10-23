@@ -147,6 +147,37 @@ fn request_header(request: Request, name: const u8[:]) -> const u8[:] {
     return "";
 }
 
+// True when the request line says HTTP/1.0. The parser has already validated it.
+fn request_http10(raw: const u8[:]) -> bool {
+    let end = find(raw, "\r\n");
+    if end < 0 || end < 8 { return false; }
+    return raw[end - 8..end] == HTTP_VERSION_10;
+}
+
+// True when any Connection field lists the token (case-insensitive, comma-separated).
+// Scans every field: a second Connection line still counts.
+fn request_connection_has(request: Request, token_name: const u8[:]) -> bool {
+    var pos: i64 = 0;
+    while pos < request.raw_headers.len {
+        let rest = request.raw_headers[pos..];
+        let end = find(rest, "\r\n");
+        if end < 0 { return false; }
+        let line = rest[..end];
+        let colon = find(line, ":");
+        if colon > 0 && equal_header(line[..colon], HEADER_CONNECTION) {
+            var start: i64 = colon + 1;
+            while start <= line.len {
+                let comma = find(line[start..], ",");
+                let stop = if comma < 0 { line.len } else { start + comma };
+                if equal_header(request_ows(line[start..stop]), token_name) { return true; }
+                start = stop + 1;
+            }
+        }
+        pos += end + 2;
+    }
+    return false;
+}
+
 // Result 0 = incomplete, HTTP_OK = complete, otherwise an HTTP error status.
 // Views borrow raw: handlers finish before the connection slot is reused.
 fn parse_request(raw: const u8[:]) -> Request, i32 {
@@ -175,7 +206,7 @@ fn parse_request(raw: const u8[:]) -> Request, i32 {
     let version = rest[second + 1..];
     if version.len != 8 || version[..5] != "HTTP/" || version[6] != '.' ||
        version[5] < '0' || version[5] > '9' || version[7] < '0' || version[7] > '9' { return empty, HTTP_BAD_REQUEST; }
-    if version != HTTP_VERSION { return empty, HTTP_VERSION_NOT_SUPPORTED; }
+    if version != HTTP_VERSION && version != HTTP_VERSION_10 { return empty, HTTP_VERSION_NOT_SUPPORTED; }
     var length: i64 = 0;
     var length_large = false;
     var have_length = false;
@@ -214,7 +245,8 @@ fn parse_request(raw: const u8[:]) -> Request, i32 {
         if equal_header(name, HEADER_EXPECT) { expect = true; }
         pos += n + 2;
     }
-    if !have_host { return empty, HTTP_BAD_REQUEST; }
+    // Host is mandatory for HTTP/1.1 only (RFC 9112 section 3.2).
+    if !have_host && version == HTTP_VERSION { return empty, HTTP_BAD_REQUEST; }
     if transfer && have_length { return empty, HTTP_BAD_REQUEST; }
     if length_large { return empty, HTTP_CONTENT_TOO_LARGE; }
     if transfer { return empty, HTTP_NOT_IMPLEMENTED; }
