@@ -14,6 +14,45 @@ struct DecodeResult { ok: bool, syntax: bool, error: u8[..128], field: u8[..64],
 // The stdlib reader plus the name of the field being read, for error reports.
 struct JsonDecoder { r: json::Reader, field: u8[..64] }
 
+// --- field hooks ----------------------------------------------------------------
+// json_key(v, field): the JSON name of a field (default: its declared name). json_skip(v, field):
+// true keeps the field out of JSON both ways. Both are keyed by the declared name from fields<T>,
+// and an application overloads either for its struct (docs/api.md, "Field names and skipping").
+// Calls with the declared name stay the same for has<T> and SQL columns.
+fn json_key<T>(v: T&, field: const u8[:]) -> const u8[:] { return field; }
+fn json_skip<T>(v: T&, field: const u8[:]) -> bool { return false; }
+
+// Whether the JSON names of T's live fields are unique. On a conflict the report gets the
+// first duplicate name and the result is false. Skipped fields do not take part.
+fn json_key_report<T>(out: u8[>..]&) -> bool {
+    var v: T = T { .. };
+    var dup: const u8[:] = "";
+    var i: i64 = 0;
+    const for <N, A> in fields<T> {
+        var j: i64 = 0;
+        const for <M, B> in fields<T> {
+            if i != j && dup.len == 0 && !json_skip(v, N) && !json_skip(v, M) && json_key(v, N) == json_key(v, M) {
+                dup = json_key(v, N);
+            }
+            j += 1;
+        }
+        i += 1;
+    }
+    if dup.len > 0 {
+        out.append("duplicate JSON key: ");
+        out.append(dup);
+        return false;
+    }
+    return true;
+}
+
+// Startup probe: true when T's JSON names are unique. Encode, decode and query<T> check the same
+// thing at use and fail with a message, so a conflict never reaches the wire unnoticed.
+fn check_json_keys<T>() -> bool {
+    var scratch: u8[>..] = [];
+    return json_key_report<T>(scratch);
+}
+
 // --- encoding -------------------------------------------------------------------
 
 fn json_put_value(out: u8[>..]&, v: i64) -> bool { json::format_int(out, v); return true; }
@@ -50,13 +89,16 @@ fn json_put_seq<E>(out: u8[>..]&, s: E[:]) -> bool {
 }
 
 fn json_put_fields<T>(out: u8[>..]&, v: T&) -> bool {
+    if !check_json_keys<T>() { return false; }
     out.push('{');
     var first = true;
     const for <N, A> in fields<T> {
-        if !first { out.push(','); }
-        first = false;
-        json::format_key(out, N);
-        if !json_put_value(out, v.A) { return false; }
+        if !json_skip(v, N) {
+            if !first { out.push(','); }
+            first = false;
+            json::format_key(out, json_key(v, N));
+            if !json_put_value(out, v.A) { return false; }
+        }
     }
     out.push('}');
     return true;
@@ -156,13 +198,18 @@ fn json_read_fields<T>(d: JsonDecoder&, out: T&) -> u64 {
     var count: i64 = 0;
     const for <N, A> in fields<T> { count++; }
     if count > 64 { abort("json: a struct has more than 64 fields"); }
+    if !check_json_keys<T>() {
+        json_fail(d, "duplicate JSON key name");
+        return 0;
+    }
     var seen: u64 = 0;
     json::each_member(d.r) { key =>
         json_set_field(d, key);
         var known = false;
         var bit: u64 = 1;
         const for <N, A> in fields<T> {
-            if key == N {
+            // A skipped field is unknown on the wire, as if the struct did not declare it.
+            if !json_skip(out, N) && key == json_key(out, N) {
                 known = true;
                 if (seen & bit) != 0 { json_fail(d, "duplicate key"); return seen; }
                 seen |= bit;

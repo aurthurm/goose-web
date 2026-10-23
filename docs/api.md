@@ -203,6 +203,39 @@ bound untrusted input; fixed and grow arrays can be encoded but not decoded.
 Decoding runs in two passes: a syntax pass over the whole text, then the typed pass. So
 errors found in the second pass are never syntax errors.
 
+## Field names and skipping
+
+The codec, `query<T>` and OpenAPI take each field's JSON name and whether it is kept from two
+hooks in namespace `web`. Both are keyed by the declared field name from `fields<T>`:
+
+```goose
+struct Todo { id: i64, completed: bool, secret: u8[..16] }
+fn web::json_key(v: Todo&, field: const u8[:]) -> const u8[:] {        // V's @[json: name]
+    if field == "completed" { return "done"; }
+    return field;
+}
+fn web::json_skip(v: Todo&, field: const u8[:]) -> bool { return field == "secret"; }   // V's @[skip]
+```
+
+- The defaults are generic: `json_key` returns the declared name and `json_skip` returns false. An
+  application overload for its struct wins (a concrete overload beats the generic one).
+- They apply to `json_encode` and `json_put_fields`, to `json_decode`, `body<T>` and `body_result<T>`,
+  to `query<T>` and `query_result<T>`, and to the OpenAPI property names and query parameters. A nested
+  struct written by its registration (`json_put_fields`) uses its own hooks.
+- A skipped field is never encoded. On decode and in a query it is an unknown key, as if the struct did
+  not declare it, and it is left out of OpenAPI schemas and query parameters.
+- A renamed field is only known by its JSON name: the declared name is an unknown key. `has<T>(result,
+  "completed")` and `present` still use the declared name, so PATCH handlers keep the same code.
+  `optional_fields` in the OpenAPI registration also lists declared names.
+- The SQLite layer does not use the hooks: its columns keep the declared names. A nested struct stored as
+  JSON in a column does use them, so a skipped field is not written to that column.
+
+Renamed names must be unique within a struct. `check_json_keys<T>() -> bool` checks this at startup,
+and `json_key_report<T>(out: u8[>..]&) -> bool` appends `duplicate JSON key: NAME` to `out` on a conflict. At
+use, encode returns false and leaves `out` unchanged, decode fails with `duplicate JSON key name` (422 from
+`body<T>`), and `query<T>` answers 400 `invalid_query`. OpenAPI generation aborts, since it is a programmer
+error in the documented struct.
+
 ## Application API
 
 The app layer (`src/app/`) is built only on the calls above. An app is one function over
@@ -314,6 +347,7 @@ Rules, matching `body<T>`:
 - Failure writes 400 `invalid_query` with the message `field: reason`, for example
   `limit: integer out of range`, `q: string too long`, `zzz: unknown key`, or
   `limit: duplicate query parameter`. A key that is not valid UTF-8 gets a fixed message.
+- Keys are the JSON names from `json_key`; a skipped field is an unknown key (see [Field names and skipping](#field-names-and-skipping)).
 - Other struct field types are not supported.
 
 ### Cookies

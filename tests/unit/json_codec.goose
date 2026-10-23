@@ -19,6 +19,21 @@ struct Everything {
 fn web::json_put_value(out: u8[>..]&, v: Inner&) -> bool { return web::json_put_fields(out, v); }
 fn web::json_read_value(d: web::JsonDecoder&, out: Inner&) { web::json_read_fields(d, out); }
 
+// Field hooks: `completed` is written as "done", `secret` is never written or read.
+struct Renamed { id: i64, completed: bool, secret: i64 }
+struct Wrapper { label: u8[..8], item: Renamed }
+// Two fields with the same JSON name: a programmer error the codec reports at use.
+struct Clash { a: bool, b: bool }
+
+fn web::json_key(v: Renamed&, field: const u8[:]) -> const u8[:] {
+    if field == "completed" { return "done"; }
+    return field;
+}
+fn web::json_skip(v: Renamed&, field: const u8[:]) -> bool { return field == "secret"; }
+fn web::json_put_value(out: u8[>..]&, v: Renamed&) -> bool { return web::json_put_fields(out, v); }
+fn web::json_read_value(d: web::JsonDecoder&, out: Renamed&) { web::json_read_fields(d, out); }
+fn web::json_key(v: Clash&, field: const u8[:]) -> const u8[:] { return "same"; }
+
 fn encode<T>(value: T) -> u8[>..] {
     var out: u8[>..] = [];
     assert(web::json_encode(out, value));
@@ -184,7 +199,56 @@ fn test_encode_limits_and_nesting() {
     assert(res.ok && limited.limited == [1, 2, 3, 4] && limited.labels[1] == "yz");
 }
 
+fn test_json_key_encode() {
+    // The renamed key is written, the skipped field is not.
+    let text = encode(Renamed { id: 1, completed: true, secret: 9 });
+    assert(text == "{\"id\":1,\"done\":true}");
+    // Nested: the struct's own hooks apply inside the parent object.
+    let nested = encode(Wrapper { label: "w", item: Renamed { id: 3, completed: false, secret: 0 } });
+    assert(nested == "{\"label\":\"w\",\"item\":{\"id\":3,\"done\":false}}");
+    assert(web::check_json_keys<Renamed>());
+    var report: u8[>..] = [];
+    assert(web::json_key_report<Renamed>(report) && report.len == 0);
+}
+
+fn test_json_key_decode() {
+    let back, res = web::json_decode<Renamed>("{\"id\":2,\"done\":true}");
+    assert(res.ok && back.id == 2 && back.completed && back.secret == 0);
+    // present keeps field order (id = bit 0, completed = bit 1, secret = bit 2) and has<T>
+    // takes the declared name, not the JSON one.
+    assert(res.present == 3);
+    assert(web::has<Renamed>(res, "completed") && web::has<Renamed>(res, "id"));
+    assert(!web::has<Renamed>(res, "secret"));
+    // The original name is unknown once renamed, and a skipped field is unknown on the wire.
+    expect_error<Renamed>("{\"completed\":true}", "unknown key", "completed");
+    expect_error<Renamed>("{\"secret\":1}", "unknown key", "secret");
+    expect_error<Renamed>("{\"done\":true,\"done\":false}", "duplicate key", "done");
+    expect_error<Renamed>("{\"done\":1}", "expected true or false", "done");
+    // Nested: the renamed key is read inside the parent, and the error names the JSON key.
+    let outer, outer_res = web::json_decode<Wrapper>("{\"label\":\"x\",\"item\":{\"id\":4,\"done\":true}}");
+    assert(outer_res.ok && outer.item.id == 4 && outer.item.completed);
+    expect_error<Wrapper>("{\"item\":{\"completed\":true}}", "unknown key", "completed");
+}
+
+fn test_json_key_duplicates() {
+    assert(!web::check_json_keys<Clash>());
+    var report: u8[>..] = [];
+    assert(!web::json_key_report<Clash>(report));
+    assert(report == "duplicate JSON key: same");
+    // At use, encode fails and leaves the output unchanged; decode reports a schema error.
+    var out: u8[>..] = [];
+    out.append("keep;");
+    assert(!web::json_encode(out, Clash { a: true, b: false }));
+    assert(out == "keep;");
+    let back, res = web::json_decode<Clash>("{\"same\":true}");
+    assert(!res.ok && !res.syntax);
+    assert(res.error == "duplicate JSON key name");
+}
+
 fn main() {
+    test_json_key_encode();
+    test_json_key_decode();
+    test_json_key_duplicates();
     test_encode_compact();
     test_encode_scalars();
     test_escaping();

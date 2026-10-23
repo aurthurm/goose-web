@@ -332,7 +332,55 @@ fn test_static_resolve() {
     assert(web::static_resolve(".hidden", "tests/fixtures/static", hidden) == web::HTTP_NOT_FOUND);
 }
 
+// query<T> uses the JSON names too: `limit` is read as "size", and `secret` is not a parameter.
+struct Page { limit: i64 = 10, q: u8[..16] = "none", secret: bool = false }
+struct Pair2 { a: bool, b: bool }
+fn web::json_key(v: Page&, field: const u8[:]) -> const u8[:] {
+    if field == "limit" { return "size"; }
+    return field;
+}
+fn web::json_skip(v: Page&, field: const u8[:]) -> bool { return field == "secret"; }
+fn web::json_key(v: Pair2&, field: const u8[:]) -> const u8[:] { return "same"; }
+
+fn test_query_json_keys() {
+    var c = ctx_for("/x?size=5&q=a", "Host: x\r\n");
+    let v, ok = query<Page>(c);
+    assert(ok && v.limit == 5 && v.q == "a");
+
+    // The declared name is no longer a query parameter, and neither is a skipped field.
+    var old = ctx_for("/x?limit=5", "Host: x\r\n");
+    let ov, ook = query<Page>(old);
+    assert(!ook);
+    expect_status_body(old, web::HTTP_BAD_REQUEST, "limit: unknown key");
+    var hidden = ctx_for("/x?secret=true", "Host: x\r\n");
+    let hv, hok = query<Page>(hidden);
+    assert(!hok);
+    expect_status_body(hidden, web::HTTP_BAD_REQUEST, "secret: unknown key");
+
+    // Errors and duplicates name the key as sent.
+    var bad = ctx_for("/x?size=abc", "Host: x\r\n");
+    let bv, bok = query<Page>(bad);
+    assert(!bok);
+    expect_status_body(bad, web::HTTP_BAD_REQUEST, "size: expected an integer");
+    var dup = ctx_for("/x?size=1&size=2", "Host: x\r\n");
+    let dv, dok = query<Page>(dup);
+    assert(!dok);
+    expect_status_body(dup, web::HTTP_BAD_REQUEST, "size: duplicate query parameter");
+
+    // has<T> keeps the declared name: `size` set, `limit` present by its declared name.
+    var present = ctx_for("/x?size=2", "Host: x\r\n");
+    let pv, pres = query_result<Page>(present);
+    assert(pres.ok && web::has<Page>(pres, "limit") && !web::has<Page>(pres, "size"));
+
+    // Two fields with one JSON name: the query fails with the duplicate message.
+    var clash = ctx_for("/x?same=true", "Host: x\r\n");
+    let cv, cok = query<Pair2>(clash);
+    assert(!cok);
+    expect_status_body(clash, web::HTTP_BAD_REQUEST, "duplicate JSON key name");
+}
+
 fn main() {
+    test_query_json_keys();
     test_query_ints();
     test_query_int_errors();
     test_query_flags();

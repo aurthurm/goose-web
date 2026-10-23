@@ -138,19 +138,24 @@ fn csv_has(list: const u8[:], name: const u8[:]) -> bool {
 }
 
 // An object schema from struct T: properties in declaration order, required unless optional.
+// Property names are the JSON names (json_key); skipped fields are left out. optional_fields
+// lists declared names, as has<T> does.
 fn json_schema_fields<T>(out: u8[>..]&, v: T&) {
+    if !check_json_keys<T>() { abort("json: duplicate JSON key names (json_key) in a documented struct"); }
     let skipped = optional_fields(v);
     var req: u8[>..] = [];
     var first = true;
     out.append("{\"type\":\"object\",\"properties\":{");
     const for <N, A> in fields<T> {
-        if !first { out.push(','); }
-        first = false;
-        json::format_key(out, N);
-        json_schema_value(out, v.A);
-        if !csv_has(skipped, N) {
-            if req.len > 0 { req.push(','); }
-            json::format_string(req, N);
+        if !json_skip(v, N) {
+            if !first { out.push(','); }
+            first = false;
+            json::format_key(out, json_key(v, N));
+            json_schema_value(out, v.A);
+            if !csv_has(skipped, N) {
+                if req.len > 0 { req.push(','); }
+                json::format_string(req, json_key(v, N));
+            }
         }
     }
     out.push('}');
@@ -223,15 +228,18 @@ fn returns_empty(c: Ctx&, status: i32) {
 // through defaults; each field's schema comes from its type.
 fn query_params<T>(c: Ctx&) {
     if c.pass != PASS_DESCRIBE { return; }
+    if !check_json_keys<T>() { abort("json: duplicate JSON key names (json_key) in a query struct"); }
     var sample: T = T { .. };
     var item: u8[>..] = [];
     const for <N, A> in fields<T> {
-        if item.len > 0 { item.push(','); }
-        item.append("{\"name\":");
-        json::format_string(item, N);
-        item.append(",\"in\":\"query\",\"required\":false,\"schema\":");
-        json_schema_value(item, sample.A);
-        item.push('}');
+        if !json_skip(sample, N) {
+            if item.len > 0 { item.push(','); }
+            item.append("{\"name\":");
+            json::format_string(item, json_key(sample, N));
+            item.append(",\"in\":\"query\",\"required\":false,\"schema\":");
+            json_schema_value(item, sample.A);
+            item.push('}');
+        }
     }
     var p = c.oas.pending;
     if p.params.len > 0 && item.len > 0 { p.params.push(','); }

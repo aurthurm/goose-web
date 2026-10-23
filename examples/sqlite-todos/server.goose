@@ -7,11 +7,32 @@ import os;
 // registration below. Titles are bounded by the field capacity; longer input is a 422.
 struct Todo { id: i64, title: u8[..200], completed: bool }
 struct TodoInput { title: u8[..200] = "", completed: bool = false }
+// PATCH takes the same keys, all optional. A separate struct so the document says so.
+struct TodoPatch { title: u8[..200] = "", completed: bool = false }
 
 const DEFAULT_DB_FILE = "build/sqlite-todos.db";
 const LIST_LIMIT = 100;
 
 fn web::db_table(v: Todo&) -> const u8[:] { "todos" }
+
+// JSON uses `done` for the `completed` field. The SQL column keeps the field name, and
+// has<TodoInput>(result, "completed") still names the field, so only the wire key changes.
+fn web::json_key(v: Todo&, field: const u8[:]) -> const u8[:] {
+    if field == "completed" { return "done"; }
+    return field;
+}
+fn web::json_key(v: TodoInput&, field: const u8[:]) -> const u8[:] {
+    if field == "completed" { return "done"; }
+    return field;
+}
+fn web::json_key(v: TodoPatch&, field: const u8[:]) -> const u8[:] {
+    if field == "completed" { return "done"; }
+    return field;
+}
+
+// Documented as optional: a POST needs only a title, a PATCH needs neither. Names are declared names.
+fn web::optional_fields(v: TodoInput&) -> const u8[:] { return "completed"; }
+fn web::optional_fields(v: TodoPatch&) -> const u8[:] { return "title,completed"; }
 
 // JSON for the list envelope: the codec needs the element registered (see docs/api.md).
 fn web::json_put_value(out: u8[>..]&, v: Todo&) -> bool { return web::json_put_fields(out, v); }
@@ -92,15 +113,35 @@ fn delete_todo(c: web::Ctx&) {
     c.no_content();
 }
 
+// Served at /openapi.json and /docs, generated from the routes below.
 fn app(c: web::Ctx&) {
     request_id(c) { c.logger() {
-        c.routes() {
-            c.group("/todos") {
-                c.get("/") { list_todos(c); };
-                c.post("/") { create_todo(c); };
-                c.get("/:id") { show_todo(c); };
-                c.patch("/:id") { patch_todo(c); };
-                c.delete("/:id") { delete_todo(c); };
+        web::openapi(c, web::OpenApiInfo { title: "SQLite Todo API", version: "1.0.0",
+            description: "Todos persisted in a SQLite file. The completed flag is named done on the wire." }) {
+            c.routes() {
+                c.group("/todos") {
+                    web::summary(c, "List todos, the first 100 by id");
+                    web::returns_list<Todo>(c, web::HTTP_OK);
+                    c.get("/") { list_todos(c); };
+
+                    web::summary(c, "Create a todo");
+                    web::accepts<TodoInput>(c);
+                    web::returns<Todo>(c, web::HTTP_CREATED);
+                    c.post("/") { create_todo(c); };
+
+                    web::summary(c, "Get a todo");
+                    web::returns<Todo>(c, web::HTTP_OK);
+                    c.get("/:id") { show_todo(c); };
+
+                    web::summary(c, "Update some fields of a todo");
+                    web::accepts<TodoPatch>(c);
+                    web::returns<Todo>(c, web::HTTP_OK);
+                    c.patch("/:id") { patch_todo(c); };
+
+                    web::summary(c, "Delete a todo");
+                    web::returns_empty(c, web::HTTP_NO_CONTENT);
+                    c.delete("/:id") { delete_todo(c); };
+                };
             };
         };
     }};

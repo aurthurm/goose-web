@@ -185,6 +185,10 @@ fn query_read<T>(raw: const u8[:], out: T&, reason: u8[..128]&) -> bool {
 fn query_result<T>(c: Ctx&) -> T, DecodeResult {
     var value: T = T { .. };
     var result = DecodeResult { .. };
+    if !check_json_keys<T>() {
+        json_store(result.error, "duplicate JSON key name");
+        return value, result;
+    }
     let query = target_query(c.request.target);
     var seen: u64 = 0;
     var pos: i64 = 0;
@@ -207,16 +211,16 @@ fn query_result<T>(c: Ctx&) -> T, DecodeResult {
         var known = false;
         var bit: u64 = 1;
         const for <N, A> in fields<T> {
-            if !known && key == N {
+            if !known && !json_skip(value, N) && key == json_key(value, N) {
                 known = true;
                 if (seen & bit) != 0 {
                     json_store(result.error, "duplicate query parameter");
-                    json_store(result.field, N);
+                    json_store(result.field, json_key(value, N));
                     return value, result;
                 }
                 seen |= bit;
                 if !query_read(text.value[..], value.A, result.error) {
-                    json_store(result.field, N);
+                    json_store(result.field, json_key(value, N));
                     return value, result;
                 }
             }

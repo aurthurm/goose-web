@@ -40,6 +40,7 @@ fn main() {
 
 - Typed routing DSL: `c.get`/`post`/`put`/`patch`/`delete`, `:param` segments, `c.group` prefixes, automatic 404 and 405 with `Allow`.
 - OpenAPI 3.1 from the routes block and struct reflection, served at `/openapi.json` with a `/docs` page (`web::openapi`).
+- Field names and skipping for JSON, typed queries and OpenAPI: `web::json_key` renames a field (`completed` as `done`), `web::json_skip` leaves it out. See [API contracts](docs/api.md#field-names-and-skipping).
 - Reflective JSON in and out: `body<T>(c)` decodes strict structs (415, 400, 422 written for you); `c.json(value)` encodes any struct.
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).

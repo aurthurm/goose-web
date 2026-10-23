@@ -209,6 +209,60 @@ fn check_todos(body: const u8[:]) {
     assert(count_of(json::member(json::member(json::member(item, "get"), "responses"), "404")) > 0);
 }
 
+// Field hooks in the document: `completed` is "done" on the wire, `secret` is left out.
+struct Wire { id: i64, completed: bool, secret: u8[..4] }
+struct WireQuery { limit: i64 = 10, secret: bool = false }
+fn web::json_key(v: Wire&, field: const u8[:]) -> const u8[:] {
+    if field == "completed" { return "done"; }
+    return field;
+}
+fn web::json_skip(v: Wire&, field: const u8[:]) -> bool { return field == "secret"; }
+fn web::json_key(v: WireQuery&, field: const u8[:]) -> const u8[:] {
+    if field == "limit" { return "size"; }
+    return field;
+}
+fn web::json_skip(v: WireQuery&, field: const u8[:]) -> bool { return field == "secret"; }
+
+fn wire_app(c: web::Ctx&) {
+    web::openapi(c, web::OpenApiInfo { title: "Wire", version: "1.0", description: "" }) {
+        c.routes() {
+            web::query_params<WireQuery>(c);
+            web::returns<Wire>(c, web::HTTP_OK);
+            c.get("/wire") { c.text("get"); };
+            web::accepts<Wire>(c);
+            c.post("/wire") { c.text("post"); };
+        };
+    };
+}
+
+fn has_key(obj: json::Node?, key: u8[:]) -> bool {
+    let child = json::member(obj, key);
+    if child { return true; }
+    return false;
+}
+
+fn check_wire(body: const u8[:]) {
+    var text: u8[>..] = [];
+    text.append(body);
+    var doc: json::Node[>..] = [];
+    var decoded: u8[>..] = [];
+    let root, err = json::parse(text[..], doc, decoded);
+    guard root else { abort(err); }
+    let get = json::member(json::member(json::member(root, "paths"), "/wire"), "get");
+    // The query parameter is "size"; the skipped field has no parameter.
+    let query = json::member(get, "parameters");
+    assert(count_of(query) == 1 && param_named(query, "size", "query") && !param_named(query, "limit", "query"));
+    // Response properties use the wire names; the skipped field is absent from properties and required.
+    let props = json::member(schema_of(get, "200"), "properties");
+    assert(has_key(props, "done") && has_key(props, "id") && !has_key(props, "completed") && !has_key(props, "secret"));
+    let required = json::member(schema_of(get, "200"), "required");
+    assert(count_of(required) == 2 && has_text(required, "done") && has_text(required, "id") && !has_text(required, "completed"));
+    // The request body documents the same names.
+    let post = json::member(json::member(json::member(root, "paths"), "/wire"), "post");
+    let req_props = json::member(request_schema(post), "properties");
+    assert(has_key(req_props, "done") && !has_key(req_props, "completed") && !has_key(req_props, "secret"));
+}
+
 fn main() {
     // Describe pass: the document is served and no route body runs.
     let spec_status, spec = exchange("/openapi.json", described_app);
@@ -234,5 +288,10 @@ fn main() {
     assert(todo_status == 200);
     assert(todo_status == 200 && todo_spec.len < web::DEFAULT_MAX_RESPONSE_BYTES);
     check_todos(todo_spec[..]);
+
+    // Renamed and skipped fields: the document uses the JSON names.
+    let wire_status, wire = exchange("/openapi.json", wire_app);
+    assert(wire_status == 200);
+    check_wire(wire[..]);
     print("App OpenAPI tests passed: describe pass, annotations, schemas, docs page, Todo spec");
 }
