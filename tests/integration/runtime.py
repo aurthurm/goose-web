@@ -274,6 +274,37 @@ def shutdown_keepalive(port, process):
         assert wire.closed()
 
 
+def many_idle(port, process):
+    # max_clients=64 keep-alive connections stay open and idle, each having answered once. A 65th
+    # client is refused, while a freed slot serves quick requests and the idle peers still answer.
+    idle = []
+    try:
+        for _ in range(64):
+            client = connect(port)
+            client.sendall(b"GET /a HTTP/1.1\r\nHost: x\r\n\r\n")
+            wire = Wire(client)
+            assert wire.response()[0] == 200
+            idle.append((client, wire))
+        with connect(port) as refused:
+            assert response(refused) == b""
+        idle.pop()[0].close()
+        time.sleep(0.03)
+        started = time.monotonic()
+        for n in range(20):
+            with connect(port) as fast:
+                fast.sendall(b"GET /fast%d HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" % n)
+                assert b"/fast%d" % n in response(fast)
+        assert time.monotonic() - started < 2, "idle connections delayed other clients"
+        for client, wire in idle:
+            client.sendall(b"GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+            status, fields, body = wire.response()
+            assert status == 200 and body == b"/b"
+    finally:
+        for client, _ in idle:
+            client.close()
+    process.send_signal(signal.SIGINT)
+
+
 def main():
     BUILD.mkdir(exist_ok=True)
     env = dict(os.environ, GOOSE_HOME=str(BUILD / "cache"))
@@ -306,8 +337,12 @@ def main():
     assert stats[1] == 1, stats
     stats = run("keepalive", shutdown_keepalive)
     assert stats[1] == 3 and stats[4] == 0, stats
+    # 64 idle keep-alive peers (64 + 20 quick + 63 final responses); one refused client.
+    stats = run("many", many_idle)
+    assert stats[1] == 147 and stats[2] == 1 and stats[3] == 0, stats
     print("Runtime tests passed: validation, lifecycle, metrics, limits, drain, grace, SIGINT/SIGTERM, "
-          "keep-alive, pipelining, Connection tokens, idle and per-connection limits, large bodies")
+          "keep-alive, pipelining, Connection tokens, idle and per-connection limits, large bodies, "
+          "many idle connections")
 
 
 if __name__ == "__main__":

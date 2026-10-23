@@ -24,7 +24,7 @@ own globals (a Goose import adds no namespace). Use `src/sys/` instead.
 | `src/sys/` | Files (stat, bounded read), environment, monotonic clock | Native shim only; never imports the `os` stdlib |
 | `src/app/config.goose` | `config_from_args` / `config_from_env` for application mains | Runtime config, `src/sys` |
 | `src/runtime/server.goose` | Connections, deadlines, shutdown, lifecycle, counters | HTTP parsing/framing, native transport, `src/sys` |
-| `native/posix/transport.c` | Nonblocking socket calls, readiness, optional signals | POSIX |
+| `native/posix/transport.c` | Nonblocking socket calls, the readiness reactor (epoll on Linux, poll elsewhere), optional signals | POSIX |
 | `native/posix/system.c` | stat, bounded file read, getenv, clock | POSIX |
 
 Keep protocol policy in Goose. The C shim owns no application buffers and retains
@@ -34,16 +34,17 @@ in `goose_web.build`.
 
 ## Request lifecycle and ownership
 
-1. The reactor accepts into one of its bounded connection slots.
-2. Nonblocking reads fill that slot's owned buffer until parsing completes or a limit expires.
+1. The reactor accepts into one of its bounded connection slots and registers the descriptor.
+2. Nonblocking reads fill a block borrowed from the input pool until parsing completes or a limit expires.
 3. Middleware checks the borrowed request, then routing selects an application handler.
 4. The handler fills an owned response; after-middleware runs even on rejection.
-5. Serialization copies the response into the connection's output buffer.
+5. Serialization copies the response into the connection's output chunks, then the input block is returned if the connection is idle or closing.
 6. Nonblocking writes resume from the previous byte offset until complete, then close.
 
 Request slices and path parameters must not escape their owning request/router.
 Queue owned event arguments for work that survives the handler. No callback suspends;
 blocking a callback stalls the reactor.
+
 
 ### Application state ownership
 
@@ -68,6 +69,45 @@ lives in an `AppScratch` that the caller owns, and `Ctx` refers to its parts:
 - The describe text is a growable buffer, so it is the last field of `Ctx`. A growable buffer in the
   scratch could not be cleared while the request is live, because Goose cannot prove a caller-supplied
   request holds no slice into it.
+
+## Reactor backend and memory per connection
+
+`native/posix/transport.c` exposes one readiness API that hides the OS mechanism:
+
+| Call | Meaning |
+| --- | --- |
+| `gw_reactor_open` / `gw_reactor_close` | One reactor per process: an epoll instance on Linux, or nothing extra for poll |
+| `gw_reactor_add(token, fd, write)` | Registers a descriptor once under a token (a connection slot, or `LISTENER_TOKEN`) |
+| `gw_reactor_modify(token, fd, write)` | Switches read and write interest; a no-op when the interest already matches |
+| `gw_reactor_remove(token, fd)` | Unregisters before the descriptor closes; mismatched or unknown tokens are ignored |
+| `gw_reactor_wait(tokens, ready, timeout)` | Writes the ready tokens and their states (1 ready, -1 error) and returns the count |
+
+Linux builds use level-triggered epoll. Other systems, and any build with `-DGW_REACTOR_POLL`, keep
+the same table and call poll over it, so the two backends are interchangeable. `tests/native/transport.c`
+runs the same checks against both. The reactor loop calls `gw_reactor_wait` with the deadline-derived
+timeout, as before. Before each wait it syncs interest: a connection is watched for writes only while a
+response is queued, and the kernel is called only when that changes, not once per connection per
+iteration.
+
+Memory is charged where it is used:
+
+| Storage | Cost | Lifetime |
+| --- | --- | --- |
+| Connection record | about 200 bytes inline in the reactor's `clients` array, all 64 slots | the whole run |
+| Input block | 1 KiB while a connection holds unparsed bytes, doubling to `max_request_bytes` (at most 8 KiB) | taken when bytes arrive, returned when the connection goes idle or closes |
+| Response chunks | 16 KiB chunks from the shared pool, bounded by `max_pool_bytes` | returned as each chunk is sent |
+| SSE outbox (`sse_outbox`) | 0 bytes until the first `sse_publish`, at most 256 KiB | reactor-owned global; drained every iteration |
+
+Input blocks come from `InputPool` in `src/runtime/server.goose`, a grow-only pool with one free list per
+block class (1 KiB, 2 KiB, 4 KiB, 8 KiB, capped by `max_request_bytes`). A block never moves, so the `Request`
+views a handler reads stay valid. A full block is replaced by the next class, copying its bytes; a block is
+released only after the response is staged and no unparsed bytes remain, or when the connection closes.
+Freed blocks are kept for reuse rather than returned to the OS, so the pool holds the peak. Each class has
+at most `MAX_CLIENTS` blocks, because a live block belongs to one connection.
+
+`ServerControl` stays fixed-size and small so `default<web::ServerControl>()` works and costs nothing
+for the outbox. Its messages live in the reactor-owned `sse_outbox`, which `sse_publish` appends to and
+the reactor copies from; the public signature is unchanged.
 
 ## Composition
 

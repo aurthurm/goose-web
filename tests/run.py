@@ -67,9 +67,11 @@ def main():
         subprocess.run([str(BUILD / "todo_store"), str(Path(directory) / "todos.json")], check=True, timeout=60)
     with tempfile.TemporaryDirectory(prefix="goose-static-unit-") as directory:
         subprocess.run([str(BUILD / "static_files"), directory], check=True, timeout=60)
-    subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/transport.c"),
-                    "-o", str(BUILD / "transport")], check=True)
-    subprocess.run([str(BUILD / "transport")], check=True)
+    # The reactor has two backends (epoll on Linux, poll elsewhere); both run the same native checks.
+    for name, flags in (("transport", []), ("transport_poll", ["-DGW_REACTOR_POLL"])):
+        subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", *flags, str(ROOT / "tests/native/transport.c"),
+                        "-o", str(BUILD / name)], check=True)
+        subprocess.run([str(BUILD / name)], check=True)
     subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/system.c"),
                     "-o", str(BUILD / "system")], check=True)
     subprocess.run([str(BUILD / "system")], check=True)

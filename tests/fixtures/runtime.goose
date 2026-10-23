@@ -85,6 +85,7 @@ fn main() {
     if argv[2] == "idle" { config.idle_timeout_ms = 150; }
     if argv[2] == "capped" { config.max_response_bytes = 1024; }
     if argv[2] == "http1only" { config.keep_alive = false; }
+    if argv[2] == "many" { config.max_clients = web::MAX_CLIENTS; }
     assert(web::serve_config(config, control, handle, tick, lifecycle));
     assert(stages == 123);
     assert(control.stats.active == 0);

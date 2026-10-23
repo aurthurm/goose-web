@@ -223,7 +223,8 @@ Implementation notes (v0.3, as built):
   `max_pool_bytes` (default 8 MiB, validated to hold one maximal response) caps the pool; when a response
   does not fit, the runtime answers 503 `Service Unavailable` and closes the connection.
 - Memory bound: scratch body capacity (up to `max_response_bytes`, 16 MiB ceiling) + pool
-  (`max_pool_bytes`, 64 MiB ceiling) + head buffer (under 8 KiB) + 8 KiB input per slot.
+  (`max_pool_bytes`, 64 MiB ceiling) + head buffer (under 8 KiB) + input blocks (up to `max_request_bytes`
+per connection that holds a request; none while idle).
 
 ## v0.3 design: OpenAPI from routes and structs
 
@@ -381,8 +382,8 @@ message over `sse_max_queued_bytes` or `MAX_SSE_MESSAGE_BYTES`, or the outbox fu
 running, stopping, or no stream subscribes to the channel.
 
 Connection chains belong to the reactor and the pool is local to `serve_config`, so application code
-cannot write into them directly. Instead, publish appends the framed chunk to a bounded outbox in
-`ServerControl`, and the reactor fans it out at the start of each loop iteration, before it polls.
+cannot write into them directly. Instead, publish appends the framed chunk to a bounded outbox
+(`sse_outbox`, reactor-owned), and the reactor fans it out at the start of each loop iteration, before it polls.
 Fan-out is in publish order, so each stream sees its channel's events in order. A publish made during
 the handler phase reaches the sockets before the next poll.
 
@@ -430,5 +431,6 @@ still paid for them.
   describe text is therefore a growable field of `Ctx` (its last field), and it starts empty for each
   request. The fixed-size OpenAPI state stays in the scratch.
 - `ServerControl` stays fixed-size. Applications build it with `default<web::ServerControl>()` for
-  `run_with`, so making its outbox growable would be a public API change. Its 256 KiB outbox is zeroed
-  once at startup, which is the main remaining startup RSS cost.
+  `run_with`, so its outbox cannot be an inline or growable field. The outbox is a reactor-owned global
+  (`sse_outbox`) that starts empty and grows only on publish, capped at 256 KiB. `sse_publish` keeps its
+  signature. Before, the inline 256 KiB array was zeroed at every start.

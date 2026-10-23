@@ -120,7 +120,7 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | port | 8080 | 1..65535 |
 | public_bind | false | loopback; true explicitly binds IPv4 wildcard |
 | max_clients | 64 | 1..64 |
-| max_request_bytes | 8192 | 1..8192, includes headers and body |
+| max_request_bytes | 8192 | 1..8192, includes headers and body; a connection's input starts at 1 KiB and doubles up to this limit |
 | max_response_bytes | 1048576 | 1..16777216, response body limit; larger bodies become a 500 |
 | max_pool_bytes | 8388608 | `max_response_bytes` + 8192 .. 67108864, bytes of serialized responses in flight; a response that does not fit gets a 503 and the connection closes |
 | read_timeout_ms | 5000 | 1..86400000, time to receive each request once its first byte arrives |
@@ -135,6 +135,13 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | max_sse_clients | 32 | 0..64; open event streams; the effective limit is `min(max_sse_clients, max_clients)`, and 0 disables streams |
 | sse_heartbeat_ms | 15000 | 1..86400000, interval of the `: ping` comment on each stream |
 | sse_max_queued_bytes | 262144 | 256..4194304, unsent bytes one stream may hold before it is dropped |
+
+Memory is bounded by these limits and is charged on demand. Each of the `max_clients` slots costs a
+small record. A connection holds an input block only while it has request bytes to parse (1 KiB, doubling
+to `max_request_bytes`), so idle keep-alive connections hold none. Serialized responses are charged to
+`max_pool_bytes`. The SSE outbox costs nothing until the first `sse_publish`, then at most 256 KiB.
+`examples/hello` starts at about 3.2 MB resident. Blocks and chunks are reused, not returned to the OS.
+The reactor uses epoll on Linux and poll elsewhere; the configuration and stats are the same on both.
 
 `validate_server_config(config)` rejects invalid combinations before opening a socket.
 `serve_config(config, control, handler, tick, lifecycle)` returns false on invalid

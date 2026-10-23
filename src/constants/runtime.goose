@@ -34,11 +34,15 @@ const MAX_TIMEOUT_MS = 86400000;
 const MAX_POLL_TIMEOUT_MS = 1000;
 const NANOSECONDS_PER_MILLISECOND = 1000000;
 const ACCEPT_BUDGET = 16;
+// The reactor registers the listener under LISTENER_TOKEN and each connection under its slot.
 const MAX_POLL_FDS = MAX_CLIENTS + 1;
+const LISTENER_TOKEN = MAX_CLIENTS;
 const IO_WOULD_BLOCK = -2;
 const INVALID_SOCKET = -1;
-const POLL_READ = 1;
-const POLL_WRITE = 2;
+// Connection input blocks start at INPUT_MIN_BYTES and double up to max_request_bytes, so
+// INPUT_CLASSES sizes cover MAX_REQUEST_BYTES. See InputPool in server.goose.
+const INPUT_MIN_BYTES = 1024;
+const INPUT_CLASSES = 4;
 
 const SERVER_STARTED = 1;
 const SERVER_STOPPING = 2;

@@ -80,6 +80,7 @@ fn test_stream_head() {
 // Publishing stages frames in the outbox and counts subscribers on the channel.
 fn test_publish() {
     var control = default<web::ServerControl>();
+    web::sse_outbox.clear();
     control.sse_limit = web::DEFAULT_SSE_MAX_QUEUED_BYTES;
     assert(web::sse_publish(control, 1, "tick", "x") == 0);
     control.running = true;
@@ -90,8 +91,8 @@ fn test_publish() {
     assert(web::sse_publish(control, 3, "tick", "x") == 0);
     assert(web::sse_publish(control, 1, "bad\nname", "x") == -1);
     assert(control.sse_msg_count == 1 && control.sse_msg_channel[0] == 1);
-    assert(control.sse_out[..] == "15\r\nevent: tick\ndata: x\n\n\r\n");
-    assert(control.sse_msg_end[0] == control.sse_out.len);
+    assert(web::sse_outbox[..] == "15\r\nevent: tick\ndata: x\n\n\r\n");
+    assert(control.sse_msg_end[0] == web::sse_outbox.len);
     assert(web::sse_publish(control, 2, "", "y") == 1);
     assert(control.sse_msg_count == 2 && control.sse_msg_channel[1] == 2);
     // A message over the per-stream limit is refused, and so is one over MAX_SSE_MESSAGE_BYTES.

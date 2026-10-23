@@ -39,7 +39,9 @@ fn test_public_api() {
     assert(web::MAX_REQUEST == web::MAX_REQUEST_BYTES); // Original name remains available.
     // Keep the capacity shared across the Goose/C boundary in agreement.
     assert(web::gw_transport_max_clients() == web::MAX_CLIENTS);
-    assert(web::MAX_POLL_FDS == web::MAX_CLIENTS + 1);
+    assert(web::MAX_POLL_FDS == web::MAX_CLIENTS + 1 && web::LISTENER_TOKEN == web::MAX_CLIENTS);
+    // The input classes double from INPUT_MIN_BYTES up to the largest request.
+    assert(web::INPUT_MIN_BYTES * (1 << (web::INPUT_CLASSES - 1)) >= web::MAX_REQUEST_BYTES);
     var bus = web::event_bus<i64>();
     assert(!web::unsubscribe(bus, web::INVALID_SUBSCRIPTION));
     assert(bus.listeners.len == web::MAX_EVENT_LISTENERS && bus.queue.len == web::MAX_QUEUED_EVENTS);

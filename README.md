@@ -49,9 +49,9 @@ fn main() {
 - Edge middleware: `secure_headers` (CSP, nosniff, frame DENY, referrer policy, optional HSTS) and a bounded per-client `rate_limit` that answers 429 with `Retry-After`. `c.peer()` gives the TCP peer address.
 - Signed cookie sessions (`session`, 16 entries, HMAC-SHA256) and double-submit CSRF protection (`csrf`) with a CSPRNG-backed token. See [Sessions](docs/api.md#sessions) and [CSRF](docs/api.md#csrf); the security notes there say what these do not protect.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
-- Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
+- Nonblocking reactor: epoll readiness on Linux (poll elsewhere) with one registration per connection, bounded client slots, partial writes, read and write deadlines.
 - Server-sent events: `c.sse(channel)` upgrades a route to a chunked event stream, `web::sse_publish` fans events out per channel, with heartbeats, bounded per-stream queues that drop slow readers, and a close event at shutdown. See [SSE](docs/api.md#server-sent-events) and the [sse-clock example](examples/sse-clock/README.md).
-- Bounded memory: fixed capacities for requests, headers, routes, queues and clients; response bodies grow on demand up to `max_response_bytes` (1 MiB default, 16 MiB ceiling) and in-flight responses share a pool capped by `max_pool_bytes`.
+- Bounded memory: fixed capacities for headers, routes, queues and clients; request input and response bodies grow on demand (input up to `max_request_bytes`, responses up to `max_response_bytes`, 1 MiB default, 16 MiB ceiling), in-flight responses share a pool capped by `max_pool_bytes`, and idle connections hold no input memory. `examples/hello` starts at about 3.2 MB resident.
 - Typed event bus: subscriptions, one-shot listeners, FIFO queue with visible backpressure.
 - Graceful shutdown: SIGINT and SIGTERM stop accepting, drain within a grace period, and report lifecycle stages.
 - Strict HTTP/1.1 request profile: bounded framing, validated targets and Host, explicit 400/413/417/501 rules.

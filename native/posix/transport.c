@@ -14,6 +14,13 @@
 #include <signal.h>
 #include "constants.h"
 
+#if defined(__linux__) && !defined(GW_REACTOR_POLL)
+#include <sys/epoll.h>
+#define GW_REACTOR_EPOLL 1
+#else
+#define GW_REACTOR_EPOLL 0
+#endif
+
 typedef struct { uint8_t *data; int64_t len; } gw_bytes;
 typedef struct { int32_t *data; int64_t len; } gw_ints;
 
@@ -88,25 +95,127 @@ int64_t gw_send(int32_t fd, gw_bytes bytes) {
     return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? GW_IO_WOULD_BLOCK : GW_IO_ERROR;
 }
 
-/* Per-call poll state: one listener plus the bounded client pool. */
-int32_t gw_poll(gw_ints fds, gw_ints interests, gw_ints ready, int32_t timeout) {
-    if (fds.len > GW_MAX_POLL_FDS || interests.len != fds.len || ready.len != fds.len) return GW_IO_ERROR;
-    struct pollfd items[GW_MAX_POLL_FDS];
-    for (int64_t i = 0; i < fds.len; ++i) {
-        items[i].fd = fds.data[i];
-        items[i].events = interests.data[i] == GW_POLL_WRITE ? POLLOUT : POLLIN;
-        items[i].revents = 0;
-        ready.data[i] = 0;
+/* Readiness reactor. Each descriptor is registered once under a token (a connection slot, or
+   the listener at GW_MAX_POLL_FDS - 1) and its interest is changed only when it changes: read
+   to write and back. Descriptors are removed before they close. Linux uses level-triggered
+   epoll; other systems, and builds with -DGW_REACTOR_POLL, poll the same table. One reactor
+   is open per process. */
+typedef struct { int32_t fd; int32_t write; int32_t active; } gw_registration;
+static gw_registration gw_regs[GW_MAX_POLL_FDS];
+static int gw_reactor_is_open;
+#if GW_REACTOR_EPOLL
+static int gw_epoll_fd = -1;
+#endif
+
+static int gw_token_valid(int32_t token) { return token >= 0 && token < GW_MAX_POLL_FDS; }
+
+int32_t gw_reactor_open(void) {
+    if (gw_reactor_is_open) return GW_IO_ERROR;
+#if GW_REACTOR_EPOLL
+    gw_epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+    if (gw_epoll_fd < 0) return GW_IO_ERROR;
+#endif
+    memset(gw_regs, 0, sizeof(gw_regs));
+    gw_reactor_is_open = 1;
+    return 0;
+}
+
+void gw_reactor_close(void) {
+    if (!gw_reactor_is_open) return;
+#if GW_REACTOR_EPOLL
+    close(gw_epoll_fd);
+    gw_epoll_fd = -1;
+#endif
+    memset(gw_regs, 0, sizeof(gw_regs));
+    gw_reactor_is_open = 0;
+}
+
+/* Registers fd under token with read interest, or write interest when write is nonzero. */
+int32_t gw_reactor_add(int32_t token, int32_t fd, int32_t write) {
+    if (!gw_reactor_is_open || !gw_token_valid(token) || fd < 0 || gw_regs[token].active) return GW_IO_ERROR;
+#if GW_REACTOR_EPOLL
+    struct epoll_event event;
+    memset(&event, 0, sizeof(event));
+    event.events = write ? EPOLLOUT : EPOLLIN;
+    event.data.u32 = (uint32_t)token;
+    if (epoll_ctl(gw_epoll_fd, EPOLL_CTL_ADD, fd, &event) < 0) return GW_IO_ERROR;
+#endif
+    gw_regs[token].fd = fd;
+    gw_regs[token].write = write ? 1 : 0;
+    gw_regs[token].active = 1;
+    return 0;
+}
+
+/* Switches a registered descriptor between read and write interest. Nothing changes when the
+   interest already matches, so callers may call this every iteration. */
+int32_t gw_reactor_modify(int32_t token, int32_t fd, int32_t write) {
+    if (!gw_reactor_is_open || !gw_token_valid(token) || !gw_regs[token].active || gw_regs[token].fd != fd) {
+        return GW_IO_ERROR;
     }
-    int n = poll(items, (nfds_t)fds.len, timeout);
+    int32_t want = write ? 1 : 0;
+    if (gw_regs[token].write == want) return 0;
+#if GW_REACTOR_EPOLL
+    struct epoll_event event;
+    memset(&event, 0, sizeof(event));
+    event.events = want ? EPOLLOUT : EPOLLIN;
+    event.data.u32 = (uint32_t)token;
+    if (epoll_ctl(gw_epoll_fd, EPOLL_CTL_MOD, fd, &event) < 0) return GW_IO_ERROR;
+#endif
+    gw_regs[token].write = want;
+    return 0;
+}
+
+/* Unregisters token when it holds fd. Unknown or mismatched registrations are ignored. */
+void gw_reactor_remove(int32_t token, int32_t fd) {
+    if (!gw_reactor_is_open || !gw_token_valid(token) || !gw_regs[token].active || gw_regs[token].fd != fd) return;
+#if GW_REACTOR_EPOLL
+    (void)epoll_ctl(gw_epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+#endif
+    memset(&gw_regs[token], 0, sizeof(gw_regs[token]));
+}
+
+/* Waits up to timeout milliseconds. Writes each ready token into tokens and its state into ready
+   (1 readable or writable, -1 error), and returns how many were written, or -1 on failure. */
+int32_t gw_reactor_wait(gw_ints tokens, gw_ints ready, int32_t timeout) {
+    if (!gw_reactor_is_open || tokens.len < GW_MAX_POLL_FDS || ready.len < GW_MAX_POLL_FDS) return GW_IO_ERROR;
+    int32_t count = 0;
+#if GW_REACTOR_EPOLL
+    struct epoll_event events[GW_MAX_POLL_FDS];
+    int n = epoll_wait(gw_epoll_fd, events, GW_MAX_POLL_FDS, timeout);
     if (n < 0) return errno == EINTR ? 0 : GW_IO_ERROR;
-    for (int64_t i = 0; i < fds.len; ++i) {
-        short r = items[i].revents;
+    for (int i = 0; i < n; ++i) {
+        uint32_t bits = events[i].events;
         /* HUP may accompany readable buffered data. Try read/write first. */
-        ready.data[i] = (r & (POLLIN | POLLOUT | POLLHUP)) ? 1 :
-                       (r & (POLLERR | POLLNVAL)) ? GW_IO_ERROR : 0;
+        int32_t state = (bits & (EPOLLIN | EPOLLOUT | EPOLLHUP)) ? 1 : (bits & EPOLLERR) ? GW_IO_ERROR : 0;
+        if (state == 0) continue;
+        tokens.data[count] = (int32_t)events[i].data.u32;
+        ready.data[count] = state;
+        ++count;
     }
-    return n;
+#else
+    struct pollfd items[GW_MAX_POLL_FDS];
+    int32_t owners[GW_MAX_POLL_FDS];
+    nfds_t n = 0;
+    for (int32_t token = 0; token < GW_MAX_POLL_FDS; ++token) {
+        if (!gw_regs[token].active) continue;
+        items[n].fd = gw_regs[token].fd;
+        items[n].events = gw_regs[token].write ? POLLOUT : POLLIN;
+        items[n].revents = 0;
+        owners[n] = token;
+        ++n;
+    }
+    if (poll(items, n, timeout) < 0) return errno == EINTR ? 0 : GW_IO_ERROR;
+    for (nfds_t i = 0; i < n; ++i) {
+        short bits = items[i].revents;
+        /* HUP may accompany readable buffered data. Try read/write first. */
+        int32_t state = (bits & (POLLIN | POLLOUT | POLLHUP)) ? 1 : (bits & (POLLERR | POLLNVAL)) ? GW_IO_ERROR : 0;
+        if (state == 0) continue;
+        tokens.data[count] = owners[i];
+        ready.data[count] = state;
+        ++count;
+    }
+#endif
+    return count;
 }
 
 void gw_close(int32_t fd) { if (fd >= 0) close(fd); }

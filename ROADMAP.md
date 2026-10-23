@@ -56,8 +56,11 @@
 - [x] Pinned upstream compiler and Linux CI definition for GCC and Clang.
 - Broader conformance and coverage-guided fuzzing before public deployment.
 - [x] Keep-alive with explicit idle, per-request, and per-connection limits.
+- [x] Memory per connection: input storage grows from 1 KiB on demand and is returned when idle; the SSE outbox is reactor-owned and allocated on first publish (hello starts at 3.2 MB, down from 4.4 MB).
+- [x] Many idle keep-alive connections do not delay other clients (integration test at `max_clients`).
 - Chunked encoding for general streaming bodies with explicit ownership/backpressure (server-sent events are done).
-- Windows transport, then evaluate epoll/kqueue under measured load.
+- [x] Linux epoll readiness behind one reactor API (level-triggered, registration per connection), poll kept as the portable fallback.
+- kqueue for BSD and macOS, and a Windows transport, measured under load.
 - TLS integration and deployment guidance.
 
 ## Milestone 4: asynchronous application work
