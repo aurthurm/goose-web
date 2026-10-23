@@ -7,15 +7,19 @@ struct AllInts { a: i8 = 0, b: i16 = 0, c: i32 = 0, d: i64 = 0, e: u8 = 0, f: u1
 struct Flags { enabled: bool = false, ratio: f32 = 0.0, big: f64 = 0.0, name: u8[..8] = "" }
 struct Filter { limit: i32 = 10, q: u8[..16] = "none", active: bool = false }
 
+// Each context borrows this response; a test finishes with one context before creating the next.
+var shared_response = web::response();
+
 fn ctx_for(target: const u8[:], headers: const u8[:]) -> web::Ctx {
-    return web::new_ctx(web::Request { method: "GET", target: target, body: "", raw_headers: headers });
+    shared_response = web::response();
+    return web::new_ctx(web::Request { method: "GET", target: target, body: "", raw_headers: headers }, shared_response);
 }
 
 // The error envelope carries the message as a JSON fragment.
 fn expect_status_body(c: web::Ctx&, status: i32, fragment: const u8[:]) {
     assert(c.written);
     assert(c.response.status == status);
-    assert(find(c.response.body[..], fragment) >= 0);
+    assert(find(web::body_of(c.response), fragment) >= 0);
 }
 
 // Returns the nth header value with this name, or "" when there are fewer.
@@ -67,7 +71,7 @@ fn test_query_int_errors() {
         let v, ok = query<AllInts>(c);
         assert(!ok && v.a == 0);
         expect_status_body(c, web::HTTP_BAD_REQUEST, "\"code\":\"invalid_query\"");
-        assert(find(c.response.body[..], messages[i]) >= 0);
+        assert(find(web::body_of(c.response), messages[i]) >= 0);
     }
 }
 

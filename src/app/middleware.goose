@@ -50,7 +50,7 @@ fn logger<Next>(c: Ctx&) {
     log_text(line, c.method());
     line.push(' ');
     log_text(line, c.path());
-    format(line, " ", c.response.status, " ", c.response.body.len);
+    format(line, " ", c.response.status, " ", body_len(c.response));
     print(line);
 }
 

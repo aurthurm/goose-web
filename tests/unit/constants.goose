@@ -31,8 +31,11 @@ fn test_public_api() {
     assert(config.max_requests == web::UNLIMITED_REQUESTS && web::validate_server_config(config));
     // Persistence and response-size defaults are public contract (docs/api.md).
     assert(config.keep_alive && config.idle_timeout_ms == 5000);
-    assert(config.max_requests_per_connection == 100 && config.max_response_bytes == 65536);
-    assert(web::MAX_RESPONSE_BODY_BYTES == 65536 && web::MAX_RESPONSE_CHUNKS * web::RESPONSE_CHUNK_BYTES >= web::MAX_RESPONSE_WIRE_BYTES);
+    assert(config.max_requests_per_connection == 100 && config.max_response_bytes == 1048576);
+    assert(config.max_pool_bytes == 8388608 && web::DEFAULT_MAX_POOL_BYTES == config.max_pool_bytes);
+    assert(web::MAX_RESPONSE_BODY_BYTES == 16777216 && web::MAX_ERROR_BODY_BYTES == 65536);
+    assert(web::MAX_RESPONSE_POOL_BYTES == 67108864 && web::MAX_POOL_CHUNKS * web::RESPONSE_CHUNK_BYTES == web::MAX_RESPONSE_POOL_BYTES);
+    assert(web::MAX_RESPONSE_POOL_BYTES >= web::MAX_RESPONSE_WIRE_BYTES);
     assert(web::MAX_REQUEST == web::MAX_REQUEST_BYTES); // Original name remains available.
     // Keep the capacity shared across the Goose/C boundary in agreement.
     assert(web::gw_transport_max_clients() == web::MAX_CLIENTS);
@@ -43,12 +46,14 @@ fn test_public_api() {
 }
 
 fn test_response_capacity() {
-    // All declared response limits at once must still fit the reactor's wire buffer.
+    // All declared response limits at once must still fit the wire size bound.
     var r = web::response();
-    let body: u8[web::MAX_RESPONSE_BODY_BYTES] = ['b'; web::MAX_RESPONSE_BODY_BYTES];
+    r.max_body = web::MAX_RESPONSE_BODY_BYTES;
+    var body: u8[>..] = [];
+    body.resize(web::MAX_RESPONSE_BODY_BYTES, 'b');
     let content_type: u8[web::MAX_CONTENT_TYPE_BYTES] = ['t'; web::MAX_CONTENT_TYPE_BYTES];
     let value: u8[web::MAX_HEADER_VALUE_BYTES] = ['v'; web::MAX_HEADER_VALUE_BYTES];
-    r.body = body;
+    assert(web::set_body(r, body[..]));
     r.content_type = content_type;
     for i in web::MAX_RESPONSE_HEADERS {
         var name: u8[..web::MAX_HEADER_NAME_BYTES] = [];
@@ -59,7 +64,34 @@ fn test_response_capacity() {
     var wire: u8[>..] = [];
     web::serialize_response(wire, r);
     assert(r.status == web::HTTP_OK && wire.len <= web::MAX_RESPONSE_WIRE_BYTES);
-    assert(find(wire, "Content-Length: 65536\r\n") >= 0);
+    assert(find(wire, "Content-Length: 16777216\r\n") >= 0);
+}
+
+// The pool holds one chunk here: a response that fits is staged, and a second one is refused
+// (the reactor answers that with 503) until the first is released.
+fn test_pool_budget() {
+    var pool = web::ChunkPool { count: 0, free_count: 0, max_chunks: 1, free: [0; web::MAX_POOL_CHUNKS],
+        next: [0; web::MAX_POOL_CHUNKS], bytes: [] };
+    var head: u8[>..] = [];
+    var first = default<web::Connection>();
+    var r = web::response();
+    assert(web::set_body(r, "small"));
+    assert(web::stage_response(first, pool, head, r, false, true, false, 1000));
+    assert(first.wire_len > 0 && first.writing && first.head != web::NO_CHUNK);
+    var second = default<web::Connection>();
+    var s = web::response();
+    assert(web::set_body(s, "again"));
+    assert(!web::stage_response(second, pool, head, s, false, true, false, 1000));
+    assert(second.wire_len == 0 && !second.writing);
+    // A response of two chunks never fits a one-chunk pool.
+    var big = web::response();
+    var payload: u8[>..] = [];
+    payload.resize(web::RESPONSE_CHUNK_BYTES * 2, 'p');
+    big.max_body = web::MAX_RESPONSE_BODY_BYTES;
+    assert(web::set_body(big, payload[..]));
+    assert(!web::stage_response(second, pool, head, big, false, true, false, 1000));
+    web::release_chunks(first, pool);
+    assert(web::stage_response(second, pool, head, s, false, true, false, 1000));
 }
 
 fn test_status_phrases() {
@@ -78,6 +110,7 @@ fn test_status_phrases() {
 fn main() {
     test_public_api();
     test_response_capacity();
+    test_pool_budget();
     test_status_phrases();
     print("Constants tests passed: public imports, wire values, defaults, native capacity, maximum response framing");
 }

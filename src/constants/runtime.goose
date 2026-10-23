@@ -15,11 +15,14 @@ const DEFAULT_IDLE_TIMEOUT_MS = 5000;
 const DEFAULT_KEEP_ALIVE = true;
 const DEFAULT_MAX_REQUESTS_PER_CONNECTION = 100;
 const MAX_REQUESTS_PER_CONNECTION = 1000000;
-const DEFAULT_MAX_RESPONSE_BYTES = MAX_RESPONSE_BODY_BYTES;
-// Serialized responses are copied into fixed chunks from one pool. A connection
-// slot stores chunk indices only, so 64 idle slots cost no response storage.
+const DEFAULT_MAX_RESPONSE_BYTES = 1048576;
+// Serialized responses are copied into chunks from one pool, linked in order. A connection
+// slot stores only its head chunk, so idle slots cost no response storage. The pool holds
+// at most max_pool_bytes (default 8 MiB); a response that does not fit gets a 503.
 const RESPONSE_CHUNK_BYTES = 16384;
-const MAX_RESPONSE_CHUNKS = (MAX_RESPONSE_WIRE_BYTES + RESPONSE_CHUNK_BYTES - 1) / RESPONSE_CHUNK_BYTES;
+const DEFAULT_MAX_POOL_BYTES = 8388608;
+const MAX_POOL_CHUNKS = MAX_RESPONSE_POOL_BYTES / RESPONSE_CHUNK_BYTES;
+const NO_CHUNK = -1;
 const DEFAULT_HANDLE_SIGNALS = false;
 const UNLIMITED_REQUESTS = 0;
 const MAX_TIMEOUT_MS = 86400000;

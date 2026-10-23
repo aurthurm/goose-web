@@ -9,14 +9,13 @@ namespace web;
 fn run_tick() {}
 
 // Builds one Ctx per request around the server's request view. The app writes into
-// c.response, and the finished response is copied back in one piece.
+// out, the runtime's reused response, so nothing is copied back.
 fn handle_app<App>(request: Request, out: Response&) {
     // App arrives as a trailing function argument; a type argument cannot name it.
-    // Pass &c: an untyped block parameter would receive a copy of this fixed-size Ctx,
-    // and every response write would land in that copy.
-    var c = new_ctx(request);
+    // Pass &c: an untyped block parameter would receive a copy of this Ctx,
+    // and routing state written by the app would land in that copy.
+    var c = new_ctx(request, out);
     App(&c);
-    out = c.response;
 }
 
 // Wraps serve_config. Tick and Lifecycle are generic function values, as in serve_config.

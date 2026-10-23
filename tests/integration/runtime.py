@@ -9,7 +9,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD = ROOT / "build"
-BIG_BODY = bytes(i % 251 for i in range(61440))
+BIG_BODY = bytes(i % 251 for i in range(1048576))
 
 
 def connect(port):
@@ -150,7 +150,7 @@ def deadline_limit(port, process):
 
 
 def keepalive(port, process):
-    # Two sequential requests, a 60 KiB body, then a parser error, all on one socket.
+    # Two sequential requests, a 1 MiB body, then a parser error, all on one socket.
     with connect(port) as client:
         wire = Wire(client)
         client.sendall(b"GET /a HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -159,10 +159,10 @@ def keepalive(port, process):
         client.sendall(b"GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
         status, fields, body = wire.response()
         assert status == 200 and body == b"/b"
-        # Larger than the old 8 KiB cap: must arrive intact and keep the connection usable.
+        # A full 1 MiB body must arrive intact and keep the connection usable.
         client.sendall(b"GET /big HTTP/1.1\r\nHost: x\r\n\r\n")
         status, fields, body = wire.response()
-        assert status == 200 and fields[b"content-length"] == b"61440" and body == BIG_BODY
+        assert status == 200 and fields[b"content-length"] == b"1048576" and body == BIG_BODY
         client.sendall(b"GET / HTTP/1.1\r\n\r\n")  # missing Host: a parser error closes the connection
         status, fields, _ = wire.response()
         assert status == 400 and fields[b"connection"] == b"close"

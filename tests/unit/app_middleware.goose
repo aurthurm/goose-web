@@ -6,13 +6,17 @@ import std;
 struct Item { id: i64, title: u8[..16], done: bool }
 struct ItemIn { title: u8[..16], done: bool = false }
 struct Patch { title: u8[..16] = "keep", done: bool = false }
-struct Big { data: u8[..web::MAX_RESPONSE_BODY_BYTES] }
+struct Big { data: u8[..] }
 
 // Nested-struct registration (docs/api.md): lists of Item encode through this pair.
 fn web::json_put_value(out: u8[>..]&, v: Item&) -> bool { return web::json_put_fields(out, v); }
 
+// Each context borrows this response; a test finishes with one context before creating the next.
+var shared_response = web::response();
+
 fn make_ctx(method: const u8[:], target: const u8[:], headers: const u8[:], body: const u8[:]) -> web::Ctx {
-    return web::new_ctx(web::Request { method: method, target: target, body: body, raw_headers: headers });
+    shared_response = web::response();
+    return web::new_ctx(web::Request { method: method, target: target, body: body, raw_headers: headers }, shared_response);
 }
 
 fn header_value(res: web::Response&, name: const u8[:]) -> const u8[:] {
@@ -26,7 +30,7 @@ fn header_value(res: web::Response&, name: const u8[:]) -> const u8[:] {
 fn expect_error(c: web::Ctx&, status: i32, fragment: const u8[:]) {
     assert(c.written);
     assert(c.response.status == status);
-    assert(find(c.response.body[..], fragment) >= 0);
+    assert(find(web::body_of(c.response), fragment) >= 0);
 }
 
 // --- body<T> ----------------------------------------------------------------------
@@ -77,13 +81,13 @@ fn test_body_400() {
     let a, ok = body<ItemIn>(empty);
     assert(!ok);
     expect_error(empty, web::HTTP_BAD_REQUEST, "\"code\":\"invalid_json\"");
-    assert(find(empty.response.body[..], "Request body is empty") >= 0);
+    assert(find(web::body_of(empty.response), "Request body is empty") >= 0);
 
     var syntax = make_ctx("POST", "/items", "Host: x\r\nContent-Type: application/json\r\n", "{\"title\":");
     let b, res = web::body_result<ItemIn>(syntax);
     assert(!res.ok && res.syntax);
     expect_error(syntax, web::HTTP_BAD_REQUEST, "\"code\":\"invalid_json\"");
-    assert(find(syntax.response.body[..], "Malformed JSON: ") >= 0);
+    assert(find(web::body_of(syntax.response), "Malformed JSON: ") >= 0);
 
     var utf8 = make_ctx("POST", "/items", "Host: x\r\nContent-Type: application/json\r\n", "{\"title\":\"\xff\"}");
     let c, ok2 = body<ItemIn>(utf8);
@@ -97,24 +101,24 @@ fn test_body_422() {
     let a, ok = body<ItemIn>(long);
     assert(!ok);
     expect_error(long, web::HTTP_UNPROCESSABLE_CONTENT, "\"code\":\"invalid_payload\"");
-    assert(find(long.response.body[..], "title: string too long") >= 0);
+    assert(find(web::body_of(long.response), "title: string too long") >= 0);
 
     var typed = make_ctx("PATCH", "/items", "Host: x\r\nContent-Type: application/json\r\n", "{\"done\":\"yes\"}");
     let b, ok2 = body<Patch>(typed);
     assert(!ok2);
     expect_error(typed, web::HTTP_UNPROCESSABLE_CONTENT, "\"code\":\"invalid_payload\"");
-    assert(find(typed.response.body[..], "done: expected true or false") >= 0);
+    assert(find(web::body_of(typed.response), "done: expected true or false") >= 0);
 
     var unknown = make_ctx("POST", "/items", "Host: x\r\nContent-Type: application/json\r\n", "{\"title\":\"a\",\"zzz\":1}");
     let c, ok3 = body<ItemIn>(unknown);
     assert(!ok3);
-    assert(find(unknown.response.body[..], "zzz: unknown key") >= 0);
+    assert(find(web::body_of(unknown.response), "zzz: unknown key") >= 0);
 
     var array = make_ctx("POST", "/items", "Host: x\r\nContent-Type: application/json\r\n", "[1]");
     let d, ok4 = body<ItemIn>(array);
     assert(!ok4);
     expect_error(array, web::HTTP_UNPROCESSABLE_CONTENT, "\"code\":\"invalid_payload\"");
-    assert(find(array.response.body[..], "expected '{'") >= 0);
+    assert(find(web::body_of(array.response), "expected '{'") >= 0);
 }
 
 // --- c.json, c.json_list ----------------------------------------------------------
@@ -124,14 +128,14 @@ fn test_json_struct() {
     c.json(Item { id: 7, title: "milk", done: false });
     assert(c.written && c.response.status == web::HTTP_OK);
     assert(c.response.content_type == "application/json");
-    assert(c.response.body == "{\"id\":7,\"title\":\"milk\",\"done\":false}");
+    assert(web::body_of(c.response) == "{\"id\":7,\"title\":\"milk\",\"done\":false}");
 }
 
 fn test_json_keeps_status() {
     var c = make_ctx("POST", "/items", "Host: x\r\n", "");
     c.status(web::HTTP_CREATED).json(Item { id: 1, title: "a", done: true });
     assert(c.response.status == web::HTTP_CREATED);
-    assert(c.response.body == "{\"id\":1,\"title\":\"a\",\"done\":true}");
+    assert(web::body_of(c.response) == "{\"id\":1,\"title\":\"a\",\"done\":true}");
 }
 
 fn test_json_list() {
@@ -140,24 +144,25 @@ fn test_json_list() {
     items.push(Item { id: 1, title: "a", done: false });
     items.push(Item { id: 2, title: "b", done: true });
     c.json_list(items);
-    assert(c.response.body == "[{\"id\":1,\"title\":\"a\",\"done\":false},{\"id\":2,\"title\":\"b\",\"done\":true}]");
+    assert(web::body_of(c.response) == "[{\"id\":1,\"title\":\"a\",\"done\":false},{\"id\":2,\"title\":\"b\",\"done\":true}]");
     assert(c.response.content_type == "application/json");
 
     var none = make_ctx("GET", "/items", "Host: x\r\n", "");
     var empty: Item[..4] = [];
     json_list(none, empty[..]);
-    assert(none.response.body == "[]");
+    assert(web::body_of(none.response) == "[]");
 
     var nums = make_ctx("GET", "/n", "Host: x\r\n", "");
     let scalars: i64[3] = [1, 2, 3];
     json_list(nums, scalars[..]);
-    assert(nums.response.body == "[1,2,3]");
+    assert(web::body_of(nums.response) == "[1,2,3]");
 }
 
 fn test_json_too_large() {
     var c = make_ctx("GET", "/big", "Host: x\r\n", "");
-    var big = Big { data: [] };
-    for i in web::MAX_RESPONSE_BODY_BYTES { big.data.push('a'); }
+    // Encoded output one byte past the default max_response_bytes.
+    var big = Big { data: [..web::DEFAULT_MAX_RESPONSE_BYTES + 1] };
+    for i in web::DEFAULT_MAX_RESPONSE_BYTES + 1 { big.data.push('a'); }
     c.json(big);
     expect_error(c, web::HTTP_INTERNAL_SERVER_ERROR, "\"code\":\"response_too_large\"");
 }
@@ -171,8 +176,11 @@ fn test_json_encode_error() {
 // --- middleware -------------------------------------------------------------------
 
 fn test_request_id() {
-    var a = make_ctx("GET", "/", "Host: x\r\n", "");
-    var b = make_ctx("GET", "/", "Host: x\r\n", "");
+    // Two live contexts at once, so each borrows its own response.
+    var out_a = web::response();
+    var out_b = web::response();
+    var a = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, out_a);
+    var b = web::new_ctx(web::Request { method: "GET", target: "/", body: "", raw_headers: "Host: x\r\n" }, out_b);
     var reached = 0;
     request_id(a) { reached += 1; };
     request_id(b) { reached += 1; };
@@ -185,7 +193,7 @@ fn test_request_id() {
 fn test_logger() {
     var c = make_ctx("POST", "/items?x=1", "Host: x\r\n", "");
     web::logger(c) { c.text("logged"); };
-    assert(c.response.body == "logged");
+    assert(web::body_of(c.response) == "logged");
     // Control bytes in the method and target are masked; nothing aborts.
     var odd = make_ctx("GE\nT", "/a\x01b", "Host: x\r\n", "");
     logger(odd) { };
@@ -195,7 +203,7 @@ fn test_logger() {
 fn test_cors_simple() {
     var c = make_ctx("GET", "/", "Host: x\r\n", "");
     web::cors(c) { c.text("ok"); };
-    assert(c.response.body == "ok");
+    assert(web::body_of(c.response) == "ok");
     assert(header_value(c.response, "Access-Control-Allow-Origin") == "*");
     assert(header_value(c.response, "Vary").len == 0);
 
@@ -210,7 +218,7 @@ fn test_cors_preflight() {
     var reached = false;
     cors(c, "https://a.example") { reached = true; };
     assert(!reached);
-    assert(c.response.status == web::HTTP_NO_CONTENT && c.response.body.len == 0);
+    assert(c.response.status == web::HTTP_NO_CONTENT && web::body_len(c.response) == 0);
     assert(header_value(c.response, "Access-Control-Allow-Origin") == "https://a.example");
     assert(header_value(c.response, "Vary") == "Origin");
     assert(header_value(c.response, "Access-Control-Allow-Methods") == "GET, POST, PUT, PATCH, DELETE, OPTIONS");
@@ -260,7 +268,7 @@ fn test_nested_order() {
     assert(c.response.status == web::HTTP_UNSUPPORTED_MEDIA_TYPE);
     assert(header_value(c.response, "X-Request-ID").len > 0);
     assert(header_value(c.response, "Access-Control-Allow-Origin") == "https://a.example");
-    assert(c.response.body != "never");
+    assert(web::body_of(c.response) != "never");
 
     // Preflight stops at cors, so the inner require_json never runs.
     var pre = make_ctx("OPTIONS", "/items", "Host: x\r\nAccess-Control-Request-Method: POST\r\n", "");

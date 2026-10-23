@@ -15,10 +15,11 @@ fn app(c: web::Ctx&) {
     c.routes() { todo::mount(c, permitted, changed); };
 }
 fn invoke(method: const u8[:], target: const u8[:], body: const u8[:] = "") -> web::Response {
+    var out = web::response();
     var c = web::new_ctx(web::Request { method: method, target: target, body: body,
-        raw_headers: "Content-Type: application/json\r\n" });
+        raw_headers: "Content-Type: application/json\r\n" }, out);
     app(c);
-    return c.response;
+    return copy(out);
 }
 
 fn test_gating_and_events() {
@@ -37,13 +38,13 @@ fn test_gating_and_events() {
     let blocked_delete = invoke(web::METHOD_DELETE, "/todos/1");
     assert(blocked_delete.status == web::HTTP_SERVICE_UNAVAILABLE && mutations == 1);
     let read = invoke(web::METHOD_GET, "/todos/1");
-    assert(read.status == web::HTTP_OK && ::find(read.body, "\"completed\":false") >= 0);
+    assert(read.status == web::HTTP_OK && ::find(web::body_of(read), "\"completed\":false") >= 0);
     assert(todo::count(todo::database) == 1);
     allow_mutations = true;
     let patched = invoke(web::METHOD_PATCH, "/todos/1", "{\"completed\":true}");
     assert(patched.status == web::HTTP_OK && mutations == 2 && last_action == todo::ACTION_UPDATED);
     let deleted = invoke(web::METHOD_DELETE, "/todos/1");
-    assert(deleted.status == web::HTTP_NO_CONTENT && deleted.body.len == 0 && mutations == 3);
+    assert(deleted.status == web::HTTP_NO_CONTENT && web::body_len(deleted) == 0 && mutations == 3);
     assert(last_action == todo::ACTION_DELETED && todo::count(todo::database) == 0);
 }
 
@@ -84,7 +85,7 @@ fn test_body_schema() {
     var borrowed: u8[..128] = "{\"title\":\"owned\\u0020title\"}";
     let owned = invoke(web::METHOD_POST, "/todos", borrowed[..]);
     borrowed = "destroyed";
-    assert(owned.status == web::HTTP_CREATED && ::find(owned.body, "\"title\":\"owned title\"") >= 0);
+    assert(owned.status == web::HTTP_CREATED && ::find(web::body_of(owned), "\"title\":\"owned title\"") >= 0);
 }
 
 fn test_routing_and_ids() {
@@ -97,9 +98,9 @@ fn test_routing_and_ids() {
     let wrong = invoke(web::METHOD_OPTIONS, "/todos");
     assert(wrong.status == web::HTTP_METHOD_NOT_ALLOWED && ::find(wrong.headers[0].value, "POST") >= 0);
     let far_page = invoke(web::METHOD_GET, "/todos?offset=9223372036854775807");
-    assert(far_page.status == web::HTTP_OK && ::find(far_page.body, "\"items\":[]") >= 0);
+    assert(far_page.status == web::HTTP_OK && ::find(web::body_of(far_page), "\"items\":[]") >= 0);
     let empty = invoke(web::METHOD_GET, "/todos");
-    assert(empty.status == web::HTTP_OK && ::find(empty.body, "\"total\":0") >= 0);
+    assert(empty.status == web::HTTP_OK && ::find(web::body_of(empty), "\"total\":0") >= 0);
 }
 
 fn main() {

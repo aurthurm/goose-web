@@ -2,8 +2,8 @@ import goose_web from "../..";
 import std;
 import os;
 
-// Larger than the old 8 KiB inline cap and smaller than the 64 KiB ceiling.
-const BIG_BODY_BYTES = 61440;
+// Exactly the default max_response_bytes: a full 1 MiB body must round-trip intact.
+const BIG_BODY_BYTES = 1048576;
 
 var control = default<web::ServerControl>();
 var stages: i64 = 0;
@@ -14,11 +14,16 @@ fn lifecycle(stage: i32, stats: web::ServerStats) {
 fn tick() {}
 fn handle(request: web::Request, response: web::Response&) {
     if request.target == "/big" {
-        for i in BIG_BODY_BYTES { response.body.push((i % 251) as! u8); }
+        var big: u8[>..] = [];
+        for i in BIG_BODY_BYTES { big.push((i % 251) as! u8); }
+        // Over max_response_bytes the route answers 500, as write_body does for the app layer.
+        if !web::set_body(response, big[..]) {
+            web::application_error(response, web::HTTP_INTERNAL_SERVER_ERROR, "response_too_large", "Response body exceeds configured limit");
+        }
         return;
     }
     // Echoing the target lets pipelined tests check response order.
-    response.body = request.target;
+    assert(web::set_body(response, request.target));
     if request.target == "/stop" { web::request_shutdown(control); }
 }
 fn main() {
@@ -52,6 +57,16 @@ fn main() {
     config.max_response_bytes = web::MAX_RESPONSE_BODY_BYTES + 1;
     assert(!web::validate_server_config(config));
     config.max_response_bytes = web::MAX_RESPONSE_BODY_BYTES;
+    // The pool must hold one maximal response, and its own ceiling applies.
+    config.max_pool_bytes = web::DEFAULT_MAX_POOL_BYTES;
+    assert(!web::validate_server_config(config));
+    config.max_pool_bytes = web::MAX_RESPONSE_POOL_BYTES + 1;
+    assert(!web::validate_server_config(config));
+    config.max_pool_bytes = web::MAX_RESPONSE_POOL_BYTES;
+    assert(web::validate_server_config(config));
+    config.max_response_bytes = web::DEFAULT_MAX_RESPONSE_BYTES;
+    config.max_pool_bytes = web::DEFAULT_MAX_POOL_BYTES;
+    assert(web::validate_server_config(config));
     config.max_requests_per_connection = -1;
     assert(!web::validate_server_config(config));
     config.max_requests_per_connection = web::MAX_REQUESTS_PER_CONNECTION + 1;

@@ -28,8 +28,8 @@
 - [x] Cookies: `c.cookie` reads the Cookie header; `c.set_cookie` emits validated Set-Cookie lines (repeatable).
 - [x] Typed query binding: `query<T>(c)` and `query_result<T>(c)` with strict keys and `invalid_query` errors.
 - [x] Keep-alive connections: persistent HTTP/1.1 and opt-in HTTP/1.0, in-order pipelining, idle and per-connection limits.
-- [x] Response bodies up to 64 KiB through a pooled, bounded response buffer (`max_response_bytes`).
-- Next: move the response body out of the inline `Response` struct so capacity no longer costs every request; then chunked/streaming bodies.
+- [x] Response bodies up to 1 MiB by default (16 MiB ceiling) in a growable, reused buffer (`max_response_bytes`); in-flight responses share a pool capped by `max_pool_bytes`, with 503 when it is full.
+- Next: chunked/streaming bodies.
 - Next: automatic OpenAPI generation from structs.
 - Next: typed configuration from environment variables.
 

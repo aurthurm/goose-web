@@ -18,10 +18,12 @@ const PASS_MATCH = 1;
 const PASS_DISPATCH = 2;
 
 // One value per request, owned by the server loop for the duration of the handler.
-// Routing fields are scratch for c.routes(); c.routes() resets them on every entry.
+// The response is borrowed: the runtime owns one reused Response (see run.goose), so a
+// Ctx stays a fixed-size value. Routing fields are scratch for c.routes(); c.routes()
+// resets them on every entry.
 struct Ctx {
     request: Request,
-    response: Response,
+    response: Response&,
     request_id: i64,
     written: bool,
     pass: i32,
@@ -32,9 +34,9 @@ struct Ctx {
     prefix_count: i64,
 }
 
-// Fresh response (200, text/plain, empty) plus zeroed routing state.
-fn new_ctx(request: Request) -> Ctx {
-    return Ctx { request: request, response: response(), .. };
+// Routing state zeroed; the response is the caller's (tests and the runtime create it with response()).
+fn new_ctx(request: Request, response: Response&) -> Ctx {
+    return Ctx { request: request, response: response, .. };
 }
 
 fn method(c: Ctx&) -> const u8[:] { return c.request.method; }
@@ -78,15 +80,14 @@ fn fail(c: Ctx&, code: i32, error_code: const u8[:], message: const u8[:]) {
     application_error(c.response, code, error_code, message);
 }
 
-// Bodies over the fixed capacity become a complete 500 instead of a truncated reply.
+// Bodies over the response's max_body become a complete 500 instead of a truncated reply.
 fn write_body(c: Ctx&, content_type: const u8[:], body: const u8[:]) {
     c.written = true;
-    if body.len > MAX_RESPONSE_BODY_BYTES {
+    if !set_body(c.response, body) {
         application_error(c.response, HTTP_INTERNAL_SERVER_ERROR, "response_too_large", "Response body exceeds capacity");
         return;
     }
     c.response.content_type = content_type;
-    c.response.body = body;
 }
 
 fn text(c: Ctx&, body: const u8[:]) { write_body(c, CONTENT_TYPE_TEXT, body); }
@@ -96,7 +97,7 @@ fn json_raw(c: Ctx&, body: const u8[:]) { write_body(c, CONTENT_TYPE_JSON, body)
 fn no_content(c: Ctx&) {
     c.written = true;
     c.response.status = HTTP_NO_CONTENT;
-    c.response.body = "";
+    drop_body(c.response);
 }
 
 // Location must be a valid header value; a bad target is reported as a 500 envelope
@@ -109,7 +110,7 @@ fn redirect(c: Ctx&, location: const u8[:], code: i32 = HTTP_FOUND) {
         return;
     }
     c.response.status = code;
-    c.response.body = "";
+    drop_body(c.response);
 }
 
 fn done(c: Ctx&) -> bool { return c.written; }
