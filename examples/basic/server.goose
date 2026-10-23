@@ -1,6 +1,7 @@
 import goose_web from "../..";
 import todo_app from "./todos";
 import std;
+import os;
 
 // Domain and request events share one bounded bus. Topics are plain constants.
 const REQUEST_HANDLED = 1;
@@ -71,12 +72,9 @@ fn lifecycle(stage: i32, stats: web::ServerStats) {
 fn main() {
     let argv = args();
     if argv.len > 4 { abort("usage: server [port] [max-responses] [data-file|--memory]"); }
-    var config = web::server_config();
-    if argv.len > 1 {
-        let value, ok = parse_int(argv[1]);
-        if !ok || value < web::MIN_PORT || value > web::MAX_PORT { abort("invalid port"); }
-        config.port = value as i32;
-    }
+    // Only the port is parsed by the helper; max-responses and data-file are positional here.
+    var config, ok, error = web::config_from_args(if argv.len > 2 { argv[..2] } else { argv[..] });
+    if !ok { abort(error); }
     if argv.len > 2 {
         let value, ok = parse_int(argv[2]);
         if !ok || value < web::UNLIMITED_REQUESTS { abort("invalid request limit"); }

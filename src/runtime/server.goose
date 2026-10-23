@@ -5,7 +5,7 @@ import src.http.request;
 import src.http.response;
 import src.http.errors;
 import std;
-import os;
+import src.sys.process;
 namespace web;
 
 extern fn gw_listen_config(port: i32, public_bind: i32) -> i32;

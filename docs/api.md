@@ -386,8 +386,52 @@ extension, is `application/octet-stream`. Served files also carry `X-Content-Typ
 Do not serve untrusted uploads from the directory: an `svg` or `html` file runs with the
 application's origin.
 
-Blocking: each file is read whole with `read_file` on the reactor thread, and no request is
-served while that happens. The `os` stdlib has no file size query, so the read itself is not
-bounded by the response capacity. The response is: a body over `MAX_RESPONSE_BODY_BYTES` becomes
-500 `response_too_large`. Keep served trees small and trusted, or serve large assets elsewhere.
-Symbolic links inside the directory are followed.
+Size and blocking: the file is read on the reactor thread, so no request is served while that
+happens. Each read is bounded before any byte of the file is copied:
+
+1. `stat` reports the regular file's size. A size over `MAX_RESPONSE_BODY_BYTES` (64 KiB) is
+   refused with 500 `file_too_large` and the file is never read.
+2. Otherwise the reader asks for `size + 1` bytes (the spare byte detects a file that changed
+   during the read). The count must equal the stat size; any other count is a failed read.
+3. A missing entry, directory, FIFO or other non-regular file is 404 `not_found`. A file that
+   exists but cannot be opened or read, or that changed size during the read, is 500
+   `file_read_failed`. Before this change these cases answered 404.
+
+A lower `max_response_bytes` in `ServerConfig` still applies: the runtime answers a larger
+serialized response with 500 `response_too_large`. Keep served trees small and trusted, or serve
+large assets elsewhere. Symbolic links inside the directory are followed.
+
+The framework reads files and the environment through `src/sys/`, not the `os` stdlib. Importing
+`os` into framework code made its global names (`read_file`, `is_dir`, `clock_ns`, ...) ambiguous
+for every application that imported `goose_web`. Applications may use `os` freely.
+
+## Command-line and environment configuration
+
+`web::config_from_args(argv) -> ServerConfig, bool, u8[>..]` builds a configuration from `args()`
+(argv[0] is the program name). On failure the bool is false and the message says what was wrong.
+
+| Argument | Meaning |
+| --- | --- |
+| `[port]` | a bare first argument is the port (the original examples' form) |
+| `--port N`, `--port=N` | 1..65535 |
+| `--host public` or `--host loopback` | `public_bind` true (all IPv4) or false (127.0.0.1) |
+| `--max-clients N` | 1..`MAX_CLIENTS` |
+| `--max-requests N` | 0 unlimited; otherwise stop after N completed responses |
+
+Other arguments are errors: unknown options, a missing value, and a second bare argument. An
+application that takes its own positional arguments passes only the prefix it owns; the basic
+example passes `argv[..2]` and reads max-responses and the data file itself. Ranges are checked
+by `validate_server_config`.
+
+`web::config_from_env() -> ServerConfig, bool, u8[>..]` reads `GOOSE_WEB_PORT` (the `--port` rule)
+and `GOOSE_WEB_PUBLIC` (`1` or `true` for public, `0` or `false` for loopback). Unset and empty
+variables keep the defaults. A value longer than 256 bytes is invalid.
+
+```goose
+fn main() {
+    let config, ok, error = web::config_from_args(args());
+    if !ok { abort(error); }
+    let started = web::run(config) { c => app(c) };
+    if !started { abort("server failed"); }
+}
+```

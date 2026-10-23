@@ -91,10 +91,11 @@ src/
   json/                   Reflective struct codec over fields<T>
   routing/                Route matching, path parameters, query decoding
   middleware/             Compile-time request pipeline
-  app/                    Application API: Ctx, c.routes/c.group, middleware, responses, run
+  app/                    Application API: Ctx, c.routes/c.group, middleware, responses, run, config
+  sys/                    File, environment and clock access over the native shim (no os import)
   events/                 Typed bounded event bus
   runtime/                Readiness loop, configuration, lifecycle, metrics
-native/posix/             Socket and signal shim
+native/posix/             Socket, signal, file and environment shim
 examples/hello/           Smallest app: health, path parameter, typed POST
 examples/basic/           Todo API, OpenAPI contract, and application modules
 tests/

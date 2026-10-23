@@ -38,7 +38,7 @@ def test_hello(executable):
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    process = subprocess.Popen([str(executable), str(port)], stdout=subprocess.DEVNULL)
+    process = subprocess.Popen([str(executable), "--port", str(port)], stdout=subprocess.DEVNULL)
     try:
         deadline = time.monotonic() + 3
         while True:
@@ -84,6 +84,13 @@ def test_hello(executable):
     print("Hello example tests passed: health, path parameters, typed POST 201, codec 422, logger request IDs")
 
 
+def test_bad_arguments(executable):
+    result = subprocess.run([str(executable), "--host", "everywhere"], stdout=subprocess.DEVNULL,
+                            stderr=subprocess.PIPE, timeout=5)
+    assert result.returncode != 0 and b"invalid value for --host" in result.stderr, result
+
+
 if __name__ == "__main__":
     executable = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[2] / "build/hello"
     test_hello(executable)
+    test_bad_arguments(executable)

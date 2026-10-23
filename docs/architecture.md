@@ -5,6 +5,8 @@
 `goose_web.goose` is the public package facade. It imports focused modules; application
 code should import the facade instead of depending on individual source paths.
 All modules declare `namespace web` because Goose imports files without creating namespaces.
+Framework files must not import the `os` stdlib: its global names would collide with every application's
+own globals (a Goose import adds no namespace). Use `src/sys/` instead.
 
 | Directory | Responsibility | Dependencies |
 | --- | --- | --- |
@@ -19,8 +21,11 @@ All modules declare `namespace web` because Goose imports files without creating
 | `src/json/codec.goose` | Reflective struct to JSON encode and strict decode over `fields<T>` | Goose stdlib `json`, HTTP errors |
 | `src/app/` | Application API: `Ctx`, `c.routes`/`c.group`, built-in middleware, JSON responses and bodies, `run` | HTTP, routing, JSON codec, runtime server |
 | `src/events/bus.goose` | Typed subscriptions and queued dispatch | Goose stdlib |
-| `src/runtime/server.goose` | Connections, deadlines, shutdown, lifecycle, counters | HTTP parsing/framing, native transport |
+| `src/sys/` | Files (stat, bounded read), environment, monotonic clock | Native shim only; never imports the `os` stdlib |
+| `src/app/config.goose` | `config_from_args` / `config_from_env` for application mains | Runtime config, `src/sys` |
+| `src/runtime/server.goose` | Connections, deadlines, shutdown, lifecycle, counters | HTTP parsing/framing, native transport, `src/sys` |
 | `native/posix/transport.c` | Nonblocking socket calls, readiness, optional signals | POSIX |
+| `native/posix/system.c` | stat, bounded file read, getenv, clock | POSIX |
 
 Keep protocol policy in Goose. The C shim owns no application buffers and retains
 no Goose pointers. Its only process-wide state is optional signal ownership.
