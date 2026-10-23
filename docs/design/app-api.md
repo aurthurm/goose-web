@@ -1,6 +1,6 @@
 # Application API (v0.2 design)
 
-Status: accepted design, being implemented. The low-level API in [api.md](../api.md)
+Status: implemented (v0.2). See "Implementation notes" at the end for compiler-forced deviations. The low-level API in [api.md](../api.md)
 stays public; this layer is built entirely on it.
 
 ## Goal
@@ -24,9 +24,9 @@ var todos: Todo[..100] = [];
 var next_id: i64 = 1;
 
 fn todo_routes(c: web::Ctx&) {
-    c.get("/") { c.json(todos) };                      // arrays of structs encode too
+    c.get("/") { c.json_list(todos[..]) };            // arrays/slices use json_list
     c.post("/") {
-        let input, ok = c.body<TodoIn>();              // 415 / 400 / 422 written for you
+        let input, ok = body<TodoIn>(c);               // 415 / 400 / 422 written for you
         guard ok else { return; }
         let item = Todo { id: next_id, title: input.title, completed: input.completed };
         next_id += 1;
@@ -42,7 +42,7 @@ fn todo_routes(c: web::Ctx&) {
 }
 
 fn app(c: web::Ctx&) {
-    web::request_id(c) { web::logger(c) { web::cors(c) {
+    request_id(c) { c.logger() { c.cors() {
         c.routes() {                                   // 404 / 405 + Allow handled here
             c.get("/health") { c.json(Health { status: "ok" }) };
             c.group("/todos") { todo_routes(c) };
@@ -167,3 +167,15 @@ Reflective via `const for <N, A> in fields<T>`; zero metadata, monomorphized.
 - Language docs: `/opt/goose/docs/reference.md` (concise), `goose_spec.md` (full),
   `stdlib.md`; samples in `/opt/goose/samples/`; stdlib JSON in `/opt/goose/stdlib/json.goose`.
   These match the pinned compiler `4d3da949e563`.
+
+## Implementation notes (compiler-forced deviations)
+
+- Explicit type arguments are not allowed on UFCS calls: write `body<T>(c)`, not `c.body<T>()`.
+- `c.json(value)` takes a struct or scalar; arrays and slices go through `c.json_list(xs[..])`
+  (a slice overload of `json` is ambiguous with the generic by-value one).
+- `c.request_id()` is shadowed by the `Ctx.request_id` field: write `request_id(c) { ... }`.
+- App-facing functions are reachable as `c.x()` through global forwarders in `src/app/dsl.goose`
+  because Goose resolves UFCS in the caller's namespace.
+- Nested structs need a registered `web::json_put_value` / `web::json_read_value` pair (see api.md):
+  Goose has no compile-time predicate to tell a struct from a limited string.
+- When the match pass yields 404/405 the dispatch pass is skipped.
