@@ -30,6 +30,7 @@
 - [x] Keep-alive connections: persistent HTTP/1.1 and opt-in HTTP/1.0, in-order pipelining, idle and per-connection limits.
 - [x] Response bodies up to 64 KiB through a pooled, bounded response buffer (`max_response_bytes`).
 - Next: move the response body out of the inline `Response` struct so capacity no longer costs every request; then chunked/streaming bodies.
+- [x] Reflective SQLite layer (`db/`, `web::db`): CRUD from `fields<T>` with bound parameters, a query builder, transactions, migrations with `schema_version`, WAL file databases, example `examples/sqlite-todos`. Blocking calls on the reactor thread; worker offload is future work.
 - Next: automatic OpenAPI generation from structs.
 - Next: typed configuration from environment variables.
 

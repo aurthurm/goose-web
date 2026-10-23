@@ -41,6 +41,7 @@ fn main() {
 - Typed routing DSL: `c.get`/`post`/`put`/`patch`/`delete`, `:param` segments, `c.group` prefixes, automatic 404 and 405 with `Allow`.
 - Reflective JSON in and out: `body<T>(c)` decodes strict structs (415, 400, 422 written for you); `c.json(value)` encodes any struct.
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
+- Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
 - Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
 - Bounded memory: fixed capacities for requests, headers, routes, responses, queues and clients.
 - Typed event bus: subscriptions, one-shot listeners, FIFO queue with visible backpressure.
@@ -95,10 +96,12 @@ src/
   events/                 Typed bounded event bus
   runtime/                Readiness loop, configuration, lifecycle, metrics
 native/posix/             Socket and signal shim
+db/                       Opt-in SQLite package (goose_web_db): query builder, typed records, C shim
 examples/hello/           Smallest app: health, path parameter, typed POST
 examples/basic/           Todo API, OpenAPI contract, and application modules
+examples/sqlite-todos/    Todo API persisted in a SQLite file through web::db
 tests/
-  unit/                   Goose contract tests
+  unit/                   Goose contract tests (including the SQLite layer on :memory:)
   native/                 C socket tests
   fixtures/               Server programs used by integration tests
   integration/            Real HTTP and runtime checks
@@ -120,7 +123,9 @@ relative package path appropriate to their own location. Internal files share
 python3 tests/run.py
 ```
 
-Set `GOOSE=/opt/goose/goose` if Goose is not on PATH; `CC` selects the C compiler.
+Set `GOOSE=/opt/goose/goose` if Goose is not on PATH; `CC` selects the C compiler. The SQLite
+layer and its example need `sqlite3.h` and `libsqlite3` (`libsqlite3-dev`); without them `run.py`
+prints a SKIP line and runs everything else.
 The suite builds with Goose runtime checks, checks event and application contracts,
 forces partial writes, and verifies concurrent clients, routing, middleware, request
 limits, deadlines, metrics, and graceful shutdown on real loopback sockets. It also

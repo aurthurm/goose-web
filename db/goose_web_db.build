@@ -1,0 +1,5 @@
+// SQLite package sidecar: the shim and the system library. Opt-in: apps that import
+// goose_web_db link libsqlite3; the core framework does not.
+c_sources = ["native/sqlite_shim.c"];
+c_libs = ["sqlite3"];
+main_thread_only = true;
