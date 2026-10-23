@@ -46,7 +46,9 @@ fn reason(status: i32) -> const u8[:] {
     }
 }
 
-fn serialize_response(out: u8[>..]&, r: Response&, head: bool = false) {
+// close: send Connection: close. keep_alive: send Connection: keep-alive, which only
+// HTTP/1.0 clients need. Neither set means HTTP/1.1 persistence without a field.
+fn serialize_response(out: u8[>..]&, r: Response&, head: bool = false, close: bool = true, keep_alive: bool = false) {
     var valid = r.status >= HTTP_MIN_RESPONSE_STATUS && r.status <= HTTP_MAX_STATUS && r.content_type.len > 0;
     for c in r.content_type { if c < 32 || c == 127 { valid = false; } }
     for h in r.headers {
@@ -64,7 +66,9 @@ fn serialize_response(out: u8[>..]&, r: Response&, head: bool = false) {
         r.headers.clear();
     }
     let no_body = r.status == HTTP_NO_CONTENT || r.status == HTTP_NOT_MODIFIED;
-    format(out, HTTP_VERSION, " ", r.status, " ", reason(r.status), "\r\n", HEADER_CONNECTION, ": ", CONNECTION_CLOSE, "\r\n");
+    format(out, HTTP_VERSION, " ", r.status, " ", reason(r.status), "\r\n");
+    if close { format(out, HEADER_CONNECTION, ": ", CONNECTION_CLOSE, "\r\n"); }
+    else if keep_alive { format(out, HEADER_CONNECTION, ": ", CONNECTION_KEEP_ALIVE, "\r\n"); }
     if !no_body { format(out, HEADER_CONTENT_LENGTH, ": ", r.body.len, "\r\n"); }
     format(out, HEADER_CONTENT_TYPE, ": ", r.content_type, "\r\n");
     for h in r.headers { format(out, h.name, ": ", h.value, "\r\n"); }

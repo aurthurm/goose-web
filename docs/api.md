@@ -15,17 +15,20 @@ an empty view when missing. Empty and absent values are not distinguished.
 state unchanged. Capacity is 16 headers, names 64 bytes, values 256 bytes. Invalid names,
 controls, framing headers, and content-type overrides are rejected; use `content_type`
 for that field. Serialization also validates direct struct mutations and rejects duplicates.
-The response body capacity is 8192 bytes.
+The response body is an inline array of up to 1 MiB (`MAX_RESPONSE_BODY_BYTES`). The
+runtime also enforces `max_response_bytes`; a larger body becomes a complete 500
+`response_too_large` JSON error. Serialized responses live in a shared chunk pool, so
+the body limit does not multiply per connection slot.
 
-HTTP/1.1 origin-form requests use Content-Length bodies and one response per connection.
+HTTP/1.0 and HTTP/1.1 origin-form requests use Content-Length bodies. Connections persist
+(see the HTTP profile below); `Connection` is read as a case-insensitive token list.
 Targets follow strict ASCII URI syntax with validated percent escapes; raw Unicode
 and fragments are rejected. Host values must match the supported reg-name/bracketed
 IPv6 profile, with optional numeric port. Only SP/HTAB are trimmed around field values.
 Duplicate Host/Content-Length, invalid header names/control bytes, and ambiguous framing
 return 400. Unsupported transfer encoding returns 501; Expect returns 417. HEAD sends
-no body but retains the selected representation's length. No keep-alive or pipelining:
-trailing bytes are discarded at close. Parser errors remain plain text; application errors
-use the JSON helper below. These are bounded experimental protocol rules, not a claim
+no body but retains the selected representation's length. Parser errors remain plain
+text and close the connection; application errors use the JSON helper below. These are bounded experimental protocol rules, not a claim
 of complete HTTP conformance.
 
 ## Routes and query values
@@ -107,11 +110,15 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | public_bind | false | loopback; true explicitly binds IPv4 wildcard |
 | max_clients | 64 | 1..64 |
 | max_request_bytes | 8192 | 1..8192, includes headers and body |
-| read_timeout_ms | 5000 | 1..86400000, total read phase |
-| write_timeout_ms | 5000 | 1..86400000, total write phase |
+| max_response_bytes | 1048576 | 1..1048576, response body limit; larger bodies become a 500 |
+| read_timeout_ms | 5000 | 1..86400000, time to receive each request once its first byte arrives |
+| write_timeout_ms | 5000 | 1..86400000, total write phase per response |
+| idle_timeout_ms | 5000 | 1..86400000, wait for the next request's first byte on a persistent connection |
 | poll_timeout_ms | 10 | 1..1000, capped by nearest active deadline |
 | shutdown_grace_ms | 5000 | 0..86400000 |
-| max_requests | 0 | nonnegative; 0 unlimited |
+| max_requests | 0 | nonnegative; 0 unlimited; server-wide completed responses before shutdown |
+| max_requests_per_connection | 100 | 0..1000000; 0 unlimited; the last allowed response says `Connection: close` |
+| keep_alive | true | false answers every request with `Connection: close` |
 | handle_signals | false | opt-in process-wide SIGINT/SIGTERM ownership |
 
 `validate_server_config(config)` rejects invalid combinations before opening a socket.
@@ -122,14 +129,17 @@ All callbacks are synchronous. Tick can capture `control` and call `request_shut
 
 Lifecycle stages are `SERVER_STARTED`, `SERVER_STOPPING`, and `SERVER_STOPPED`.
 Shutdown closes the listener and drains already accepted clients until the grace
-period expires. `max_requests` triggers this drain; accepted work may take completed
+period expires. Idle persistent connections close at once; a request in flight finishes
+with `Connection: close` and then the socket closes, and pipelined requests not yet
+started are not run. `max_requests` triggers this drain; accepted work may take completed
 responses past the threshold. `shutdown_requested` remains latched: clear it, or use
 a fresh control, before restarting. Stats reset on a successful new run.
 
 `control.stats` reports accepted (including capacity rejections), active, completed
 (fully transmitted responses, including HTTP errors), rejected (capacity), timeouts,
-forced_closes (grace/fatal cleanup), bytes_read, and bytes_written. Protocol errors
+forced_closes (grace/fatal cleanup), bytes_read, bytes_written, and reused. Protocol errors
 are not capacity rejections. Idle timeout closes the socket without a response.
+`reused` counts responses served on a connection that had already completed one.
 
 Signals are optional for embedding; the basic example enables them. Only one
 signal-owning server may run in the process, and previous handlers are restored on

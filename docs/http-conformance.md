@@ -9,8 +9,8 @@ bounds checks enabled, alongside the core and live socket tests.
 
 The request line uses exactly `method SP target SP HTTP/1.1 CRLF`. The method
 must be a nonempty HTTP token and remains case-sensitive. A syntactically valid
-`HTTP/DIGIT.DIGIT` version other than `HTTP/1.1` receives 505; malformed version
-syntax receives 400. Unsupported methods can reach routing and receive 405.
+`HTTP/DIGIT.DIGIT` version other than `HTTP/1.0` or `HTTP/1.1` receives 505; malformed
+version syntax receives 400. Unsupported methods can reach routing and receive 405.
 
 Only origin-form targets are supported: an absolute path beginning with `/`,
 optionally followed by `?` and a query. Literal bytes must belong to the ASCII
@@ -34,7 +34,8 @@ obsolete folded lines, NUL, DEL, and controls other than HTAB receive 400.
 Optional whitespace around values is exclusively SP and HTAB. Other header
 values can retain opaque bytes from `0x80` through `0xff`.
 
-Exactly one nonempty Host is required. Accepted hosts are URI registered names
+HTTP/1.1 requires exactly one nonempty Host. HTTP/1.0 may omit Host, as RFC 9112 allows;
+a Host field that is present must still be valid. Accepted hosts are URI registered names
 (unreserved characters, sub-delimiters, and valid percent escapes) or bracketed
 IPv6 literals, optionally followed by a decimal port from 0 through 65535.
 IPv6 supports one compression marker and a valid final IPv4 tail. A port must
@@ -78,10 +79,22 @@ and unchanged. The server completes its handler before reusing that buffer.
 
 ## Connection and error boundaries
 
-The server processes one request per connection and sends `Connection: close`.
-Trailing pipelined bytes within the input capacity are ignored. Keep-alive,
-streaming bodies, CONNECT tunnels, TLS, and HTTP/2 are outside this profile.
-Parser errors bypass application middleware and use the server's parser error
+Connections persist by default. Keep-alive rules:
+
+- HTTP/1.1 persists unless the client sends `Connection: close`.
+- HTTP/1.0 persists only with `Connection: keep-alive` and no `close` token.
+- A persistent response carries no `Connection` field. A closing response carries
+  `Connection: close`. A 1.0 client that kept the connection gets `Connection: keep-alive`.
+- Requests are processed strictly in order. Bytes that arrive pipelined behind a
+  complete request stay buffered and are parsed after its response is fully written.
+- The server closes after a parser error, after `max_requests_per_connection` responses
+  (that last response says close), during shutdown (the in-flight response completes
+  first), and when `keep_alive` is false.
+- Read deadlines apply per request from its first byte. An idle connection that sends
+  nothing within `idle_timeout_ms` closes silently, with no response.
+
+Streaming bodies, chunked responses, CONNECT tunnels, TLS, and HTTP/2 are outside this
+profile. Parser errors bypass application middleware and use the server's parser error
 response; application JSON errors are a separate layer. For inputs containing
 multiple independent faults, the parser returns the first detected failure,
 except that Transfer-Encoding plus a syntactically valid Content-Length always

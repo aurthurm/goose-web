@@ -108,8 +108,8 @@ fn writers_app(c: web::Ctx&) {
         c.get("/moved") { c.redirect("/new", web::HTTP_MOVED_PERMANENTLY); };
         c.get("/bad-go") { c.redirect("/a\r\nb"); };
         c.get("/fail") { c.fail(409, "conflict", "Already exists"); };
-        c.get("/big") { var big: u8[>..] = []; for i in 8193 { big.push('x'); } c.text(big); };
-        c.get("/edge") { var edge: u8[>..] = []; for i in 8192 { edge.push('y'); } c.text(edge); };
+        c.get("/big") { var big: u8[>..] = []; for i in web::MAX_RESPONSE_BODY_BYTES + 1 { big.push('x'); } c.text(big); };
+        c.get("/edge") { var edge: u8[>..] = []; for i in web::MAX_RESPONSE_BODY_BYTES { edge.push('y'); } c.text(edge); };
     };
 }
 
@@ -233,7 +233,7 @@ fn main() {
     assert(failed.status == 409 && failed.body == "{\"error\":{\"code\":\"conflict\",\"message\":\"Already exists\"}}\n");
     let big = exchange("GET", "/big", writers_app);
     assert(big.status == 500 && big.body == "{\"error\":{\"code\":\"response_too_large\",\"message\":\"Response body exceeds capacity\"}}\n");
-    assert(exchange("GET", "/edge", writers_app).body.len == 8192);
+    assert(exchange("GET", "/edge", writers_app).body.len == web::MAX_RESPONSE_BODY_BYTES);
 
     // `return` in a route body ends the enclosing function; the fall-through text never runs.
     let early = exchange("GET", "/early", early_app);

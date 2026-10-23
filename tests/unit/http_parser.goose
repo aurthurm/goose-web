@@ -57,7 +57,9 @@ fn test_lines_and_framing() {
                 "GET / HTTP/1.1 \r\nHost: x\r\n\r\n", "GET / http/1.1\r\nHost: x\r\n\r\n",
                 "GET / HTTP/11.1\r\nHost: x\r\n\r\n", "GET / HTTP/1.a\r\nHost: x\r\n\r\n",
                 "GET / HTTP/1\r\nHost: x\r\n\r\n", "GET / HTTP/\r\nHost: x\r\n\r\n"] { expect_parser(raw, 400); }
-    expect_parser("GET / HTTP/1.0\r\nHost: x\r\n\r\n", 505);
+    // HTTP/1.0 is accepted (connection persistence is decided by the server).
+    expect_parser("GET / HTTP/1.0\r\nHost: x\r\n\r\n", 200);
+    expect_parser("GET / HTTP/2.0\r\nHost: x\r\n\r\n", 505);
     expect_parser("GET / HTTP/2.0\r\nHost: x\r\n\r\n", 505);
     for field in ["Content-Length: +0", "Content-Length: -0", "Content-Length: 0,0", "Content-Length: 0 0",
                   "Content-Length: 0\t0", "Content-Length:", "Content-Length: \x0b0", "Content-Length: 0\x0c",
@@ -108,10 +110,32 @@ fn test_prefixes_and_limits() {
     expect_field("Content-Length: 8192", 413);
 }
 
+// Persistence inputs: the version is read from the request line and Connection is a token list.
+fn test_persistence_inputs() {
+    let raw = "GET /a HTTP/1.0\r\nHost: x\r\nConnection: Keep-Alive,  CLOSE \r\n\r\n";
+    assert(web::request_http10(raw));
+    assert(!web::request_http10("GET /a HTTP/1.1\r\nHost: x\r\n\r\n"));
+    assert(!web::request_http10("GET /a"));
+    let request, status = web::parse_request(raw);
+    assert(status == 200);
+    assert(web::request_connection_has(request, "close"));
+    assert(web::request_connection_has(request, "keep-alive"));
+    assert(!web::request_connection_has(request, "upgrade"));
+    // Every Connection field counts, and empty list items never match a token.
+    let split, split_status = web::parse_request("GET / HTTP/1.1\r\nHost: x\r\nConnection: a\r\nconnection: close\r\n\r\n");
+    assert(split_status == 200 && web::request_connection_has(split, "close") && web::request_connection_has(split, "a"));
+    let empty, empty_status = web::parse_request("GET / HTTP/1.1\r\nHost: x\r\nConnection:\r\n\r\n");
+    assert(empty_status == 200 && !web::request_connection_has(empty, "close"));
+    // HTTP/1.0 needs no Host; HTTP/1.1 still does.
+    expect_parser("GET / HTTP/1.0\r\n\r\n", 200);
+    expect_parser("GET / HTTP/1.1\r\n\r\n", 400);
+}
+
 fn main() {
     test_host_profile();
     test_target_profile();
     test_lines_and_framing();
     test_prefixes_and_limits();
+    test_persistence_inputs();
     print("HTTP parser tests passed: strict target, Host, CRLF, OWS, framing, prefixes, binary body, exact limits");
 }

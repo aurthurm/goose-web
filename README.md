@@ -134,4 +134,4 @@ methods such as `web::METHOD_GET`, content types, capacity limits, and runtime d
 See [CI and compiler setup](docs/ci.md) to build the pinned upstream compiler and
 reproduce both C compiler configurations locally.
 The transport is currently POSIX-only; TLS, chunked encoding,
-keep-alive, streaming, and language-level async suspension remain future work.
+streaming, and language-level async suspension remain future work.

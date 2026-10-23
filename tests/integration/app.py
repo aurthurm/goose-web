@@ -8,14 +8,27 @@ import sys
 import time
 
 
+def read_response(client, head=False):
+    # HTTP/1.1 connections persist by default, so frame by Content-Length instead of EOF.
+    buffer = b""
+    while b"\r\n\r\n" not in buffer:
+        chunk = client.recv(16384)
+        assert chunk, "connection closed before response headers"
+        buffer += chunk
+    headers, body = buffer.split(b"\r\n\r\n", 1)
+    fields = dict(line.split(b": ", 1) for line in headers.split(b"\r\n")[1:])
+    length = 0 if head else int(fields.get(b"Content-Length", b"0"))
+    while len(body) < length:
+        chunk = client.recv(16384)
+        assert chunk, "connection closed inside response body"
+        body += chunk
+    return headers, body[:length]
+
+
 def exchange(port, raw):
     with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
         client.sendall(raw)
-        chunks = []
-        while chunk := client.recv(16384):
-            chunks.append(chunk)
-    wire = b"".join(chunks)
-    headers, body = wire.split(b"\r\n\r\n", 1)
+        headers, body = read_response(client, raw.startswith(b"HEAD "))
     status = int(headers.split(b" ", 2)[1])
     fields = dict(line.split(b": ", 1) for line in headers.split(b"\r\n")[1:])
     return status, fields, body

@@ -51,13 +51,17 @@ fn main() {
     assert(find(result.body, "caf\xc3\xa9 \xf0\x9f\x90\xa5") >= 0);
     assert(web::application_error(result, 400, "", ""));
     let overhead = result.body.len;
-    var exact: u8[8192] = ['x'; 8192];
-    assert(web::application_error(result, 413, "", exact[..8192 - overhead]));
-    assert(result.body.len == 8192 && result.status == 413);
-    assert(!web::application_error(result, 413, "", exact[..8193 - overhead]));
+    // Body capacity is MAX_RESPONSE_BODY_BYTES; the envelope must fit exactly at that boundary.
+    var exact: u8[>..] = [];
+    for i in web::MAX_RESPONSE_BODY_BYTES { exact.push('x'); }
+    assert(web::application_error(result, 413, "", exact[..web::MAX_RESPONSE_BODY_BYTES - overhead]));
+    assert(result.body.len == web::MAX_RESPONSE_BODY_BYTES && result.status == 413);
+    assert(!web::application_error(result, 413, "", exact[..web::MAX_RESPONSE_BODY_BYTES + 1 - overhead]));
     let fallback = result.body;
     assert(result.status == 500 && find(fallback, "internal_error") >= 0);
-    var controls: u8[8192] = [0; 8192];
+    // Each control byte escapes to six characters, so a quarter-capacity run overflows the envelope.
+    var controls: u8[>..] = [];
+    for i in web::MAX_RESPONSE_BODY_BYTES / 4 { controls.push(0); }
     assert(!web::application_error(result, 400, "", controls));
     assert(result.body == fallback && result.status == 500);
     let invalid_statuses: i32[4] = [0, 200, 399, 600];

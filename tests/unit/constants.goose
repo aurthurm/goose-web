@@ -29,6 +29,10 @@ fn test_public_api() {
     assert(config.poll_timeout_ms == web::DEFAULT_POLL_TIMEOUT_MS);
     assert(config.shutdown_grace_ms == web::DEFAULT_SHUTDOWN_GRACE_MS);
     assert(config.max_requests == web::UNLIMITED_REQUESTS && web::validate_server_config(config));
+    // Persistence and response-size defaults are public contract (docs/api.md).
+    assert(config.keep_alive && config.idle_timeout_ms == 5000);
+    assert(config.max_requests_per_connection == 100 && config.max_response_bytes == 1048576);
+    assert(web::MAX_RESPONSE_BODY_BYTES == 1048576 && web::MAX_RESPONSE_CHUNKS * web::RESPONSE_CHUNK_BYTES >= web::MAX_RESPONSE_WIRE_BYTES);
     assert(web::MAX_REQUEST == web::MAX_REQUEST_BYTES); // Original name remains available.
     // Keep the capacity shared across the Goose/C boundary in agreement.
     assert(web::gw_transport_max_clients() == web::MAX_CLIENTS);
@@ -55,7 +59,7 @@ fn test_response_capacity() {
     var wire: u8[>..] = [];
     web::serialize_response(wire, r);
     assert(r.status == web::HTTP_OK && wire.len <= web::MAX_RESPONSE_WIRE_BYTES);
-    assert(find(wire, "Content-Length: 8192\r\n") >= 0);
+    assert(find(wire, "Content-Length: 1048576\r\n") >= 0);
 }
 
 fn test_status_phrases() {

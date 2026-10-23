@@ -66,4 +66,6 @@ const HEADER_ALLOW = "Allow";
 const HEADER_LOCATION = "Location";
 const HEADER_REQUEST_ID = "X-Request-ID";
 const HTTP_VERSION = "HTTP/1.1";
+const HTTP_VERSION_10 = "HTTP/1.0";
 const CONNECTION_CLOSE = "close";
+const CONNECTION_KEEP_ALIVE = "keep-alive";
