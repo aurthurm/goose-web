@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{title}}</title>
+</head>
+<body>
+<h1>{{title}}</h1>
+{{! Empty and non-empty states are sections over the same bool field. }}
+{{#empty}}
+<p>No todos yet.</p>
+{{/empty}}
+{{^empty}}
+<p>{{count}} todo(s)</p>
+<ul>
+{{#each todos}}
+  <li{{#done}} class="done"{{/done}}>{{title}}</li>
+{{/each}}
+</ul>
+{{/empty}}
+<form method="post" action="/todos">
+  <label>Title <input name="title" maxlength="64" required></label>
+  <button type="submit">Add</button>
+</form>
+</body>
+</html>

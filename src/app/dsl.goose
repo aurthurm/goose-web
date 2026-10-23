@@ -1,5 +1,7 @@
 import src.app.context;
 import src.app.routes;
+import src.app.params;
+import src.app.templates;
 import std;
 namespace web;
 
@@ -46,6 +48,14 @@ fn ::json<T>(c: web::Ctx&, value: T) { web::json(c, value); }
 fn ::json_list<E>(c: web::Ctx&, items: E[:]) { web::json_list(c, items); }
 fn ::body<T>(c: web::Ctx&) -> T, bool { return web::body<T>(c); }
 fn ::body_result<T>(c: web::Ctx&) -> T, web::DecodeResult { return web::body_result<T>(c); }
+
+// Form bodies: form<Form>(c) -> Form, bool. A wrong media type writes 415, a bad pair 400 invalid_form.
+fn ::form<T>(c: web::Ctx&) -> T, bool { return web::form<T>(c); }
+
+// Templates (see docs/api.md#templates). c.html_template(embed_file("views/x.html"), data) writes text/html.
+fn ::html_template<T>(c: web::Ctx&, template: const u8[:], data: T) { web::html_template(c, template, data); }
+fn ::check_template<T>(template: const u8[:]) -> bool, u8[>..] { return web::check_template<T>(template); }
+fn ::html_escape(out: u8[>..]&, text: const u8[:]) { web::html_escape(out, text); }
 
 // Middleware. Each takes the block as Next; c.name() { ... } and web::name(c) { ... } agree.
 fn ::request_id<F>(c: web::Ctx&) { web::request_id(c, F); }

@@ -1,6 +1,8 @@
 import src.constants.http;
 import src.constants.limits;
 import src.http.errors;
+import src.http.request;
+import src.http.headers;
 import src.json.codec;
 import src.routing.router;
 import src.app.context;
@@ -12,6 +14,9 @@ namespace web;
 // declared default, and a failure writes 400 invalid_query and returns false. Empty pairs
 // ("a=1&&b=2", a trailing "&") are skipped. Keys and values are decoded by query_decode
 // (percent escapes, '+' as space).
+//
+// form<T>(c) binds an application/x-www-form-urlencoded body with the same rules. A wrong
+// media type writes 415; a decode failure writes 400 invalid_form.
 //
 // Supported field types: i8..i64, u8..u64, bool, f32, f64 and u8[..N]. Integers are canonical
 // decimal: an optional '-' (signed types only), no '+', no leading zeros, range-checked.
@@ -180,12 +185,12 @@ fn query_read<T>(raw: const u8[:], out: T&, reason: u8[..128]&) -> bool {
     return true;
 }
 
-// Binds the query into T. On failure, error holds the reason, field the key (or empty),
-// and ok is false. present has bit i set for field i in declaration order.
-fn query_result<T>(c: Ctx&) -> T, DecodeResult {
+// Binds a query string (or a form body, which uses the same pair syntax) into T. On failure,
+// error holds the reason, field the key (or empty), and ok is false. present has bit i set
+// for field i in declaration order.
+fn pairs_result<T>(query: const u8[:]) -> T, DecodeResult {
     var value: T = T { .. };
     var result = DecodeResult { .. };
-    let query = target_query(c.request.target);
     var seen: u64 = 0;
     var pos: i64 = 0;
     while pos < query.len {
@@ -233,6 +238,12 @@ fn query_result<T>(c: Ctx&) -> T, DecodeResult {
     return value, result;
 }
 
+// Binds the query of the request target into T. See pairs_result for the result.
+fn query_result<T>(c: Ctx&) -> T, DecodeResult {
+    let value, result = pairs_result<T>(target_query(c.request.target));
+    return value, result;
+}
+
 // Binds the query into T, or writes 400 invalid_query "field: reason" and returns false.
 fn query<T>(c: Ctx&) -> T, bool {
     let value, result = query_result<T>(c);
@@ -249,4 +260,34 @@ fn query<T>(c: Ctx&) -> T, bool {
     }
     fail(c, HTTP_BAD_REQUEST, "invalid_query", message[..]);
     return value, false;
+}
+
+// Media type only, compared case-insensitively; parameters such as charset are ignored.
+fn is_form_media_type(value: const u8[:]) -> bool {
+    let semi = find(value, ";");
+    let base = request_ows(if semi < 0 { value } else { value[..semi] });
+    return equal_header(base, CONTENT_TYPE_FORM);
+}
+
+// Binds the form body into T, or writes 415 for another media type and 400 invalid_form
+// for a bad pair. Missing keys keep their defaults; an empty body binds all defaults.
+fn form<T>(c: Ctx&) -> T, bool {
+    var value: T = T { .. };
+    if !is_form_media_type(c.header(HEADER_CONTENT_TYPE)) {
+        fail(c, HTTP_UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type", "Content-Type must be application/x-www-form-urlencoded");
+        return value, false;
+    }
+    let bound, result = pairs_result<T>(c.request.body);
+    if result.ok { return bound, true; }
+    let message = if result.field.len == 0 {
+        str(result.error[..])
+    } else {
+        str(result.field[..], ": ", result.error[..])
+    };
+    if !valid_utf8(message[..]) {
+        fail(c, HTTP_BAD_REQUEST, "invalid_form", "Form field name is not valid UTF-8");
+        return bound, false;
+    }
+    fail(c, HTTP_BAD_REQUEST, "invalid_form", message[..]);
+    return bound, false;
 }
