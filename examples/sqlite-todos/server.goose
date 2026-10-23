@@ -38,6 +38,21 @@ fn web::optional_fields(v: TodoPatch&) -> const u8[:] { return "title,completed"
 fn web::json_put_value(out: u8[>..]&, v: Todo&) -> bool { return web::json_put_fields(out, v); }
 
 var database = default<web::Db>();
+var database_path = DEFAULT_DB_FILE;
+var database_open = false;
+
+// Each process opens its own connection on its first request. main opens and closes the file once
+// before the server starts (validating it and creating the table), so no connection exists when
+// config.workers forks worker processes: a SQLite connection must not be carried across fork.
+fn ensure_database(c: web::Ctx&) -> bool {
+    if database_open { return true; }
+    if !web::db_open(database, database_path) {
+        c.fail(web::HTTP_INTERNAL_SERVER_ERROR, "database_error", web::db_error(database));
+        return false;
+    }
+    database_open = true;
+    return true;
+}
 
 // A failed call sets db_error; a missing row does not. Both kinds of "no" look the same otherwise.
 fn db_failed(c: web::Ctx&) {
@@ -115,6 +130,7 @@ fn delete_todo(c: web::Ctx&) {
 
 // Served at /openapi.json and /docs, generated from the routes below.
 fn app(c: web::Ctx&) {
+    if !ensure_database(c) { return; }
     request_id(c) { c.logger() {
         web::openapi(c, web::OpenApiInfo { title: "SQLite Todo API", version: "1.0.0",
             description: "Todos persisted in a SQLite file. The completed flag is named done on the wire." }) {
@@ -153,11 +169,13 @@ fn main() {
     // The port goes through the framework parser; the database file is this example's own argument.
     let config, ok, error = web::config_from_args(argv[..min(argv.len, 2)]);
     if !ok { abort(error); }
-    let path = if argv.len > 2 { argv[2] } else { DEFAULT_DB_FILE };
-    if !web::db_open(database, path) { abort(str("cannot open database: ", web::db_error(database))); }
+    database_path = if argv.len > 2 { argv[2] } else { DEFAULT_DB_FILE };
+    if !web::db_open(database, database_path) { abort(str("cannot open database: ", web::db_error(database))); }
     if !web::create_table<Todo>(database) { abort(str("cannot create table: ", web::db_error(database))); }
+    web::db_close(database);
+    database_open = false;
     print("SQLite Todo API listening on http://127.0.0.1:", config.port);
     let started = web::run(config) { c => app(c) };
-    web::db_close(database);
+    if database_open { web::db_close(database); }
     if !started { abort("server failed"); }
 }

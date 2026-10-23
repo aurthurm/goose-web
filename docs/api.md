@@ -135,12 +135,14 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | max_sse_clients | 32 | 0..64; open event streams; the effective limit is `min(max_sse_clients, max_clients)`, and 0 disables streams |
 | sse_heartbeat_ms | 15000 | 1..86400000, interval of the `: ping` comment on each stream |
 | sse_max_queued_bytes | 262144 | 256..4194304, unsent bytes one stream may hold before it is dropped |
+| workers | 1 | 0..256; 1 is the single-process reactor; 0 is one worker process per CPU; more than 1 pre-forks that many workers (see [Worker processes](#worker-processes)) |
 
 `validate_server_config(config)` rejects invalid combinations before opening a socket.
 `serve_config(config, control, handler, tick, lifecycle)` returns false on invalid
-configuration, bind/signal setup failure, or fatal poll failure. Handler receives
+configuration, bind/signal setup failure, fork failure, or fatal poll failure. Handler receives
 request/response, tick receives no arguments, and lifecycle receives stage/stats.
 All callbacks are synchronous. Tick can capture `control` and call `request_shutdown(control)`.
+With `workers` other than 1, the same call pre-forks worker processes; see below.
 
 Lifecycle stages are `SERVER_STARTED`, `SERVER_STOPPING`, and `SERVER_STOPPED`.
 Shutdown closes the listener and drains already accepted clients until the grace
@@ -162,6 +164,100 @@ Signals are optional for embedding; the basic example enables them. Only one
 signal-owning server may run in the process, and previous handlers are restored on
 normal exit. Multithreaded embedders should manage signals externally. The legacy
 `serve(port, max_requests, handler, tick)` wrapper keeps loopback defaults.
+
+## Worker processes
+
+`workers` pre-forks several copies of the server on one listening socket, so requests
+are served on all CPU cores. It is the process model of nginx and gunicorn: no Goose
+threads are involved, and each worker is a separate process with its own memory.
+
+| `workers` | Behavior |
+| --- | --- |
+| `1` (default) | The single-process reactor, unchanged. |
+| `0` | One worker per online CPU (`sysconf(_SC_NPROCESSORS_ONLN)`). |
+| `2`..`256` | That many workers. |
+
+```goose
+var config = web::server_config();
+config.port = 8080;
+config.workers = 4;
+let started = web::run(config) { c => app(c) };
+```
+
+From the command line, `--workers N` (or `--workers=N`) and `GOOSE_WEB_WORKERS=N` set the
+count; see [Command-line and environment configuration](#command-line-and-environment-configuration).
+Start from `server_config()`, which sets `workers = 1`. A zeroed `default<web::ServerConfig>()` has
+`workers = 0`, which means one worker per CPU.
+
+**Process model.**
+
+- The parent process opens the listener (nonblocking, `SO_REUSEADDR`), installs SIGINT and
+  SIGTERM handling, and forks the workers. It never serves requests. A worker inherits the
+  listener and runs the ordinary reactor on it with `workers = 1`. Each worker accepts from
+  the shared socket; the kernel decides which worker takes each new connection, and a
+  keep-alive connection stays with the worker that accepted it.
+- With `workers` other than 1 the parent always owns SIGINT and SIGTERM, whatever
+  `handle_signals` says, because it is the only process that can stop the others.
+  Workers always take the signals themselves.
+- `request_shutdown(control)` and `SIGINT`/`SIGTERM` sent to the parent stop the server.
+  Ctrl+C reaches the whole process group, so every worker also starts its own drain.
+
+**Callbacks.** `handler` (and every route) runs in the workers. `tick` runs in the parent
+about every 20 ms, and in each worker at the reactor's cadence. `lifecycle` is called by the parent
+with `SERVER_STARTED` (after the workers are forked), `SERVER_STOPPING` (when shutdown
+begins) and `SERVER_STOPPED` (with the aggregated stats). Workers run `ignore_lifecycle`.
+
+**State is per worker.** A fork copies the program's memory, and nothing is shared afterwards.
+Anything a request can change is private to the worker that handled it:
+
+- Global variables, route tables, sessions held in memory, `rate_limit` counters, the request
+  counter behind `request_id` and any in-memory store differ from worker to worker. The basic Todo
+  example keeps its list in memory and rewrites its JSON file from that copy, so it must run with
+  `workers = 1`: several workers would overwrite each other's data. Keep such state in a database
+  (`examples/sqlite-todos`) or run one worker.
+- `web::sse_publish` reaches only the streams open in the calling process. A publish from a
+  worker's tick or handler does not reach a stream held by another worker. Use one worker for
+  SSE fan-out, or publish through a shared store.
+- `max_requests` counts per worker: each worker stops after that many responses and the parent
+  replaces it. The parent does not apply the limit to the server as a whole.
+- `max_clients`, `max_sse_clients` and `max_pool_bytes` are per worker, so the process total is
+  a multiple of them.
+
+**SQLite and other open resources.** SQLite forbids carrying an open connection across
+`fork`. The rule for this framework is that the parent opens nothing a worker will use. The
+`examples/sqlite-todos` program opens and closes its database file once in `main` (to validate
+the path and create the table), then each process opens its own connection on the first request
+(`ensure_database`). Any application that opens a file, socket or database before `run` must
+close it first or open it lazily in the handler. A worker that inherits an open handle and uses
+it corrupts the database.
+
+**Stats.** When a worker stops, it sends its `ServerStats` to the parent as one fixed-size record
+on a pipe. The parent sums the records into `control.stats`, so `SERVER_STOPPED` receives the
+totals of every worker that stopped cleanly. `active` and `sse_active` are zero at that point. The
+parent's stats are zero until the first worker stops. A worker that crashes or is killed after the
+grace period sends no record, so its counts are lost; the `accepted` count of a crashed worker is
+also lost.
+
+**Supervision.** A worker that exits without being asked (a crash, a signal other than the
+parent's shutdown, or its own `max_requests` or `request_shutdown` from its tick) is restarted.
+Restarts back off from 50 ms, doubling to 2 s; a worker that lived for ten seconds resets its
+backoff. When more than 30 restarts happen within 60 seconds the server stops and
+`serve_config` returns false, since a crash loop is a fault to fix rather than to mask.
+A failed `fork` stops the server the same way.
+
+**Shutdown.** The parent closes the listener and sends SIGTERM to every worker. A worker drains
+as in the single-process case: idle connections close at once, in-flight requests finish with
+`Connection: close`, and the listener is already closed. The parent waits for every worker to
+exit. Workers still running `shutdown_grace_ms + 500 ms` after the stop began are sent SIGKILL.
+
+**Linux and portability.** Workers are created with `fork` and, on Linux, `PR_SET_PDEATHSIG`
+so that a worker whose parent dies receives SIGTERM and drains. The mechanism is POSIX; the
+accept sharing relies on a nonblocking shared listener, so every worker wakes when a connection
+arrives and the losers see `EAGAIN` (a thundering herd of a few wakeups per connection, which
+is cheap at these sizes). `EPOLLEXCLUSIVE` would remove it once an epoll backend exists.
+
+Use `bench/load.c` to measure a server under keep-alive load:
+`cc -O2 bench/load.c -o build/load` then `build/load -c 64 -d 5 -P 8080 -p /health`.
 
 ## Server-sent events
 
@@ -740,7 +836,8 @@ or style contents.
 | `--port N`, `--port=N` | 1..65535 |
 | `--host public` or `--host loopback` | `public_bind` true (all IPv4) or false (127.0.0.1) |
 | `--max-clients N` | 1..`MAX_CLIENTS` |
-| `--max-requests N` | 0 unlimited; otherwise stop after N completed responses |
+| `--max-requests N` | 0 unlimited; otherwise stop after N completed responses (per worker when `workers` > 1) |
+| `--workers N` | 1 single process (default); 0 one worker per CPU; 2..256 that many worker processes |
 
 Other arguments are errors: unknown options, a missing value, and a second bare argument. An
 application that takes its own positional arguments passes only the prefix it owns; the basic
@@ -748,7 +845,8 @@ example passes `argv[..2]` and reads max-responses and the data file itself. Ran
 by `validate_server_config`.
 
 `web::config_from_env() -> ServerConfig, bool, u8[>..]` reads `GOOSE_WEB_PORT` (the `--port` rule)
-and `GOOSE_WEB_PUBLIC` (`1` or `true` for public, `0` or `false` for loopback). Unset and empty
+and `GOOSE_WEB_PUBLIC` (`1` or `true` for public, `0` or `false` for loopback), and `GOOSE_WEB_WORKERS`
+(the `--workers` rule). Unset and empty
 variables keep the defaults. A value longer than 256 bytes is invalid.
 
 ```goose

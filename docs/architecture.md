@@ -23,12 +23,14 @@ own globals (a Goose import adds no namespace). Use `src/sys/` instead.
 | `src/events/bus.goose` | Typed subscriptions and queued dispatch | Goose stdlib |
 | `src/sys/` | Files (stat, bounded read), environment, monotonic clock | Native shim only; never imports the `os` stdlib |
 | `src/app/config.goose` | `config_from_args` / `config_from_env` for application mains | Runtime config, `src/sys` |
-| `src/runtime/server.goose` | Connections, deadlines, shutdown, lifecycle, counters | HTTP parsing/framing, native transport, `src/sys` |
+| `src/runtime/server.goose` | Connections, deadlines, shutdown, lifecycle, counters; worker processes (`serve_workers`) | HTTP parsing/framing, native transport, `src/sys` |
 | `native/posix/transport.c` | Nonblocking socket calls, readiness, optional signals | POSIX |
 | `native/posix/system.c` | stat, bounded file read, getenv, clock | POSIX |
+| `native/posix/process.c` | fork, nonblocking reap, kill, CPU count, stats record pipe | POSIX (fork and prctl on Linux) |
 
 Keep protocol policy in Goose. The C shim owns no application buffers and retains
-no Goose pointers. Its only process-wide state is optional signal ownership.
+no Goose pointers. Its only process-wide state is optional signal ownership; the process calls
+in `native/posix/process.c` act on the calling process and its children and keep nothing.
 A future Windows transport belongs beside POSIX, with platform build declarations
 in `goose_web.build`.
 
@@ -69,6 +71,21 @@ lives in an `AppScratch` that the caller owns, and `Ctx` refers to its parts:
   scratch could not be cleared while the request is live, because Goose cannot prove a caller-supplied
   request holds no slice into it.
 
+## Process model
+
+One process runs the reactor by default. `workers` other than 1 pre-forks worker processes, which is how the
+framework uses every core without threads: Goose threads share no memory and may not call the transport
+(`goose_web.build` declares `main_thread_only`), and a process gives the same isolation with crash containment.
+
+- The parent (`serve_workers`, in `src/runtime/server.goose`) opens the listener, owns signals, forks the
+  workers, supervises them and aggregates their stats. It never handles a request.
+- A worker is `serve_loop`, the same reactor as the single-process path, on the inherited listener, with
+  `workers = 1`. `serve_config` with `workers = 1` opens its own listener and calls the same loop, so the
+  single-process behavior is the code path it always was.
+- Worker state is copied at fork and is private afterwards; SQLite connections are opened after fork
+  (see [docs/api.md](api.md#worker-processes)). Only the stats record crosses back, over one pipe.
+- The shim functions for this live in `native/posix/process.c`; `tests/native/process.c` covers them.
+
 ## Composition
 
 Goose function values exist at compile time. Middleware callbacks and runtime callbacks
@@ -88,6 +105,7 @@ cannot continually enqueue work and starve the reactor. Cross-thread delivery is
 - Reproducible parser fuzz/property checks belong under `tests/fuzz/`; preserve seeds and regression cases.
 - Keep `tests/run.py` as the single complete verification command; register new unit programs there.
 - Keep generated binaries/cache under ignored `build/`; keep examples out of `src/`.
+- Load measurement uses `bench/load.c` (keep-alive, fixed duration); it is not part of `tests/run.py`.
 
 The basic example is a Todo API built on the application API. `server.goose` declares the
 middleware chain (`request_id`, `logger`, a request event), the event bus and lifecycle, and

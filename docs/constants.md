@@ -63,6 +63,7 @@ Completed parsing and successful routing/query lookup use `HTTP_OK`.
 | `MAX_ALLOW_BYTES` | `MAX_HEADER_VALUE_BYTES` |
 | `MAX_QUERY_FIELD_BYTES` | 1024 decoded bytes per field |
 | `MAX_EVENT_LISTENERS` / `MAX_QUEUED_EVENTS` | 64 listeners / 256 queued events |
+| `MAX_WORKERS` | 256 worker processes (`ServerConfig.workers`) |
 
 The original `MAX_REQUEST` name remains as an alias of `MAX_REQUEST_BYTES`.
 `INVALID_SUBSCRIPTION` is the failed subscription ID returned when the table is full.
@@ -75,13 +76,14 @@ Constants can also size application-owned fixed arrays at compile time.
 `DEFAULT_MAX_REQUEST_BYTES`, `DEFAULT_READ_TIMEOUT_MS`, `DEFAULT_WRITE_TIMEOUT_MS`,
 `DEFAULT_POLL_TIMEOUT_MS`, `DEFAULT_SHUTDOWN_GRACE_MS`, `DEFAULT_IDLE_TIMEOUT_MS`,
 `DEFAULT_KEEP_ALIVE`, `DEFAULT_MAX_REQUESTS_PER_CONNECTION`, `DEFAULT_MAX_RESPONSE_BYTES` (1 MiB),
-`DEFAULT_MAX_POOL_BYTES` (8 MiB), and `DEFAULT_HANDLE_SIGNALS`.
+`DEFAULT_MAX_POOL_BYTES` (8 MiB), `DEFAULT_HANDLE_SIGNALS`, and `DEFAULT_WORKERS` (1, a single process).
 `UNLIMITED_REQUESTS` disables the response-count shutdown trigger.
 
 Use `ServerConfig` to select runtime values within the fixed limits. `DEFAULT_*`
 constants describe initial settings; `MAX_*` constants describe upper bounds.
 `MIN_PORT`, `MAX_PORT`, `MAX_TIMEOUT_MS`, and `MAX_POLL_TIMEOUT_MS` describe validation
-bounds. Lifecycle callbacks receive `SERVER_STARTED`, `SERVER_STOPPING`, or `SERVER_STOPPED`.
+bounds. Lifecycle callbacks receive `SERVER_STARTED`, `SERVER_STOPPING`, or `SERVER_STOPPED`;
+with worker processes only the parent calls them (see [worker processes](api.md#worker-processes)).
 
 Transport-prefixed `GW_*` names belong to the native implementation. A boundary
 test checks that its client capacity agrees with the public Goose constant, and a
