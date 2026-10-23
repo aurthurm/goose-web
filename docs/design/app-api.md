@@ -343,3 +343,63 @@ let ok2 = web::transaction(db) { web::insert(db, a).1 && web::update(db, b) };  
   just the codec pair, because Goose cannot tell a struct from a limited array in the generic path.
 - Primary keys must be `i64`, so `remove`, `update` and `find_row` take an `i64` key.
 - NULL: every column is `NOT NULL`; a NULL read is an error. Only the zero key on insert binds NULL.
+
+## v0.5 design: server-sent events
+
+Goal: push events to browsers (`EventSource`) and other long-lived readers without closures. The
+reactor stays synchronous: a handler upgrades its connection, and application code publishes events
+by channel from ticks, event drains and handlers. No callback is stored per connection.
+
+**Upgrade.** `c.sse(channel: i32) -> bool` sets `Response.sse` and `Response.sse_channel` and makes the
+response a stream head: `200`, `Content-Type: text/event-stream`, `Cache-Control: no-cache`,
+`Transfer-Encoding: chunked`, plus headers set with `c.set` beforehand. It returns false, changing
+nothing, when a response was already written. The reactor performs the upgrade after the handler
+returns, so the handler's `return` ends the route. Middleware still runs after the handler.
+
+- HTTP/1.1 only. HTTP/1.0 and HEAD requests asking for a stream get `400` and a close. Close-delimited
+  1.0 streams would need unframed fan-out, which this design avoids.
+- `keep_alive` does not apply to streams. A stream is never reused for a second request, and any bytes
+  the client sends after the request are discarded.
+- Refused with `503` and close when stopping, when shutdown was requested, or when `max_sse_clients`
+  streams are already open. The effective limit is `min(max_sse_clients, max_clients)`.
+- A stream does not count as a completed request, so `max_requests` ignores it.
+
+**Connection state.** A streaming connection keeps its chunk chain in the shared pool, the same
+mechanism responses use. Its `deadline` is the next heartbeat, not a read or idle timeout, so streams
+are exempt from `read_timeout_ms` and `idle_timeout_ms`. Every `sse_heartbeat_ms` (default 15000) the
+reactor queues the chunk `: ping\n\n`.
+
+**Publish.** `web::sse_publish(control, channel, event: const u8[:], data: const u8[:]) -> i64`
+formats one SSE message (`event:` line when the name is non-empty, one `data:` line per line of
+`data`, with CR, LF and CRLF all treated as line breaks, then a blank line), frames it as one chunk,
+and returns the number of streams on that channel when the message was accepted. Return values:
+`-1` refused (event name with CR or LF or longer than `MAX_SSE_EVENT_BYTES`, data too large, framed
+message over `sse_max_queued_bytes` or `MAX_SSE_MESSAGE_BYTES`, or the outbox full), `0` when not
+running, stopping, or no stream subscribes to the channel.
+
+Connection chains belong to the reactor and the pool is local to `serve_config`, so application code
+cannot write into them directly. Instead, publish appends the framed chunk to a bounded outbox in
+`ServerControl`, and the reactor fans it out at the start of each loop iteration, before it polls.
+Fan-out is in publish order, so each stream sees its channel's events in order. A publish made during
+the handler phase reaches the sockets before the next poll.
+
+**Slow consumers.** A stream's unsent bytes are its queued bytes. Fan-out and heartbeats drop the
+stream (close, `sse_dropped += 1`) when the queue would pass `sse_max_queued_bytes` (default 256 KiB)
+or the pool has no chunks left. Dropping never blocks the reactor and never affects other streams.
+
+**Shutdown.** When stopping begins, the reactor first fans out pending messages, then queues
+`event: close` plus the terminating chunk `0\r\n\r\n` on every stream. A stream closes once that
+data is flushed. The grace deadline still applies, so an unread stream is force-closed at the end.
+
+**Stats.** `ServerStats` adds `sse_active` (open streams), `sse_sent` (events queued to streams),
+and `sse_dropped` (streams closed for slowness or pool exhaustion).
+
+**Bounds.** Per stream: `sse_max_queued_bytes` plus a 128-byte reserve for the close event. Total
+pool: `max_pool_bytes`. Outbox: 256 KiB and 64 message records, drained every iteration. One message:
+at most 64 KiB of input data. Heartbeat and close framing use fixed bytes. Streams never allocate per
+event.
+
+**Deviations from the initial brief.** `sse_publish` returns after staging into the outbox, not
+after writing into connection chunks. The fan-out therefore happens one loop iteration later, which
+is at most one poll interval. `max_sse_clients` is clamped to `max_clients` at use instead of being
+validated against it, so existing configurations with a small `max_clients` stay valid.

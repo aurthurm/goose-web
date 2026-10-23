@@ -9,7 +9,7 @@ namespace web;
 // A fresh response: 200, text/plain, no headers, empty body. max_body is the runtime's cap.
 fn response() -> Response {
     return Response { status: HTTP_OK, content_type: CONTENT_TYPE_TEXT, headers: [], body_start: 0,
-        max_body: DEFAULT_MAX_RESPONSE_BYTES, body: [] };
+        max_body: DEFAULT_MAX_RESPONSE_BYTES, sse: false, sse_channel: 0, body: [] };
 }
 
 // The current body. The view is valid until the next write or runtime reset.
@@ -51,6 +51,8 @@ fn reset_response(r: Response&) {
     r.headers.clear();
     r.body.clear();
     r.body_start = 0;
+    r.sse = false;
+    r.sse_channel = 0;
 }
 
 fn reason(status: i32) -> const u8[:] {
@@ -122,6 +124,17 @@ fn serialize_head(out: u8[>..]&, r: Response&, close: bool, keep_alive: bool) {
     else if keep_alive { format(out, HEADER_CONNECTION, ": ", CONNECTION_KEEP_ALIVE, "\r\n"); }
     if !no_body { format(out, HEADER_CONTENT_LENGTH, ": ", body_len(r), "\r\n"); }
     format(out, HEADER_CONTENT_TYPE, ": ", r.content_type, "\r\n");
+    for h in r.headers { format(out, h.name, ": ", h.value, "\r\n"); }
+    out.append("\r\n");
+}
+
+// Head of a server-sent event stream: no Content-Length, chunked framing for the events that follow.
+// Only the status, content type and headers set on the response are written.
+fn serialize_stream_head(out: u8[>..]&, r: Response&) {
+    format(out, HTTP_VERSION, " ", r.status, " ", reason(r.status), "\r\n");
+    format(out, HEADER_CONTENT_TYPE, ": ", r.content_type, "\r\n");
+    format(out, HEADER_CACHE_CONTROL, ": ", CACHE_CONTROL_NO_CACHE, "\r\n");
+    format(out, HEADER_TRANSFER_ENCODING, ": ", TRANSFER_CODING_CHUNKED, "\r\n");
     for h in r.headers { format(out, h.name, ": ", h.value, "\r\n"); }
     out.append("\r\n");
 }

@@ -136,6 +136,20 @@ fn redirect(c: Ctx&, location: const u8[:], code: i32 = HTTP_FOUND) {
     drop_body(c.response);
 }
 
+// Upgrades the connection to a server-sent event stream on channel. Returns false, changing
+// nothing, when a response was already written. The runtime sends the stream head after the
+// handler returns, so the handler should return straight away. Headers set with c.set go in the head.
+fn sse(c: Ctx&, channel: i32) -> bool {
+    if c.written { return false; }
+    c.written = true;
+    c.response.sse = true;
+    c.response.sse_channel = channel;
+    c.response.status = HTTP_OK;
+    c.response.content_type = CONTENT_TYPE_EVENT_STREAM;
+    drop_body(c.response);
+    return true;
+}
+
 fn done(c: Ctx&) -> bool { return c.written; }
 
 // Path parameter as a canonical integer. On failure writes 422 invalid_param.

@@ -49,6 +49,7 @@ fn main() {
 - Edge middleware: `secure_headers` (CSP, nosniff, frame DENY, referrer policy, optional HSTS) and a bounded per-client `rate_limit` that answers 429 with `Retry-After`. `c.peer()` gives the TCP peer address.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
 - Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
+- Server-sent events: `c.sse(channel)` upgrades a route to a chunked event stream, `web::sse_publish` fans events out per channel, with heartbeats, bounded per-stream queues that drop slow readers, and a close event at shutdown. See [SSE](docs/api.md#server-sent-events) and the [sse-clock example](examples/sse-clock/README.md).
 - Bounded memory: fixed capacities for requests, headers, routes, queues and clients; response bodies grow on demand up to `max_response_bytes` (1 MiB default, 16 MiB ceiling) and in-flight responses share a pool capped by `max_pool_bytes`.
 - Typed event bus: subscriptions, one-shot listeners, FIFO queue with visible backpressure.
 - Graceful shutdown: SIGINT and SIGTERM stop accepting, drain within a grace period, and report lifecycle stages.

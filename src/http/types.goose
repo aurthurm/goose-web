@@ -10,8 +10,9 @@ struct Request {
 struct Header { name: u8[..MAX_HEADER_NAME_BYTES], value: u8[..MAX_HEADER_VALUE_BYTES] }
 // The body is body[body_start..]. Writes only append (see response.goose), so the buffer
 // grows with what a request writes and is cleared by the runtime after serialization.
+// sse: the handler called c.sse(sse_channel); the runtime upgrades the connection to a stream.
 // body is the resizable tail: it must stay the last field.
 struct Response {
     status: i32, content_type: u8[..MAX_CONTENT_TYPE_BYTES], headers: Header[..MAX_RESPONSE_HEADERS],
-    body_start: i64, max_body: i64, body: u8[>..]
+    body_start: i64, max_body: i64, sse: bool, sse_channel: i32, body: u8[>..]
 }

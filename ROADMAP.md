@@ -29,7 +29,8 @@
 - [x] Typed query binding: `query<T>(c)` and `query_result<T>(c)` with strict keys and `invalid_query` errors.
 - [x] Keep-alive connections: persistent HTTP/1.1 and opt-in HTTP/1.0, in-order pipelining, idle and per-connection limits.
 - [x] Response bodies up to 1 MiB by default (16 MiB ceiling) in a growable, reused buffer (`max_response_bytes`); in-flight responses share a pool capped by `max_pool_bytes`, with 503 when it is full.
-- Next: chunked/streaming bodies.
+- [x] Server-sent events: `c.sse`, `web::sse_publish`, chunked framing, heartbeats, slow-consumer drops, shutdown close events.
+- Next: general chunked/streaming bodies beyond server-sent events.
 - [x] OpenAPI 3.1 generated from the routes block and struct reflection (`web::openapi`), with a `/docs` page.
 - [x] Field names and skipping: `web::json_key` (JSON name, as V's `@[json: name]`) and `web::json_skip` (`@[skip]`) for encode, decode, `query<T>`, and OpenAPI; `check_json_keys<T>()` for duplicate names.
 - [x] Reflective SQLite layer (`db/`, `web::db`): CRUD from `fields<T>` with bound parameters, a query builder, transactions, migrations with `schema_version`, WAL file databases, example `examples/sqlite-todos`. Blocking calls on the reactor thread; worker offload is future work.
@@ -53,7 +54,7 @@
 - [x] Pinned upstream compiler and Linux CI definition for GCC and Clang.
 - Broader conformance and coverage-guided fuzzing before public deployment.
 - [x] Keep-alive with explicit idle, per-request, and per-connection limits.
-- Streaming and chunked encoding with explicit ownership/backpressure.
+- Chunked encoding for general streaming bodies with explicit ownership/backpressure (server-sent events are done).
 - Windows transport, then evaluate epoll/kqueue under measured load.
 - TLS integration and deployment guidance.
 
