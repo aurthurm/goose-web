@@ -15,8 +15,12 @@ struct SearchQuery { limit: i32 = 10, q: u8[..32] = "", active: bool = false, sc
 var items: Item[..8] = [];
 var next_item_id: i64 = 1;
 
+// Test keys only: 32 and 32 bytes, different from each other.
+const SESSION_SECRET = "0123456789abcdef0123456789abcdef";
+const CSRF_SECRET = "fedcba9876543210fedcba9876543210";
+
 fn app(c: web::Ctx&) {
-    request_id(c) { logger(c) { cors(c) {
+    request_id(c) { logger(c) { cors(c) { session(c, web::SessionConfig { secret: SESSION_SECRET }) {
         // Static files under /static, served before the routes below; tests/integration/app.py
         // runs this program from the repository root so the relative directory resolves.
         c.static_files("/static", "tests/fixtures/static") {
@@ -56,9 +60,35 @@ fn app(c: web::Ctx&) {
                     c.status(web::HTTP_CREATED).json(items[items.len - 1]);
                 };
             };
+            // Signed sessions: the store rides in the gw_session cookie, emitted only when it changes.
+            c.group("/session") {
+                c.get("/set") {
+                    let user_ok = c.session_set("user", "alice");
+                    let theme_ok = c.session_set("theme", "dark");
+                    if !user_ok || !theme_ok { c.fail(web::HTTP_CONFLICT, "session_refused", "Session store refused the value"); return; }
+                    c.text("session set");
+                };
+                c.get("/get") { c.text(str("user=", c.session_get("user"), ";theme=", c.session_get("theme"))); };
+                c.get("/clear") { c.session_clear(); c.text("session cleared"); };
+                c.get("/fill") {
+                    var value: u8[>..] = [];
+                    value.resize(256, 'v');
+                    var stored: i64 = 0;
+                    for i in 16 {
+                        var key: u8[>..] = [];
+                        format(key, "k", i);
+                        if c.session_set(key[..], value[..]) { stored += 1; }
+                    }
+                    c.text(str("stored=", stored));
+                };
+            };
+            // CSRF: the GET issues the token for the form; the POST accepts it from the header or
+            // a form field, and refuses a foreign Origin.
+            c.get("/csrf/form") { csrf(c, CSRF_SECRET, false) { c.text(c.csrf_token()); }; };
+            c.post("/csrf/form") { csrf(c, CSRF_SECRET, true) { c.text("accepted"); }; };
         };
         };
-    }}};
+    }}}};
 }
 
 fn main() {

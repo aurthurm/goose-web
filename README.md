@@ -42,6 +42,7 @@ fn main() {
 - OpenAPI 3.1 from the routes block and struct reflection, served at `/openapi.json` with a `/docs` page (`web::openapi`).
 - Reflective JSON in and out: `body<T>(c)` decodes strict structs (415, 400, 422 written for you); `c.json(value)` encodes any struct.
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
+- Signed cookie sessions (`session`, 16 entries, HMAC-SHA256) and double-submit CSRF protection (`csrf`) with a CSPRNG-backed token. See [Sessions](docs/api.md#sessions) and [CSRF](docs/api.md#csrf); the security notes there say what these do not protect.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
 - Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
 - Bounded memory: fixed capacities for requests, headers, routes, queues and clients; response bodies grow on demand up to `max_response_bytes` (1 MiB default, 16 MiB ceiling) and in-flight responses share a pool capped by `max_pool_bytes`.
@@ -95,7 +96,7 @@ src/
   routing/                Route matching, path parameters, query decoding
   middleware/             Compile-time request pipeline
   app/                    Application API: Ctx, c.routes/c.group, middleware, responses, run, config
-  sys/                    File, environment and clock access over the native shim (no os import)
+  sys/                    File, environment, clock and crypto (SHA-256, HMAC, CSPRNG, base64url) access over the native shim (no os import)
   events/                 Typed bounded event bus
   runtime/                Readiness loop, configuration, lifecycle, metrics
 native/posix/             Socket, signal, file and environment shim

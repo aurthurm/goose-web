@@ -64,7 +64,11 @@ int main(void) {
     int64_t second = gw_clock_ns();
     assert(first > 0 && second >= first);
 
+    /* Wall clock: after 2020-01-01 and not behind the previous reading. */
+    int64_t unix_first = gw_unix_seconds();
+    assert(unix_first > 1577836800 && gw_unix_seconds() >= unix_first);
+
     assert(unlink(fifo) == 0 && unlink(file) == 0 && rmdir(dir) == 0);
-    puts("System tests passed: file kinds and sizes, bounded reads, FIFO refusal, environment, monotonic clock");
+    puts("System tests passed: file kinds and sizes, bounded reads, FIFO refusal, environment, clocks");
     return 0;
 }

@@ -26,6 +26,8 @@
 - [x] Todo example rewritten onto the application API; `examples/hello` smoke test; unit contracts for routes, bodies and store.
 - [x] Static file serving as middleware (`c.static_files`): GET/HEAD, index.html, content types, traversal and encoding refusals.
 - [x] Cookies: `c.cookie` reads the Cookie header; `c.set_cookie` emits validated Set-Cookie lines (repeatable).
+- [x] Native HMAC-SHA256, SHA-256, CSPRNG and base64url in the POSIX shim (FIPS and RFC 4231 vectors), with signed cookie sessions (`session`) and double-submit CSRF protection (`csrf`).
+- Next: key rotation with key ids, server-side session revocation, and a `Secure` option for the CSRF cookie.
 - [x] Typed query binding: `query<T>(c)` and `query_result<T>(c)` with strict keys and `invalid_query` errors.
 - [x] Keep-alive connections: persistent HTTP/1.1 and opt-in HTTP/1.0, in-order pipelining, idle and per-connection limits.
 - [x] Response bodies up to 1 MiB by default (16 MiB ceiling) in a growable, reused buffer (`max_response_bytes`); in-flight responses share a pool capped by `max_pool_bytes`, with 503 when it is full.

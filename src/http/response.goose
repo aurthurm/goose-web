@@ -8,7 +8,7 @@ namespace web;
 
 // A fresh response: 200, text/plain, no headers, empty body. max_body is the runtime's cap.
 fn response() -> Response {
-    return Response { status: HTTP_OK, content_type: CONTENT_TYPE_TEXT, headers: [], body_start: 0,
+    return Response { status: HTTP_OK, content_type: CONTENT_TYPE_TEXT, headers: [], set_cookie_line: "", body_start: 0,
         max_body: DEFAULT_MAX_RESPONSE_BYTES, body: [] };
 }
 
@@ -49,6 +49,7 @@ fn reset_response(r: Response&) {
     r.status = HTTP_OK;
     r.content_type = CONTENT_TYPE_TEXT;
     r.headers.clear();
+    r.set_cookie_line.clear();
     r.body.clear();
     r.body_start = 0;
 }
@@ -107,6 +108,7 @@ fn prepare_response(r: Response&) {
         r.status = HTTP_INTERNAL_SERVER_ERROR;
         r.content_type = CONTENT_TYPE_TEXT;
         r.headers.clear();
+        r.set_cookie_line.clear();
         drop_body(r);
         error_set_body(r, "Invalid response\n");
     }
@@ -123,6 +125,7 @@ fn serialize_head(out: u8[>..]&, r: Response&, close: bool, keep_alive: bool) {
     if !no_body { format(out, HEADER_CONTENT_LENGTH, ": ", body_len(r), "\r\n"); }
     format(out, HEADER_CONTENT_TYPE, ": ", r.content_type, "\r\n");
     for h in r.headers { format(out, h.name, ": ", h.value, "\r\n"); }
+    if r.set_cookie_line.len > 0 { format(out, HEADER_SET_COOKIE, ": ", r.set_cookie_line[..], "\r\n"); }
     out.append("\r\n");
 }
 

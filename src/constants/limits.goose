@@ -28,3 +28,7 @@ const MAX_QUERY_FIELD_BYTES = 1024;
 const MAX_EVENT_LISTENERS = 64;
 const MAX_QUEUED_EVENTS = 256;
 const INVALID_SUBSCRIPTION = 0;
+// One Set-Cookie line written by the session middleware (name, value and attributes). Longer
+// than a header value, so it has its own field in Response; 4096 is the RFC 6265 minimum that
+// user agents must accept for a cookie.
+const MAX_COOKIE_LINE_BYTES = 4096;
