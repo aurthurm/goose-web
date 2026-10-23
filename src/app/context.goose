@@ -35,6 +35,7 @@ struct Ctx {
     matched: RouteMatch,
     prefixes: const u8[:][MAX_GROUP_DEPTH],
     prefix_count: i64,
+    host_scope: const u8[:],
     oas: OpenApiState,
 }
 
@@ -47,6 +48,9 @@ fn method(c: Ctx&) -> const u8[:] { return c.request.method; }
 fn target(c: Ctx&) -> const u8[:] { return c.request.target; }
 fn path(c: Ctx&) -> const u8[:] { return target_path(c.request.target); }
 fn header(c: Ctx&, name: const u8[:]) -> const u8[:] { return request_header(c.request, name); }
+// Numeric address of the connected client, filled by the runtime from accept(). Empty when
+// unknown, as in unit tests that build a Request by hand.
+fn peer(c: Ctx&) -> const u8[:] { return c.request.peer; }
 
 // Path parameters of the selected route. Empty when absent or before dispatch.
 fn param(c: Ctx&, name: const u8[:]) -> const u8[:] { return path_param(c.matched, name); }
@@ -60,6 +64,21 @@ fn parse_canonical(text: const u8[:]) -> i64, bool {
         if ch < '0' || ch > '9' { return 0, false; }
         let digit = (ch - '0') as i64;
         if value > (MAX_I64_VALUE - digit) / 10 { return 0, false; }
+        value = value * 10 + digit;
+    }
+    return value, true;
+}
+
+// Canonical unsigned 64-bit decimal, as parse_canonical up to 2^64 - 1.
+fn parse_canonical_u64(text: const u8[:]) -> u64, bool {
+    if text.len == 0 || (text[0] == '0' && text.len > 1) { return 0, false; }
+    var value: u64 = 0;
+    // u64 max / 10, with the last digit allowed up to 5.
+    let limit: u64 = 1844674407370955161;
+    for ch in text {
+        if ch < '0' || ch > '9' { return 0, false; }
+        let digit = (ch - '0') as u64;
+        if value > limit || (value == limit && digit > 5) { return 0, false; }
         value = value * 10 + digit;
     }
     return value, true;
@@ -126,6 +145,68 @@ fn param_int(c: Ctx&, name: const u8[:]) -> i64, bool {
         fail(c, HTTP_UNPROCESSABLE_CONTENT, "invalid_param", "Path parameter must be a canonical non-negative integer");
         return 0, false;
     }
+    return value, true;
+}
+
+// Typed path parameters, consistent with param_int: on failure they write 422 invalid_param
+// and return false. Each reads the selected route's parameter by name.
+
+fn param_u64(c: Ctx&, name: const u8[:]) -> u64, bool {
+    let value, ok = parse_canonical_u64(path_param(c.matched, name));
+    if !ok {
+        fail(c, HTTP_UNPROCESSABLE_CONTENT, "invalid_param", "Path parameter must be a canonical unsigned 64-bit integer");
+        return 0, false;
+    }
+    return value, true;
+}
+
+// Canonical 8-4-4-4-12 hex digits: all letters lowercase, or all uppercase (no mixing).
+fn uuid_canonical(text: const u8[:]) -> bool {
+    if text.len != 36 { return false; }
+    var upper = false;
+    var lower = false;
+    for i in 36 {
+        let ch = text[i];
+        if i == 8 || i == 13 || i == 18 || i == 23 {
+            if ch != '-' { return false; }
+        } else {
+            if !request_hex(ch) { return false; }
+            if ch >= 'A' && ch <= 'F' { upper = true; }
+            if ch >= 'a' && ch <= 'f' { lower = true; }
+        }
+    }
+    return !(upper && lower);
+}
+
+// The UUID text is returned as it was sent (case preserved).
+fn param_uuid(c: Ctx&, name: const u8[:]) -> u8[..36], bool {
+    var value: u8[..36] = [];
+    let raw = path_param(c.matched, name);
+    if !uuid_canonical(raw) {
+        fail(c, HTTP_UNPROCESSABLE_CONTENT, "invalid_param", "Path parameter must be a UUID (8-4-4-4-12 hex digits)");
+        return value, false;
+    }
+    value.append(raw);
+    return value, true;
+}
+
+// Slug: 1 to 64 bytes of lowercase letters, digits and '-'.
+fn slug_canonical(text: const u8[:]) -> bool {
+    if text.len == 0 || text.len > 64 { return false; }
+    for ch in text {
+        if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-') { return false; }
+    }
+    return true;
+}
+
+fn param_slug(c: Ctx&, name: const u8[:]) -> u8[..64], bool {
+    var value: u8[..64] = [];
+    let raw = path_param(c.matched, name);
+    if !slug_canonical(raw) {
+        fail(c, HTTP_UNPROCESSABLE_CONTENT, "invalid_param", "Path parameter must be a slug (1-64 of a-z, 0-9, '-')");
+        return value, false;
+    }
+    value.append(raw);
     return value, true;
 }
 

@@ -53,6 +53,7 @@ fn validate_server_config(c: ServerConfig) -> bool {
 }
 fn request_shutdown(control: ServerControl&) { control.shutdown_requested = true; }
 extern fn gw_accept(listener: i32) -> i32;
+extern fn gw_peer_address(fd: i32, out: u8[:]) -> i64;
 extern fn gw_recv(fd: i32, buffer: u8[:]) -> i64;
 extern fn gw_send(fd: i32, buffer: const u8[:]) -> i64;
 extern fn gw_poll(fds: const i32[:], interests: const i32[:], ready: i32[:], timeout: i32) -> i32;
@@ -69,7 +70,7 @@ struct ChunkPool {
 struct Connection {
     fd: i32, used: i64, sent: i64, wire_len: i64, writing: bool, keep: bool, pipelined: bool,
     idle: bool, deadline: i64, served: i64, head: i64, head_start: i64,
-    input: u8[MAX_REQUEST_BYTES]
+    peer: u8[MAX_PEER_BYTES], peer_len: i64, input: u8[MAX_REQUEST_BYTES]
 }
 
 // Chunks that a new response could still take: freed ones plus never-used capacity.
@@ -222,6 +223,8 @@ fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
                 if slot < 0 { gw_close(fd); control.stats.rejected += 1; }
                 else {
                     clients[slot].fd = fd;
+                    let peer_len = gw_peer_address(fd, clients[slot].peer[..]);
+                    clients[slot].peer_len = if peer_len < 0 { 0 } else { peer_len };
                     clients[slot].deadline = clock_ns() + config.read_timeout_ms * NANOSECONDS_PER_MILLISECOND;
                     control.stats.active += 1;
                 }
@@ -295,7 +298,9 @@ fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
                 control.stats.bytes_read += n;
             }
             c.pipelined = false;
-            let request, parsed_status = parse_request(c.input[..c.used]);
+            let parsed, parsed_status = parse_request(c.input[..c.used]);
+            var request = parsed;
+            request.peer = c.peer[..c.peer_len];
             var status = parsed_status;
             if status == PARSE_INCOMPLETE && c.used >= config.max_request_bytes {
                 status = if find(c.input[..c.used], "\r\n\r\n") < 0 { HTTP_REQUEST_HEADER_FIELDS_TOO_LARGE } else { HTTP_CONTENT_TOO_LARGE };

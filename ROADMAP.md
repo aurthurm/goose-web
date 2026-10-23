@@ -34,6 +34,16 @@
 - [x] Reflective SQLite layer (`db/`, `web::db`): CRUD from `fields<T>` with bound parameters, a query builder, transactions, migrations with `schema_version`, WAL file databases, example `examples/sqlite-todos`. Blocking calls on the reactor thread; worker offload is future work.
 - Next: typed configuration from environment variables.
 
+## Milestone 2.6: routing and edge middleware
+
+- [x] Wildcard path parameters `*name` for the rest of a path, ranked below static and `:param` segments.
+- [x] Typed path parameters: `param_u64`, `param_uuid` (8-4-4-4-12, one letter case) and `param_slug`, all 422 `invalid_param`.
+- [x] Host-scoped routes with `c.host(...)`: exact names and one-label `*.example.com` patterns, port stripped, case-insensitive; documented in OpenAPI like other routes.
+- [x] Peer address on `Request.peer` and `c.peer()`, filled from `getpeername` at accept.
+- [x] `rate_limit` (fixed window per client, bounded to 1024 clients, 429 with `Retry-After`) and `secure_headers` (CSP, nosniff, DENY, referrer policy, optional HSTS).
+- Next: token-bucket limits and shared counters across instances.
+
+
 ## Milestone 3: protocol and platform coverage
 
 - [x] Strict request profile, malformed-input/prefix regressions, and deterministic parser fuzz/property checks.

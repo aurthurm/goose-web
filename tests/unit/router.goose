@@ -94,5 +94,90 @@ fn main() {
     assert(web::query_value(target, "q").status == 200);
     target.push('x');
     assert(web::query_value(target, "q").status == 413);
-    print("Router tests passed: specificity, parameters, methods, HEAD, bounds, query decoding");
+    // Wildcards: a final *name takes the nonempty rest of the path (slashes included, bytes raw).
+    var files = web::router();
+    assert(web::add_route(files, "GET", "/files/*path", 1));
+    assert(!web::add_route(files, "GET", "/files/*other", 2));
+    assert(!web::add_route(files, "GET", "/files/*a/b", 3));
+    assert(!web::add_route(files, "GET", "/files/*a/", 3));
+    assert(!web::add_route(files, "GET", "/*", 3));
+    assert(!web::add_route(files, "GET", "/files/a*b/*", 3));
+    assert(!web::add_route(files, "GET", "/:x/*x", 3));
+    result = web::match_route(files, "GET", "/files/a/b/c.txt?x=1");
+    assert(result.status == 200 && result.handler_id == 1 && web::path_param(result, "path") == "a/b/c.txt");
+    var encoded = web::match_route(files, "GET", "/files/a%2Fb");
+    assert(web::path_param(encoded, "path") == "a%2Fb");
+    var empty_segments = web::match_route(files, "GET", "/files/x//y");
+    assert(web::path_param(empty_segments, "path") == "x//y");
+    assert(web::match_route(files, "GET", "/files/").status == 404);
+    assert(web::match_route(files, "GET", "/files").status == 404);
+    result = web::match_route(files, "POST", "/files/a");
+    assert(result.status == 405 && result.allow == "GET, HEAD");
+    assert(web::match_route(files, "HEAD", "/files/a").handler_id == 1);
+    assert(web::add_route(files, "POST", "/files/*path", 4));
+    assert(web::match_route(files, "POST", "/files/a").handler_id == 4);
+    assert(web::match_route(files, "DELETE", "/files/a").allow == "GET, HEAD, POST");
+    // A :param, then a static segment, each beat the wildcard at the same position.
+    assert(web::add_route(files, "GET", "/files/:id", 5));
+    assert(web::match_route(files, "GET", "/files/a").handler_id == 5);
+    var nested = web::match_route(files, "GET", "/files/a/b");
+    assert(web::path_param(nested, "path") == "a/b");
+    assert(web::match_route(files, "GET", "/files/a/b").handler_id == 1);
+    assert(web::add_route(files, "GET", "/files/new", 6));
+    assert(web::match_route(files, "GET", "/files/new").handler_id == 6);
+    assert(web::match_route(files, "POST", "/files/new").status == 405);
+    assert(web::match_route(files, "POST", "/files/new").allow == "GET, HEAD");
+    var rest_root = web::router();
+    assert(web::add_route(rest_root, "GET", "/*any", 7));
+    assert(web::match_route(rest_root, "GET", "/a/b/c").handler_id == 7);
+    assert(web::match_route(rest_root, "GET", "/").status == 404);
+    assert(web::add_route(rest_root, "GET", "/:x/b", 8));
+    assert(web::match_route(rest_root, "GET", "/a/b").handler_id == 8);
+    assert(web::match_route(rest_root, "GET", "/a/c").handler_id == 7);
+
+    // Host scopes: exact and "*.example.com" (one label), ASCII case-insensitive, port stripped.
+    var hosts = web::router();
+    assert(web::add_route_host(hosts, "api.example.com", "GET", "/v1", 1));
+    assert(web::add_route_host(hosts, "*.example.com", "GET", "/v1", 2));
+    assert(web::add_route(hosts, "GET", "/v1", 3));
+    assert(!web::add_route_host(hosts, "api.example.com", "GET", "/v1", 4));
+    assert(!web::add_route_host(hosts, "API.example.com", "GET", "/v1", 4));
+    assert(!web::add_route_host(hosts, "a..b", "GET", "/v1", 4));
+    assert(!web::add_route_host(hosts, "*.", "GET", "/v1", 4));
+    assert(!web::add_route_host(hosts, "*.*.example.com", "GET", "/v1", 4));
+    assert(!web::add_route_host(hosts, "under_score.test", "GET", "/v1", 4));
+    assert(!web::add_route_host(hosts, "example.com:80", "GET", "/v1", 4));
+    assert(!web::add_route_host(hosts, "[::1]", "GET", "/v1", 4));
+    assert(web::match_route_host(hosts, "GET", "/v1", "API.example.com:8080").handler_id == 1);
+    assert(web::match_route_host(hosts, "GET", "/v1", "www.Example.com").handler_id == 2);
+    assert(web::match_route_host(hosts, "GET", "/v1", "a.b.example.com").handler_id == 3);
+    assert(web::match_route_host(hosts, "GET", "/v1", "example.com").handler_id == 3);
+    assert(web::match_route_host(hosts, "GET", "/v1", "").handler_id == 3);
+    assert(web::match_route(hosts, "GET", "/v1").handler_id == 3);
+    assert(web::match_route_host(hosts, "GET", "/v1", "evilexample.com").handler_id == 3);
+    var scoped = web::router();
+    assert(web::add_route_host(scoped, "shop.test", "GET", "/only", 1));
+    assert(web::match_route_host(scoped, "GET", "/only", "other.test").status == 404);
+    assert(web::match_route_host(scoped, "GET", "/only", "shop.test:443").status == 200);
+    assert(web::match_route_host(scoped, "POST", "/only", "shop.test").allow == "GET, HEAD");
+    assert(web::match_route_host(scoped, "POST", "/only", "other.test").status == 404);
+    // Path shape decides first; the host scope only breaks ties between equal shapes.
+    var mixed = web::router();
+    assert(web::add_route_host(mixed, "shop.test", "GET", "/items/:id", 1));
+    assert(web::add_route(mixed, "GET", "/items/new", 2));
+    assert(web::match_route_host(mixed, "GET", "/items/new", "shop.test").handler_id == 2);
+    assert(web::match_route_host(mixed, "GET", "/items/9", "shop.test").handler_id == 1);
+    assert(web::match_route_host(mixed, "GET", "/items/9", "x.test").status == 404);
+    // Methods split across scopes: Allow lists the union for the request's host.
+    var split = web::router();
+    assert(web::add_route_host(split, "shop.test", "GET", "/x", 1));
+    assert(web::add_route(split, "POST", "/x", 2));
+    assert(web::match_route_host(split, "POST", "/x", "shop.test").handler_id == 2);
+    assert(web::match_route_host(split, "GET", "/x", "shop.test").handler_id == 1);
+    result = web::match_route_host(split, "GET", "/x", "other.test");
+    assert(result.status == 405 && result.allow == "POST");
+    assert(web::match_route_host(split, "DELETE", "/x", "shop.test").allow == "GET, HEAD, POST");
+    assert(web::match_route_host(split, "DELETE", "/x", "other.test").allow == "POST");
+
+    print("Router tests passed: specificity, parameters, methods, HEAD, bounds, query decoding, wildcards, host scopes");
 }

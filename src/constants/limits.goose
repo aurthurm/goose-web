@@ -22,6 +22,10 @@ const MAX_CONTENT_TYPE_BYTES = 128;
 const MAX_ROUTES = 64;
 const MAX_METHOD_BYTES = 16;
 const MAX_ROUTE_PATTERN_BYTES = 512;
+// Host scope pattern: "example.com" or "*.example.com" (lowercase or not; compared ASCII-insensitively).
+const MAX_HOST_PATTERN_BYTES = 128;
+// Numeric peer address text: IPv4 dotted quad or IPv6 (inet_ntop), with room to spare.
+const MAX_PEER_BYTES = 64;
 const MAX_PATH_PARAMS = 16;
 const MAX_ALLOW_BYTES = MAX_HEADER_VALUE_BYTES;
 const MAX_QUERY_FIELD_BYTES = 1024;

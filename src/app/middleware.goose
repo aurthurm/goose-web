@@ -1,12 +1,22 @@
 import src.constants.http;
 import src.constants.limits;
+import src.constants.runtime;
 import src.http.headers;
 import src.http.errors;
 import src.http.request;
 import src.app.context;
 import src.app.respond;
+import src.sys.process;
 import std;
 namespace web;
+
+const HEADER_RETRY_AFTER = "Retry-After";
+const HEADER_X_CONTENT_TYPE_OPTIONS = "X-Content-Type-Options";
+const HEADER_X_FRAME_OPTIONS = "X-Frame-Options";
+const HEADER_REFERRER_POLICY = "Referrer-Policy";
+const HEADER_CONTENT_SECURITY_POLICY = "Content-Security-Policy";
+const HEADER_STRICT_TRANSPORT_SECURITY = "Strict-Transport-Security";
+const REFERRER_POLICY_DEFAULT = "strict-origin-when-cross-origin";
 
 // Middleware is `fn name<Next>(c: Ctx&, ...) { before; Next(); after; }`: the block
 // after the call is Next, and not calling it short-circuits the request.
@@ -88,6 +98,89 @@ fn cors<Next>(c: Ctx&, origin: const u8[:] = "*") {
 fn require_json<Next>(c: Ctx&) {
     if !is_json_media_type(c.header(HEADER_CONTENT_TYPE)) {
         c.fail(HTTP_UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type", "Content-Type must be application/json");
+        return;
+    }
+    Next();
+}
+
+// Security headers, set before Next so a handler can still replace one with c.set. An empty
+// content_security_policy leaves CSP unset (a page that loads scripts from a CDN may need that).
+// HSTS is sent only when hsts is nonempty, since it pins HTTPS for the host.
+fn secure_headers<Next>(c: Ctx&, content_security_policy: const u8[:], hsts: const u8[:]) {
+    c.set(HEADER_X_CONTENT_TYPE_OPTIONS, "nosniff");
+    c.set(HEADER_X_FRAME_OPTIONS, "DENY");
+    c.set(HEADER_REFERRER_POLICY, REFERRER_POLICY_DEFAULT);
+    if content_security_policy.len > 0 { c.set(HEADER_CONTENT_SECURITY_POLICY, content_security_policy); }
+    if hsts.len > 0 { c.set(HEADER_STRICT_TRANSPORT_SECURITY, hsts); }
+    Next();
+}
+
+// Rate limiting is a fixed window per key. The table is process-wide and bounded: a new key
+// takes a free entry, or else recycles the least recently seen one (that client starts a fresh
+// window). An entry with an empty key is unused.
+const RATE_TABLE_ENTRIES = 1024;
+const RATE_KEY_BYTES = 160;
+const NANOSECONDS_PER_SECOND = 1000000000;
+
+struct RateEntry { key: u8[..RATE_KEY_BYTES], window_start: i64, count: i64, last_seen: i64 }
+var rate_entries: RateEntry[RATE_TABLE_ENTRIES] = [default<RateEntry>(); RATE_TABLE_ENTRIES];
+
+// Entries in use; test hook for the bound.
+fn rate_table_used() -> i64 {
+    var used: i64 = 0;
+    for i in RATE_TABLE_ENTRIES { if rate_entries[i].key.len > 0 { used += 1; } }
+    return used;
+}
+
+// Counts one request for key. Returns true while the window's count is within limit; otherwise
+// false, with the nanoseconds until that window resets.
+fn rate_take(key: const u8[:], limit: i64, window_ns: i64, now: i64) -> bool, i64 {
+    var slot: i64 = -1;
+    var free: i64 = -1;
+    var oldest: i64 = 0;
+    for i in RATE_TABLE_ENTRIES {
+        if rate_entries[i].key.len == 0 {
+            if free < 0 { free = i; }
+        } else {
+            if rate_entries[i].key[..] == key {
+                slot = i;
+                break;
+            }
+            if rate_entries[i].last_seen < rate_entries[oldest].last_seen { oldest = i; }
+        }
+    }
+    if slot < 0 {
+        slot = if free >= 0 { free } else { oldest };
+        rate_entries[slot].key.clear();
+        rate_entries[slot].key.append(key);
+        rate_entries[slot].window_start = now;
+        rate_entries[slot].count = 0;
+    }
+    if now - rate_entries[slot].window_start >= window_ns {
+        rate_entries[slot].window_start = now;
+        rate_entries[slot].count = 0;
+    }
+    rate_entries[slot].last_seen = now;
+    rate_entries[slot].count += 1;
+    if rate_entries[slot].count <= limit { return true, 0; }
+    return false, rate_entries[slot].window_start + window_ns - now;
+}
+
+// Fixed-window limit per client address (Request.peer), separate for each (limit, window_ms)
+// pair. A refused request gets 429 rate_limited with Retry-After in whole seconds. Requests
+// with no known peer share one bucket.
+fn rate_limit<Next>(c: Ctx&, limit: i64, window_ms: i64) {
+    assert(limit > 0 && window_ms > 0 && window_ms <= MAX_TIMEOUT_MS);
+    var key: u8[>..] = [];
+    key.append(peer(c));
+    key.push('|');
+    format(key, limit, "/", window_ms);
+    let allowed, retry_ns = rate_take(key[..], limit, window_ms * NANOSECONDS_PER_MILLISECOND, clock_ns());
+    if !allowed {
+        var seconds: u8[>..] = [];
+        format(seconds, (retry_ns + NANOSECONDS_PER_SECOND - 1) / NANOSECONDS_PER_SECOND);
+        c.set(HEADER_RETRY_AFTER, seconds[..]);
+        c.fail(HTTP_TOO_MANY_REQUESTS, "rate_limited", "Too many requests");
         return;
     }
     Next();
