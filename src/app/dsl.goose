@@ -27,6 +27,9 @@ fn ::param(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::param(c
 fn ::param_int(c: web::Ctx&, name: const u8[:]) -> i64, bool { return web::param_int(c, name); }
 fn ::query(c: web::Ctx&, key: const u8[:]) -> web::QueryValue { return web::query(c, key); }
 fn ::query_int(c: web::Ctx&, key: const u8[:], fallback: i64) -> i64, bool { return web::query_int(c, key, fallback); }
+// Typed query binding: query<Filter>(c) -> Filter, bool; query_result<Filter>(c) also returns the DecodeResult.
+fn ::query<T>(c: web::Ctx&) -> T, bool { return web::query<T>(c); }
+fn ::query_result<T>(c: web::Ctx&) -> T, web::DecodeResult { return web::query_result<T>(c); }
 fn ::status(c: web::Ctx&, code: i32) -> web::Ctx& { return web::status(c, code); }
 fn ::set(c: web::Ctx&, name: const u8[:], value: const u8[:]) -> web::Ctx& { return web::set(c, name, value); }
 fn ::text(c: web::Ctx&, body: const u8[:]) { web::text(c, body); }
@@ -49,3 +52,11 @@ fn ::request_id<F>(c: web::Ctx&) { web::request_id(c, F); }
 fn ::logger<F>(c: web::Ctx&) { web::logger(c, F); }
 fn ::cors<F>(c: web::Ctx&, origin: const u8[:] = "*") { web::cors(c, origin, F); }
 fn ::require_json<F>(c: web::Ctx&) { web::require_json(c, F); }
+fn ::static_files<F>(c: web::Ctx&, url_prefix: const u8[:], directory: const u8[:]) { web::static_files(c, url_prefix, directory, F); }
+
+// Cookies. c.cookie(name) reads the request; c.set_cookie(name, value, opts) returns false when
+// the name, value or options are invalid (nothing is set in that case).
+fn ::cookie(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::cookie(c, name); }
+fn ::set_cookie(c: web::Ctx&, name: const u8[:], value: const u8[:], opts: web::CookieOptions = web::CookieOptions { .. }) -> bool {
+    return web::set_cookie(c, name, value, opts);
+}

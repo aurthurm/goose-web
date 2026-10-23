@@ -21,11 +21,31 @@ def exchange(port, raw):
     return status, fields, body
 
 
+def exchange_lines(port, raw):
+    """Like exchange, but keeps every header line in order (for repeated Set-Cookie)."""
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
+        client.sendall(raw)
+        chunks = []
+        while chunk := client.recv(16384):
+            chunks.append(chunk)
+    wire = b"".join(chunks)
+    headers, body = wire.split(b"\r\n\r\n", 1)
+    status = int(headers.split(b" ", 2)[1])
+    lines = [tuple(line.split(b": ", 1)) for line in headers.split(b"\r\n")[1:]]
+    return status, lines, body
+
+
+def get(path, extra=b""):
+    return b"GET " + path + b" HTTP/1.1\r\nHost: x\r\n" + extra + b"\r\n"
+
+
 def test_app(executable):
+    root = Path(__file__).resolve().parents[2]
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    process = subprocess.Popen([str(executable), str(port)], stdout=subprocess.DEVNULL)
+    # The static directory is relative to the repository root.
+    process = subprocess.Popen([str(executable), str(port)], stdout=subprocess.DEVNULL, cwd=root)
     try:
         deadline = time.monotonic() + 3
         while True:
@@ -98,6 +118,60 @@ def test_app(executable):
         assert fields[b"Access-Control-Allow-Methods"] == b"GET, POST, PUT, PATCH, DELETE, OPTIONS", fields
         assert fields[b"Access-Control-Allow-Headers"] == b"Content-Type" and fields[b"Access-Control-Max-Age"] == b"600"
         assert b"X-Request-ID" in fields, fields
+
+        # Typed query binding: every class, percent and plus decoding, defaults for missing keys.
+        status, _, body = exchange(port, get(b"/search?limit=-5&q=a%20b+c&active=1&score=2.5"))
+        assert status == 200, body
+        found = json.loads(body)
+        assert found == {"limit": -5, "q": "a b c", "active": True, "score": 2.5}, found
+        status, _, body = exchange(port, get(b"/search"))
+        assert status == 200 and json.loads(body) == {"limit": 10, "q": "", "active": False, "score": 0.0}, body
+        status, _, body = exchange(port, get(b"/search?limit=x"))
+        assert status == 400 and json.loads(body)["error"]["code"] == "invalid_query", body
+        assert b"limit: expected an integer" in body, body
+        status, _, body = exchange(port, get(b"/search?nope=1"))
+        assert status == 400 and b"nope: unknown key" in body, body
+        status, _, body = exchange(port, get(b"/search?limit=1&limit=2"))
+        assert status == 400 and b"limit: duplicate query parameter" in body, body
+        status, _, body = exchange(port, get(b"/search?q=0123456789abcdefgh0123456789abcdefgh"))
+        assert status == 400 and b"q: string too long" in body, body
+
+        # Cookies: two repeated Set-Cookie lines, and a Cookie header read back.
+        status, lines, body = exchange_lines(port, get(b"/cookies/set"))
+        assert status == 200 and body == b"cookies set", body
+        set_cookies = [value for name, value in lines if name == b"Set-Cookie"]
+        assert set_cookies == [
+            b"session=abc123; Path=/; Max-Age=3600; HttpOnly; Secure; SameSite=Strict",
+            b"theme=dark; Path=/app; SameSite=Lax",
+        ], set_cookies
+        status, _, body = exchange(port, get(b"/cookies/echo", b"Cookie: theme=light; session=xyz\r\n"))
+        assert status == 200 and body == b"session=xyz;theme=light", body
+
+        # Static files: content types, index and directory mapping, HEAD, and every refusal class.
+        status, fields, body = exchange(port, get(b"/static/hello.txt"))
+        assert status == 200 and body == b"hello from a static file\n", body
+        assert fields[b"Content-Type"] == b"text/plain; charset=utf-8", fields
+        assert fields[b"X-Content-Type-Options"] == b"nosniff", fields
+        status, fields, body = exchange(port, get(b"/static/"))
+        assert status == 200 and b"Static index" in body and fields[b"Content-Type"] == b"text/html; charset=utf-8"
+        status, fields, body = exchange(port, get(b"/static/style.css"))
+        assert status == 200 and fields[b"Content-Type"] == b"text/css; charset=utf-8", fields
+        status, _, body = exchange(port, get(b"/static/docs"))
+        assert status == 200 and b"docs index" in body, body
+        status, fields, body = exchange(port, b"HEAD /static/hello.txt HTTP/1.1\r\nHost: x\r\n\r\n")
+        assert status == 200 and body == b"" and int(fields[b"Content-Length"]) == 25, fields
+        status, _, body = exchange(port, get(b"/static/missing.txt"))
+        assert status == 404 and json.loads(body)["error"]["code"] == "not_found", body
+        status, _, body = exchange(port, get(b"/static/.hidden"))
+        assert status == 404, body
+        for bad in (b"/static/../health", b"/static/%2e%2e/health", b"/static/a%2Fb", b"/static/a%5Cb",
+                    b"/static/a%00b", b"/static//etc/passwd", b"/static/a/./b"):
+            status, _, body = exchange(port, get(bad))
+            assert status == 400 and json.loads(body)["error"]["code"] == "invalid_path", (bad, status, body)
+        status, _, body = exchange(port, b"POST /static/hello.txt HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
+        assert status == 404, body
+        status, _, body = exchange(port, get(b"/health"))
+        assert status == 200, body
         assert process.poll() is None
     finally:
         process.terminate()
@@ -106,7 +180,8 @@ def test_app(executable):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-    print("App socket tests passed: routes, groups, path params, 404, 405, HEAD, JSON 201/415/400/422, CORS preflight, X-Request-ID")
+    print("App socket tests passed: routes, groups, path params, 404, 405, HEAD, JSON 201/415/400/422, CORS preflight, "
+          "X-Request-ID, typed query, cookies, repeated Set-Cookie, static files and refusals")
 
 
 if __name__ == "__main__":

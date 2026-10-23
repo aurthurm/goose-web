@@ -17,6 +17,10 @@ controls, framing headers, and content-type overrides are rejected; use `content
 for that field. Serialization also validates direct struct mutations and rejects duplicates.
 The response body capacity is 8192 bytes.
 
+`append_header(response, name, value)` is `set_header` except for `Set-Cookie`, which may repeat:
+each call adds one line (RFC 6265). Serialization allows repeated `Set-Cookie` and still rejects
+any other repeated name, so `set_header` on `Set-Cookie` replaces the earlier line.
+
 HTTP/1.1 origin-form requests use Content-Length bodies and one response per connection.
 Targets follow strict ASCII URI syntax with validated percent escapes; raw Unicode
 and fragments are rejected. Host values must match the supported reg-name/bracketed
@@ -264,3 +268,115 @@ for decoding (`body<T>`):
 fn web::json_put_value(out: u8[>..]&, v: Item&) -> bool { return web::json_put_fields(out, v); }
 fn web::json_read_value(d: web::JsonDecoder&, out: Item&) { web::json_read_fields(d, out); }
 ```
+
+### Typed query strings
+
+`query<T>(c) -> T, bool` binds the decoded query into struct `T` by field name, using the same
+reflection as `body<T>`. `query_result<T>(c) -> T, DecodeResult` returns the decoder result
+instead (`has<T>(result, "field")` tells whether a key was present).
+
+```goose
+struct Search { limit: i32 = 10, q: u8[..32] = "", active: bool = false, score: f64 = 0.0 }
+
+c.get("/search") {
+    let s, ok = query<Search>(c);     // called as a plain function, not c.query<Search>()
+    guard ok else { return; }
+    c.json(s);
+};
+```
+
+Rules, matching `body<T>`:
+
+- Missing keys keep the declared default. Unknown keys and duplicate keys are errors.
+- Keys and values are decoded with `query_decode` (percent escapes, `+` as space). Empty pairs
+  (`a=1&&b=2`, a trailing `&`) are skipped.
+- Field types: `i8`..`i64`, `u8`..`u64`, `bool`, `f32`, `f64`, `u8[..N]`. Integers are canonical
+  decimal: optional leading `-` (signed types only), no `+`, no leading zeros, range-checked.
+  `bool` accepts `true`, `false`, `1`, `0`. Strings must be valid UTF-8 and fit `N` bytes.
+- Failure writes 400 `invalid_query` with the message `field: reason`, for example
+  `limit: integer out of range`, `q: string too long`, `zzz: unknown key`, or
+  `limit: duplicate query parameter`. A key that is not valid UTF-8 gets a fixed message.
+- Other struct field types are not supported.
+
+### Cookies
+
+`c.cookie(name) -> const u8[:]` returns the value of the first cookie with that exact name in the
+request's `Cookie` header, or `""` when absent. Pairs are split on `;`, surrounding SP/HTAB is
+trimmed, a DQUOTE-wrapped value is unwrapped, and a pair without `=` is ignored. Only the first
+`Cookie` header is read. Values come back as sent, so an invalid cookie octet is visible to the caller.
+
+`c.set_cookie(name, value, opts = CookieOptions { .. }) -> bool` appends one `Set-Cookie` line.
+Each call adds a header, so several calls produce several `Set-Cookie` lines (see
+`append_header` under HTTP and headers). It returns `false`, and changes nothing, when:
+
+- `name` is not an RFC 7230 token, or `value` has a byte outside RFC 6265 cookie-octet
+  (spaces, `"`, `,`, `;`, `\`, controls and non-ASCII are refused);
+- `path` is non-empty and not an absolute path, or contains a control or `;` (an empty `path`
+  omits the attribute);
+- `same_site` is not `Strict`, `Lax`, `None` or empty (matched case-insensitively), or it is
+  `None` without `secure`;
+- the line does not fit the 256-byte header value capacity or the header count is full.
+
+```goose
+struct CookieOptions {
+    path: u8[..64] = "/",
+    max_age: i64 = -1,        // negative omits Max-Age; 0 asks the client to delete now
+    http_only: bool = true,
+    secure: bool = false,
+    same_site: u8[..8] = "Lax",    // "" omits SameSite
+}
+
+c.post("/login") {
+    let ok = c.set_cookie("session", token, web::CookieOptions { max_age: 3600, secure: true, same_site: "Strict" });
+    guard ok else { return; }
+    c.no_content();
+};
+```
+
+Struct literals name fields in declaration order (`path`, `max_age`, `http_only`, `secure`,
+`same_site`). Leave fields out to keep their defaults.
+
+### Static files
+
+`c.static_files(url_prefix, directory) { next }` is middleware. It serves GET and HEAD requests under
+`url_prefix/` from `directory`, and otherwise calls `next` (the routes that follow it). Put it
+inside `request_id`, `logger`, and `cors` so the headers and log lines apply to file responses.
+
+```goose
+c.static_files("/static", "public") {
+    c.routes() { ... };
+};
+```
+
+It was chosen over a route kind because the router has no wildcard segment, and a middleware keeps
+the matching rule in one place. The consequences are part of the contract:
+
+- Any GET or HEAD under the prefix is owned by the middleware. A missing file answers 404
+  `not_found` without calling `next`, so GET routes under the same prefix are shadowed.
+  Other methods under the prefix fall through to the routes.
+- `url_prefix` must start with `/`; a trailing `/` is ignored. `directory` is trusted configuration
+  and must be nonempty. Its relative path is resolved from the process working directory.
+
+Mapping and refusals (the path after the prefix is percent-decoded and checked segment by segment):
+
+| Request | Result |
+| --- | --- |
+| `/static/` or a directory such as `/static/docs` | its `index.html`, or 404 when there is none |
+| `/static/a%20b.txt` | file `a b.txt` |
+| `..` or `.` segment, raw or encoded (`%2e%2e`) | 400 `invalid_path` |
+| encoded `/`, `\`, NUL or a control byte (`%2F`, `%5C`, `%00`, `%0a`), raw `\` | 400 `invalid_path` |
+| empty segment (`//`, leading `/`), truncated or invalid `%` escape | 400 `invalid_path` |
+| a segment starting with `.` (dotfiles, `.git`) | 404 `not_found` |
+| missing file | 404 `not_found` |
+
+Content-Type comes from the extension, case-insensitively: `html`/`htm`, `css`, `js`/`mjs`,
+`json`, `svg`, `png`, `jpg`/`jpeg`, `gif`, `ico`, `txt`, `wasm`. Anything else, including no
+extension, is `application/octet-stream`. Served files also carry `X-Content-Type-Options: nosniff`.
+Do not serve untrusted uploads from the directory: an `svg` or `html` file runs with the
+application's origin.
+
+Blocking: each file is read whole with `read_file` on the reactor thread, and no request is
+served while that happens. The `os` stdlib has no file size query, so the read itself is not
+bounded by the response capacity. The response is: a body over `MAX_RESPONSE_BODY_BYTES` becomes
+500 `response_too_large`. Keep served trees small and trusted, or serve large assets elsewhere.
+Symbolic links inside the directory are followed.

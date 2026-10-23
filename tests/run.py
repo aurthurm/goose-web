@@ -24,6 +24,7 @@ def main():
                 ("app_routes", "tests/unit/app_routes.goose"),
                 ("json_codec", "tests/unit/json_codec.goose"),
                 ("app_middleware", "tests/unit/app_middleware.goose"),
+                ("app_params", "tests/unit/app_params.goose"),
                 ("todo_store", "tests/unit/todo_store.goose"), ("todo_query", "tests/unit/todo_query.goose"),
                 ("todo_api", "tests/unit/todo_api.goose"),
                 ("parser_fuzz", "tests/fuzz/parser.goose"), ("features", "tests/fixtures/features.goose"),
@@ -32,9 +33,10 @@ def main():
     for name, source in programs:
         subprocess.run([compiler, "build", str(ROOT / source), "--debug", "-o", str(BUILD / name)],
                        env=env, check=True, cwd=ROOT)
-    for name in ("core", "router", "application", "app_routes", "app_middleware", "constants", "http_parser", "json_codec",
-                 "todo_query", "todo_api", "parser_fuzz"):
-        subprocess.run([str(BUILD / name)], check=True, timeout=60)
+    for name in ("core", "router", "application", "app_routes", "app_middleware", "app_params", "constants",
+                 "http_parser", "json_codec", "todo_query", "todo_api", "parser_fuzz"):
+        # Run from the repository root: the static file checks use tests/fixtures/static.
+        subprocess.run([str(BUILD / name)], check=True, timeout=60, cwd=ROOT)
     with tempfile.TemporaryDirectory(prefix="goose-todo-unit-") as directory:
         subprocess.run([str(BUILD / "todo_store"), str(Path(directory) / "todos.json")], check=True, timeout=60)
     cc = os.environ.get("CC", "cc")

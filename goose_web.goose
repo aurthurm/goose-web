@@ -15,4 +15,7 @@ import .src.app.respond;
 import .src.app.middleware;
 import .src.app.routes;
 import .src.app.run;
+import .src.app.params;
+import .src.app.cookies;
+import .src.app.static;
 import .src.app.dsl;

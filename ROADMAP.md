@@ -26,8 +26,9 @@
 - [x] Todo example rewritten onto the application API; `examples/hello` smoke test; unit contracts for routes, bodies and store.
 - Next: keep-alive connections.
 - Next: chunked and streaming bodies for responses larger than 8 KiB.
-- Next: static file serving.
-- Next: cookies.
+- [x] Static file serving as middleware (`c.static_files`): GET/HEAD, index.html, content types, traversal and encoding refusals.
+- [x] Cookies: `c.cookie` reads the Cookie header; `c.set_cookie` emits validated Set-Cookie lines (repeatable).
+- [x] Typed query binding: `query<T>(c)` and `query_result<T>(c)` with strict keys and `invalid_query` errors.
 - Next: automatic OpenAPI generation from structs.
 - Next: typed configuration from environment variables.
 

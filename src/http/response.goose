@@ -54,7 +54,8 @@ fn serialize_response(out: u8[>..]&, r: Response&, head: bool = false) {
     }
     for i in r.headers.len {
         for j in i + 1..r.headers.len {
-            if equal_header(r.headers[i].name, r.headers[j].name) { valid = false; }
+            // Set-Cookie may repeat; any other duplicate name is invalid.
+            if equal_header(r.headers[i].name, r.headers[j].name) && !equal_header(r.headers[i].name, HEADER_SET_COOKIE) { valid = false; }
         }
     }
     if !valid {

@@ -49,3 +49,12 @@ fn set_header(r: Response&, name: const u8[:], value: const u8[:]) -> bool {
     r.headers.push(Header { name: name, value: value });
     return true;
 }
+
+// Appends a header. Set-Cookie may repeat (RFC 6265, one line per cookie); every other
+// name behaves as set_header, so a repeated name replaces the earlier value.
+fn append_header(r: Response&, name: const u8[:], value: const u8[:]) -> bool {
+    if !equal_header(name, HEADER_SET_COOKIE) { return set_header(r, name, value); }
+    if !valid_response_header(name, value) || r.headers.len == MAX_RESPONSE_HEADERS { return false; }
+    r.headers.push(Header { name: name, value: value });
+    return true;
+}
