@@ -135,3 +135,48 @@ Signals are optional for embedding; the basic example enables them. Only one
 signal-owning server may run in the process, and previous handlers are restored on
 normal exit. Multithreaded embedders should manage signals externally. The legacy
 `serve(port, max_requests, handler, tick)` wrapper keeps loopback defaults.
+
+## JSON codec
+
+`src/json/codec.goose` maps structs to compact JSON objects and back, from `fields<T>`.
+Field names are emitted as declared, in declaration order, with no whitespace.
+
+- `json_encode(out, value) -> bool` appends to a growable `u8[>..]`. `value` is a struct (by
+  value), or a scalar or literal string at top level. Strings must be valid UTF-8; otherwise
+  it returns false and `out` is unchanged. Bytes are escaped per the stdlib writer.
+- `json_decode<T>(text) -> T, DecodeResult` is strict: unknown keys, duplicate keys, wrong
+  types, out-of-range integers, overlong strings, full arrays, invalid UTF-8 and trailing
+  input are errors. Missing keys keep the declared defaults (`T { .. }`).
+- `DecodeResult { ok, syntax, error: u8[..128], field: u8[..64], present: u64 }`. `syntax`
+  is true when the text is not JSON at all (map to 400); other errors are schema problems
+  (map to 422). `field` is the key where the first error occurred. `present` bit i is set
+  for top-level field i in declaration order; nested objects do not set bits.
+- `has<T>(result, name) -> bool` reports whether top-level field `name` was present.
+
+| Type | Encodes as | Decodes from |
+|---|---|---|
+| `i8`..`i64`, `u8`..`u32` | number | integer, within the width |
+| `u64` | number | integer up to `i64` max; above that is rejected |
+| `f32`, `f64` | number | any number; NaN and infinities encode as `null` |
+| `bool` | `true` or `false` | `true` or `false` |
+| `u8[..N]`, `u8[>..]`, `u8[]`, `const u8[:]` | string | string, into `u8[..N]` only |
+| `T[..N]` (limited) | array | array, at most N elements |
+| `T[N]`, `T[>..]`, slices | array | not decodable (no capacity: see below) |
+| structs | object | object, via registration (below) |
+
+A `u8` array is always a string, never an array of numbers. `f32` encodes its f64 value, so
+`0.1f32` writes `0.10000000149011612`. Structs with more than 64 fields abort at decode.
+
+Nested structs need one overload per direction in namespace `web`, because Goose cannot
+tell a struct from a limited string in the generic path:
+
+```goose
+fn web::json_put_value(out: u8[>..]&, v: Inner&) -> bool { return web::json_put_fields(out, v); }
+fn web::json_read_value(d: web::JsonDecoder&, out: Inner&) { web::json_read_fields(d, out); }
+```
+
+Decoding is limited to limited arrays and strings, because the decoder needs a capacity to
+bound untrusted input; fixed and grow arrays can be encoded but not decoded.
+
+Decoding runs in two passes: a syntax pass over the whole text, then the typed pass. So
+errors found in the second pass are never syntax errors.
