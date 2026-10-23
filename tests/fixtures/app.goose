@@ -1,5 +1,6 @@
 import goose_web from "../..";
 import std;
+import os;
 
 // Small DSL app served through web::run; tests/integration/app.py drives it over sockets.
 struct Item { id: i64, title: u8[..16], done: bool }

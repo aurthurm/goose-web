@@ -15,5 +15,15 @@
 #define GW_MAX_PORT 65535
 #define GW_BIND_LOOPBACK 0
 #define GW_BIND_PUBLIC 1
+/* src/sys/files.goose and src/sys/process.goose mirror these values. */
+#define GW_PATH_MAX_BYTES 4096
+#define GW_ENV_NAME_MAX_BYTES 256
+#define GW_FILE_MISSING 0
+#define GW_FILE_REGULAR 1
+#define GW_FILE_DIRECTORY 2
+#define GW_FILE_OTHER 3
+#define GW_FILE_ERROR (-1)
+#define GW_ENV_UNSET (-1)
+#define GW_ENV_TOO_LONG (-2)
 
 #endif

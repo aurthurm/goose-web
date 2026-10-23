@@ -5,7 +5,7 @@ import src.http.headers;
 import src.http.request;
 import src.routing.router;
 import src.app.context;
-import os;
+import src.sys.files;
 import std;
 namespace web;
 
@@ -20,10 +20,10 @@ namespace web;
 // "..". Refused with 404: hidden entries (a segment starting with '.'), missing files, and
 // directories without index.html.
 //
-// Blocking: each file is read whole with os read_file on the reactor thread. The os stdlib
-// offers no file size query, so the read itself is not bounded; the response is capped by
-// write_body (500 response_too_large over MAX_RESPONSE_BODY_BYTES). Keep served trees small
-// and trusted. Symlinks inside the directory are followed.
+// Size and blocking: the file's size is read from stat before any byte is read. A file over
+// MAX_RESPONSE_BODY_BYTES is refused with 500 file_too_large and is never read. Otherwise at most
+// size + 1 bytes are read (see read_bounded_file), on the reactor thread. A file that cannot be
+// read answers 500 file_read_failed. Keep served trees small and trusted. Symlinks are followed.
 
 const CONTENT_TYPE_CSS = "text/css; charset=utf-8";
 const CONTENT_TYPE_JS = "text/javascript; charset=utf-8";
@@ -110,10 +110,10 @@ fn static_resolve(rel: const u8[:], directory: const u8[:], full: u8[>..]&) -> i
     format(full, directory, "/", decoded[..]);
     if decoded.len == 0 || decoded[decoded.len - 1] == '/' {
         full.append("index.html");
-    } else if is_dir(full[..]) {
+    } else if file_kind(full[..]) == FILE_KIND_DIRECTORY {
         full.append("/index.html");
     }
-    if !file_exists(full[..]) { return HTTP_NOT_FOUND; }
+    if file_kind(full[..]) != FILE_KIND_REGULAR { return HTTP_NOT_FOUND; }
     return HTTP_OK;
 }
 
@@ -147,8 +147,17 @@ fn static_files<Next>(c: Ctx&, url_prefix: const u8[:], directory: const u8[:]) 
         return;
     }
     var body: u8[>..] = [];
-    if !read_file(full[..], body) {
+    let read = read_bounded_file(full[..], MAX_RESPONSE_BODY_BYTES, body);
+    if read == FILE_READ_MISSING {
         fail(c, HTTP_NOT_FOUND, "not_found", "File not found");
+        return;
+    }
+    if read == FILE_READ_TOO_LARGE {
+        fail(c, HTTP_INTERNAL_SERVER_ERROR, "file_too_large", "Static file exceeds the response body limit");
+        return;
+    }
+    if read != FILE_READ_OK {
+        fail(c, HTTP_INTERNAL_SERVER_ERROR, "file_read_failed", "Static file could not be read");
         return;
     }
     c.set(HEADER_NOSNIFF_NAME, HEADER_NOSNIFF_VALUE);
