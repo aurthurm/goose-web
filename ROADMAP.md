@@ -34,6 +34,7 @@
 - [x] Field names and skipping: `web::json_key` (JSON name, as V's `@[json: name]`) and `web::json_skip` (`@[skip]`) for encode, decode, `query<T>`, and OpenAPI; `check_json_keys<T>()` for duplicate names.
 - [x] Reflective SQLite layer (`db/`, `web::db`): CRUD from `fields<T>` with bound parameters, a query builder, transactions, migrations with `schema_version`, WAL file databases, example `examples/sqlite-todos`. Blocking calls on the reactor thread; worker offload is future work.
 - [x] SQLite example documented and renamed (`done` on the wire for `completed`) with its OpenAPI document checked end to end.
+- [x] Compile-time HTML templates (`embed_file`, `html_template`, `render`, `check_template`): escaped and raw values, bool sections, `each` over struct arrays, comments, and `form<T>` for urlencoded bodies; example `examples/pages`.
 - Next: typed configuration from environment variables.
 
 ## Milestone 3: protocol and platform coverage

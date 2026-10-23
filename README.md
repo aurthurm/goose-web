@@ -42,6 +42,8 @@ fn main() {
 - OpenAPI 3.1 from the routes block and struct reflection, served at `/openapi.json` with a `/docs` page (`web::openapi`).
 - Field names and skipping for JSON, typed queries and OpenAPI: `web::json_key` renames a field (`completed` as `done`), `web::json_skip` leaves it out. See [API contracts](docs/api.md#field-names-and-skipping).
 - Reflective JSON in and out: `body<T>(c)` decodes strict structs (415, 400, 422 written for you); `c.json(value)` encodes any struct.
+- Typed forms and query strings: `form<T>(c)` binds urlencoded bodies and `query<T>(c)` binds the query, both strict.
+- Compile-time HTML templates: `embed_file("views/page.html")` with `{{escaped}}`, `{{{raw}}}`, sections, `each` over struct arrays and comments; `check_template` validates them at startup. See [Templates](docs/api.md#templates).
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
 - Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
@@ -95,7 +97,7 @@ src/
   json/                   Reflective struct codec over fields<T>
   routing/                Route matching, path parameters, query decoding
   middleware/             Compile-time request pipeline
-  app/                    Application API: Ctx, c.routes/c.group, middleware, responses, run, config
+  app/                    Application API: Ctx, c.routes/c.group, middleware, responses, forms, templates, run, config
   sys/                    File, environment and clock access over the native shim (no os import)
   events/                 Typed bounded event bus
   runtime/                Readiness loop, configuration, lifecycle, metrics
@@ -104,6 +106,7 @@ db/                       Opt-in SQLite package (goose_web_db): query builder, t
 examples/hello/           Smallest app: health, path parameter, typed POST
 examples/basic/           Todo API, OpenAPI contract, and application modules
 examples/sqlite-todos/    Todo API persisted in a SQLite file through web::db
+examples/pages/           Server-rendered todo list: embedded templates and a form POST
 tests/
   unit/                   Goose contract tests (including the SQLite layer on :memory:)
   native/                 C socket tests

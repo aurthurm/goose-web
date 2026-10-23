@@ -350,6 +350,29 @@ Rules, matching `body<T>`:
 - Keys are the JSON names from `json_key`; a skipped field is an unknown key (see [Field names and skipping](#field-names-and-skipping)).
 - Other struct field types are not supported.
 
+### Forms
+
+`form<T>(c) -> T, bool` binds an `application/x-www-form-urlencoded` body into struct `T`, with the
+same field types and rules as `query<T>`. It is called as a plain function, like `query<T>`.
+
+```goose
+struct NewTodo { title: u8[..64] = "" }
+
+c.post("/todos") {
+    let form_value, ok = form<NewTodo>(c);
+    guard ok else { return; }           // 415 or 400 invalid_form is already written
+    c.redirect("/", web::HTTP_SEE_OTHER);
+};
+```
+
+- A `Content-Type` whose media type is not `application/x-www-form-urlencoded` (parameters such as
+  `charset` are ignored, case-insensitive) writes 415 `unsupported_media_type`.
+- Pairs follow the query rules: unknown and duplicate keys are errors, missing keys keep their
+  defaults, an empty body binds all defaults, and `+` decodes to a space.
+- A bad pair writes 400 `invalid_form` with the message `field: reason`, for example
+  `zzz: unknown key` or `title: string too long`.
+- The body is read from the request as received; `form<T>` does not accept multipart data.
+
 ### Cookies
 
 `c.cookie(name) -> const u8[:]` returns the value of the first cookie with that exact name in the
@@ -444,6 +467,64 @@ large assets elsewhere. Symbolic links inside the directory are followed.
 The framework reads files and the environment through `src/sys/`, not the `os` stdlib. Importing
 `os` into framework code made its global names (`read_file`, `is_dir`, `clock_ns`, ...) ambiguous
 for every application that imported `goose_web`. Applications may use `os` freely.
+
+## Templates
+
+HTML templates are compiled into the program. A template is bytes, normally
+`embed_file("views/page.html")`, which is read at compile time relative to the source file that
+makes the call, so a missing file is a compile error. `examples/pages` shows the full pattern.
+
+```goose
+struct Todo { id: i64, title: u8[..64], done: bool }
+struct ListPage { title: u8[..32], empty: bool, todos: Todo[..32] }
+
+// main: fail fast on template mistakes, before the server starts.
+let valid, problem = check_template<ListPage>(embed_file("views/list.html"));
+if !valid { print(problem[..]); abort("views/list.html is not a valid template"); }
+
+// route: writes text/html; a render failure writes 500 template_error with the reason.
+c.get("/") {
+    c.html_template(embed_file("views/list.html"), ListPage { title: "Todos", .. });
+};
+```
+
+Grammar (tags are `{{` ... `}}`; whitespace around a name is ignored):
+
+| Tag | Output |
+| --- | --- |
+| `{{name}}` | the field's value; strings are HTML-escaped |
+| `{{{name}}}` | the field's value, unescaped |
+| `{{#name}}...{{/name}}` | the body when the bool field `name` is true |
+| `{{^name}}...{{/name}}` | the body when the bool field `name` is false |
+| `{{#each name}}...{{/each}}` | the body once per element of the array field `name`; names inside resolve against the element |
+| `{{! text }}` | a comment, dropped from the output |
+
+- Scalars print as text: integers in decimal, `bool` as `true` or `false`, floats in JSON number
+  form. `u8[..N]` fields print their bytes. Struct-typed fields are not renderable; arrays of
+  structs belong under `each`, and their elements' own fields may be scalars or strings.
+- Names are resolved at run time against the struct's fields. An unknown name, a section on a
+  non-bool field, an `each` on a non-array, an unclosed or mismatched section, a stray closing
+  tag, an empty tag, invalid UTF-8, or nesting deeper than 8 levels is an error.
+- Output past 1 MiB, the default response cap, is an error, and a body over the response's
+  `max_response_bytes` becomes the usual 500 `response_too_large`.
+- No registration is needed for `each`: elements are rendered by the same generic code as the
+  top-level struct, so the codec's nested-struct hooks are not used here.
+
+Functions, in namespace `web` (also reachable from the DSL as `c.html_template` and `html_template`):
+
+- `render<T>(out: u8[>..]&, template: const u8[:], data: T&) -> bool` appends the rendered page
+  to `out`. On false, `out` is unchanged. `render_result<T>(...) -> bool, TemplateResult` also
+  returns the reason in `result.error` (up to 128 bytes).
+- `html_template<T>(c, template, data)` renders into the response with `text/html; charset=utf-8`.
+- `check_template<T>(template: const u8[:]) -> bool, u8[>..]` validates every tag and section
+  against `T`, including the body of each `each` block even when the array is empty. It returns the
+  reason as the second result. Call it in `main` for each embedded template.
+- `html_escape(out: u8[>..]&, text: const u8[:])` escapes `&`, `<`, `>`, `"` and `'` (as `&#39;`).
+
+A template must be valid UTF-8; the output is served as `text/html; charset=utf-8`, so the
+template and the escaped values decide what the browser sees. Escaping covers element content and
+quoted attributes. Put untrusted text only in `{{name}}` tags, not in `{{{name}}}` or in script
+or style contents.
 
 ## Command-line and environment configuration
 

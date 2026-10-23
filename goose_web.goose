@@ -17,6 +17,7 @@ import .src.app.routes;
 import .src.app.openapi;
 import .src.app.run;
 import .src.app.params;
+import .src.app.templates;
 import .src.app.cookies;
 import .src.app.static;
 import .src.app.dsl;

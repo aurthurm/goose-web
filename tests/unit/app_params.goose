@@ -379,8 +379,72 @@ fn test_query_json_keys() {
     expect_status_body(clash, web::HTTP_BAD_REQUEST, "duplicate JSON key name");
 }
 
+// Form bodies: POST with a urlencoded body. The same pair rules as query<T>.
+struct Signup { name: u8[..16] = "", age: i64 = 0, news: bool = false }
+
+// The raw header bytes live in a global, because the context borrows them.
+var form_headers: u8[>..] = [];
+
+fn form_ctx(content_type: const u8[:], body: const u8[:]) -> web::Ctx {
+    shared_response = web::response();
+    form_headers.clear();
+    form_headers.append("Host: x\r\nContent-Type: ");
+    form_headers.append(content_type);
+    form_headers.append("\r\n");
+    return web::new_ctx(web::Request { method: "POST", target: "/signup", body: body, raw_headers: form_headers[..] }, shared_response);
+}
+
+fn test_form_binding() {
+    var c = form_ctx("application/x-www-form-urlencoded", "name=Ada+L&age=36&news=1");
+    let v, ok = form<Signup>(c);
+    assert(ok && !c.written);
+    assert(v.name == "Ada L" && v.age == 36 && v.news);
+
+    var charset = form_ctx("Application/X-WWW-Form-Urlencoded; charset=UTF-8", "name=%41");
+    let cv, cok = form<Signup>(charset);
+    assert(cok && cv.name == "A");
+
+    var empty = form_ctx("application/x-www-form-urlencoded", "");
+    let ev, eok = form<Signup>(empty);
+    assert(eok && ev.name.len == 0 && ev.age == 0 && !ev.news);
+
+    var sparse = form_ctx("application/x-www-form-urlencoded", "age=5&&");
+    let sv, sok = form<Signup>(sparse);
+    assert(sok && sv.age == 5);
+}
+
+fn test_form_errors() {
+    var json_type = form_ctx("application/json", "name=x");
+    let jv, jok = form<Signup>(json_type);
+    assert(!jok);
+    expect_status_body(json_type, web::HTTP_UNSUPPORTED_MEDIA_TYPE, "\"code\":\"unsupported_media_type\"");
+
+    var unknown = form_ctx("application/x-www-form-urlencoded", "zzz=1");
+    let uv, uok = form<Signup>(unknown);
+    assert(!uok);
+    expect_status_body(unknown, web::HTTP_BAD_REQUEST, "\"code\":\"invalid_form\"");
+    assert(find(web::body_of(unknown.response), "zzz: unknown key") >= 0);
+
+    var bad_age = form_ctx("application/x-www-form-urlencoded", "age=old");
+    let av, aok = form<Signup>(bad_age);
+    assert(!aok);
+    expect_status_body(bad_age, web::HTTP_BAD_REQUEST, "age: expected an integer");
+
+    var decode = form_ctx("application/x-www-form-urlencoded", "name=%zz");
+    let dv, dok = form<Signup>(decode);
+    assert(!dok);
+    expect_status_body(decode, web::HTTP_BAD_REQUEST, "query string could not be decoded");
+
+    var long = form_ctx("application/x-www-form-urlencoded", "name=0123456789abcdefg");
+    let lv, lok = form<Signup>(long);
+    assert(!lok);
+    expect_status_body(long, web::HTTP_BAD_REQUEST, "name: string too long");
+}
+
 fn main() {
     test_query_json_keys();
+    test_form_binding();
+    test_form_errors();
     test_query_ints();
     test_query_int_errors();
     test_query_flags();

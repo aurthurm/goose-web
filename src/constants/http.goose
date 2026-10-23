@@ -50,6 +50,7 @@ const METHOD_CONNECT = "CONNECT";
 const METHOD_TRACE = "TRACE";
 
 const CONTENT_TYPE_JSON = "application/json";
+const CONTENT_TYPE_FORM = "application/x-www-form-urlencoded";
 const CONTENT_TYPE_TEXT = "text/plain; charset=utf-8";
 const CONTENT_TYPE_HTML = "text/html; charset=utf-8";
 const CONTENT_TYPE_OCTET_STREAM = "application/octet-stream";
