@@ -1,0 +1,38 @@
+import src.app.context;
+import src.app.routes;
+import std;
+namespace web;
+
+// Global-namespace entry points for the app DSL. Goose resolves c.x(...) (UFCS) in the
+// caller's namespace, so application code in the global namespace can only reach these
+// names. Each forwards to the web:: implementation, which keeps its helpers private to
+// the namespace. Forwarders take the block as a generic function value, unchanged.
+
+fn ::routes<F>(c: web::Ctx&) { web::routes(c, F); }
+fn ::group<F>(c: web::Ctx&, prefix: const u8[:]) { web::group(c, prefix, F); }
+fn ::get<F>(c: web::Ctx&, pattern: const u8[:]) { web::get(c, pattern, F); }
+fn ::post<F>(c: web::Ctx&, pattern: const u8[:]) { web::post(c, pattern, F); }
+fn ::put<F>(c: web::Ctx&, pattern: const u8[:]) { web::put(c, pattern, F); }
+fn ::patch<F>(c: web::Ctx&, pattern: const u8[:]) { web::patch(c, pattern, F); }
+fn ::delete<F>(c: web::Ctx&, pattern: const u8[:]) { web::delete(c, pattern, F); }
+fn ::head<F>(c: web::Ctx&, pattern: const u8[:]) { web::head(c, pattern, F); }
+fn ::options<F>(c: web::Ctx&, pattern: const u8[:]) { web::options(c, pattern, F); }
+fn ::any<F>(c: web::Ctx&, pattern: const u8[:]) { web::any(c, pattern, F); }
+
+fn ::method(c: web::Ctx&) -> const u8[:] { return web::method(c); }
+fn ::target(c: web::Ctx&) -> const u8[:] { return web::target(c); }
+fn ::path(c: web::Ctx&) -> const u8[:] { return web::path(c); }
+fn ::header(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::header(c, name); }
+fn ::param(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::param(c, name); }
+fn ::param_int(c: web::Ctx&, name: const u8[:]) -> i64, bool { return web::param_int(c, name); }
+fn ::query(c: web::Ctx&, key: const u8[:]) -> web::QueryValue { return web::query(c, key); }
+fn ::query_int(c: web::Ctx&, key: const u8[:], fallback: i64) -> i64, bool { return web::query_int(c, key, fallback); }
+fn ::status(c: web::Ctx&, code: i32) -> web::Ctx& { return web::status(c, code); }
+fn ::set(c: web::Ctx&, name: const u8[:], value: const u8[:]) -> web::Ctx& { return web::set(c, name, value); }
+fn ::text(c: web::Ctx&, body: const u8[:]) { web::text(c, body); }
+fn ::html(c: web::Ctx&, body: const u8[:]) { web::html(c, body); }
+fn ::json_raw(c: web::Ctx&, body: const u8[:]) { web::json_raw(c, body); }
+fn ::no_content(c: web::Ctx&) { web::no_content(c); }
+fn ::redirect(c: web::Ctx&, location: const u8[:], code: i32 = web::HTTP_FOUND) { web::redirect(c, location, code); }
+fn ::fail(c: web::Ctx&, code: i32, error_code: const u8[:], message: const u8[:]) { web::fail(c, code, error_code, message); }
+fn ::done(c: web::Ctx&) -> bool { return web::done(c); }

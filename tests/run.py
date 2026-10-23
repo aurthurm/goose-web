@@ -21,14 +21,16 @@ def main():
     programs = [("core", "tests/unit/core.goose"), ("router", "tests/unit/router.goose"),
                 ("application", "tests/unit/application.goose"), ("constants", "tests/unit/constants.goose"),
                 ("http_parser", "tests/unit/http_parser.goose"),
+                ("app_routes", "tests/unit/app_routes.goose"),
                 ("todo_store", "tests/unit/todo_store.goose"), ("todo_input", "tests/unit/todo_input.goose"),
                 ("todo_api", "tests/unit/todo_api.goose"),
                 ("parser_fuzz", "tests/fuzz/parser.goose"), ("features", "tests/fixtures/features.goose"),
-                ("server", "examples/basic/server.goose")]
+                ("app", "tests/fixtures/app.goose"), ("server", "examples/basic/server.goose")]
     for name, source in programs:
         subprocess.run([compiler, "build", str(ROOT / source), "--debug", "-o", str(BUILD / name)],
                        env=env, check=True, cwd=ROOT)
-    for name in ("core", "router", "application", "constants", "http_parser", "todo_input", "todo_api", "parser_fuzz"):
+    for name in ("core", "router", "application", "app_routes", "constants", "http_parser", "todo_input", "todo_api",
+                 "parser_fuzz"):
         subprocess.run([str(BUILD / name)], check=True, timeout=60)
     with tempfile.TemporaryDirectory(prefix="goose-todo-unit-") as directory:
         subprocess.run([str(BUILD / "todo_store"), str(Path(directory) / "todos.json")], check=True, timeout=60)
@@ -37,6 +39,7 @@ def main():
                     "-o", str(BUILD / "transport")], check=True)
     subprocess.run([str(BUILD / "transport")], check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/http.py"), str(BUILD / "features")], env=env, check=True)
+    subprocess.run([sys.executable, str(ROOT / "tests/integration/app.py"), str(BUILD / "app")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/todos.py"), str(BUILD / "server")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/runtime.py")], env=env, check=True)
 
