@@ -87,3 +87,11 @@ int64_t gw_clock_ns(void) {
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0;
     return (int64_t)now.tv_sec * 1000000000 + (int64_t)now.tv_nsec;
 }
+
+/* Wall-clock seconds since the Unix epoch, for cookie issue times and expiry. Returns 0 on failure,
+   which the session code treats as an unusable clock. */
+int64_t gw_unix_seconds(void) {
+    struct timespec now;
+    if (clock_gettime(CLOCK_REALTIME, &now) != 0) return 0;
+    return (int64_t)now.tv_sec;
+}

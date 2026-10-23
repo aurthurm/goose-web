@@ -41,3 +41,8 @@ const MAX_SSE_EVENT_BYTES = 128;
 const MAX_SSE_MESSAGE_BYTES = 65536;
 const MAX_SSE_OUTBOX_BYTES = 262144;
 const MAX_SSE_OUTBOX_MESSAGES = 64;
+
+// One Set-Cookie line written by the session middleware (name, value and attributes). Longer
+// than a header value, so it has its own field in Response; 4096 is the RFC 6265 minimum that
+// user agents must accept for a cookie.
+const MAX_COOKIE_LINE_BYTES = 4096;

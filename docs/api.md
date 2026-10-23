@@ -375,6 +375,8 @@ short-circuits. Nesting gives the order: the outer middleware's `before` runs fi
 The runtime fills `Request.peer` from `getpeername` when it accepts a connection
 (`gw_peer_address` in `native/posix/transport.c`). It is the TCP peer, never a forwarded header,
 so behind a proxy every client shares the proxy's address.
+| `session(c, config) { }` | loads the signed session cookie, exposes `session_get`/`session_set`/`session_clear`, and re-issues the cookie after the block only when the store changed. See [Sessions](#sessions) |
+| `csrf(c, secret, check_origin = false) { }` | safe methods pass and receive a token cookie; unsafe methods need the token echoed in `X-CSRF-Token` or `csrf_token`, else 403 `csrf_failed`. See [CSRF](#csrf) |
 
 ### JSON responses and request bodies
 
@@ -492,6 +494,125 @@ c.post("/login") {
 
 Struct literals name fields in declaration order (`path`, `max_age`, `http_only`, `secure`,
 `same_site`). Leave fields out to keep their defaults.
+
+### Sessions
+
+`session(c, config) { next }` is middleware for a small signed key/value store that lives in the
+client's cookie. The store holds up to 16 entries: keys of at most 32 bytes and values of at most
+256 bytes. The store is loaded before `next` runs, and the cookie is written again after it, but
+only when the handler changed the store.
+
+```goose
+const SESSION_SECRET = "...";   // at least 32 bytes, from configuration (see Security notes)
+
+fn app(c: web::Ctx&) {
+    session(c, web::SessionConfig { secret: SESSION_SECRET }) {
+        c.routes() {
+            c.post("/login") {
+                if !c.session_set("user", "alice") { c.fail(web::HTTP_CONFLICT, "session_full", "Session full"); return; }
+                c.no_content();
+            };
+            c.get("/me") { c.text(c.session_get("user")); };
+            c.post("/logout") { c.session_clear(); c.no_content(); };
+        };
+    };
+}
+```
+
+`web::SessionConfig` fields, in declaration order (leave fields out to keep their defaults):
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `secret` | none | Signing key, at least 32 bytes. The middleware asserts this at start |
+| `cookie` | `"gw_session"` | Cookie name, a token |
+| `max_age` | `86400` | Seconds from the last change. Sent as `Max-Age` and enforced by the server |
+| `secure` | `false` | Adds `Secure`. Required when `same_site` is `None` |
+| `same_site` | `"Lax"` | `Strict`, `Lax` or `None` (not empty) |
+
+`HttpOnly` is always set and `Path=/` is always sent.
+
+- `c.session_get(key) -> const u8[:]` returns the value, or `""` when the key is absent or no
+  session middleware runs.
+- `c.session_set(key, value) -> bool` stores a value and returns `false`, leaving the store
+  unchanged, when there is no session middleware, the key is empty or longer than 32 bytes, the
+  value is longer than 256 bytes, the store is full (16 entries and a new key), the payload would
+  exceed 2816 bytes, or the clock is unavailable. The bound keeps the whole `Set-Cookie` line under
+  4096 bytes. Setting a key to the value it already has does not count as a change.
+- `c.session_clear()` removes every entry. The response then carries an expiring cookie
+  (`Max-Age=0`).
+
+Behavior: a missing, tampered, expired or future-dated cookie gives an empty session, without an
+error. The server does not expire such a cookie; the browser drops it at `Max-Age`. A changed store
+gets a new issue time, so the expiry is measured from the last change, not sliding on each request.
+
+Cookie format: `base64url(payload) "." base64url(tag)`, where
+`tag = HMAC-SHA256(secret, "gw-session|" || base64url(payload))`. The payload, before base64url,
+holds a version byte (1), the issue time as 8 big-endian Unix seconds, the entry count, and for each
+entry a key length (1 byte), the key, a value length (2 bytes, big-endian) and the value. Parsing
+checks every length against its bound, refuses duplicate keys and any trailing bytes, and the tag is
+compared in constant time before the payload is read. Issue times more than 60 seconds ahead of the
+server clock are refused.
+
+Security notes:
+
+- **Signed, not encrypted.** The payload is base64url text, so the client can read every key and
+  value. Store identifiers and small flags, not secrets or personal data that the client must not
+  see. Keep sensitive state on the server and put only its key in the session.
+- **Integrity, not revocation.** The HMAC stops forged or edited cookies. It does not stop replay:
+  a copy of a cookie stays valid until `max_age` runs out, even after `session_clear()` on another
+  request. For logout that must take effect at once, shorten `max_age` or rotate the secret, which
+  invalidates every session.
+- **Secret management.** Use at least 32 random bytes (for example `openssl rand -base64 48`),
+  supplied through the environment or a secret store, never committed to source. One secret is in
+  use at a time: rotating it signs everyone out, which is the intended incident response. Use
+  different secrets for different deployments.
+- **Transport.** Set `secure = true` in any deployment served over HTTPS, so the cookie never
+  travels in clear text. `SameSite=Lax` is the default; `Strict` suits admin-only areas.
+
+### CSRF
+
+`csrf(c, secret, check_origin = false) { next }` protects unsafe methods against cross-site form
+posts. It uses the double-submit pattern with an authenticated token, as in V's `veb.csrf`:
+
+- Safe methods (GET, HEAD, OPTIONS) pass to `next`. If the request has no valid token cookie, the
+  response sets one.
+- Unsafe methods (POST, PUT, PATCH, DELETE and others) need the cookie token echoed back in the
+  `X-CSRF-Token` header, or in a `csrf_token` field of an `application/x-www-form-urlencoded` body.
+  Otherwise the response is `403` with the error code `csrf_failed`, and `next` does not run.
+- With `check_origin = true`, an `Origin` header must name the same host as `Host` (the scheme is
+  ignored). Without `Origin`, a `Referer` must. A request with neither is allowed, because the token
+  still applies. An opaque origin such as `null` is refused.
+
+`c.csrf_token() -> const u8[:]` returns the token for this request, for hidden form fields.
+
+```goose
+c.get("/form") {
+    csrf(c, CSRF_SECRET) {
+        c.html(str("<form method=post><input type=hidden name=csrf_token value=\"", c.csrf_token(),
+                   "\"><button>Save</button></form>"));
+    };
+};
+c.post("/form") { csrf(c, CSRF_SECRET, true) { c.text("saved"); }; };
+```
+
+Token format: `base64url(nonce) "." base64url(tag)`, 87 bytes, where the nonce is 32 bytes from the
+CSPRNG (`getrandom(2)`, then `/dev/urandom`) and `tag = HMAC-SHA256(secret, "gw-csrf|" || base64url(nonce))`.
+The cookie is `gw_csrf`, with `Path=/`, `HttpOnly` and `SameSite=Lax`. A token is not tied to a user
+or a session, and it does not expire before the browser drops the cookie. Token comparison is
+constant-time, and the form field is compared as sent, so clients should not percent-encode it (the
+token uses only URL-safe characters).
+
+Security notes:
+
+- Only a server-made token passes: a cookie that an attacker plants fails the tag check. The tag
+  uses its own label, so a session tag can never be replayed as a CSRF token.
+- Use one secret for each purpose, or the same secret with these labels; the labels separate the two
+  uses. The same secret rules as for sessions apply.
+- The CSRF cookie carries no `Secure` attribute in this version. Serve forms over HTTPS: an
+  attacker who can read HTTP traffic can read and replay tokens.
+- CSRF protects state-changing methods only. Do not change state on GET, HEAD or OPTIONS.
+- `multipart/form-data` bodies are not parsed. Send the token in `X-CSRF-Token` from such forms,
+  through script, or use a URL-encoded form.
 
 ### Static files
 

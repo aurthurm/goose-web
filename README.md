@@ -47,6 +47,7 @@ fn main() {
 - Compile-time HTML templates: `embed_file("views/page.html")` with `{{escaped}}`, `{{{raw}}}`, sections, `each` over struct arrays and comments; `check_template` validates them at startup. See [Templates](docs/api.md#templates).
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
 - Edge middleware: `secure_headers` (CSP, nosniff, frame DENY, referrer policy, optional HSTS) and a bounded per-client `rate_limit` that answers 429 with `Retry-After`. `c.peer()` gives the TCP peer address.
+- Signed cookie sessions (`session`, 16 entries, HMAC-SHA256) and double-submit CSRF protection (`csrf`) with a CSPRNG-backed token. See [Sessions](docs/api.md#sessions) and [CSRF](docs/api.md#csrf); the security notes there say what these do not protect.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
 - Nonblocking reactor: poll-based readiness, bounded client slots, partial writes, read and write deadlines.
 - Server-sent events: `c.sse(channel)` upgrades a route to a chunked event stream, `web::sse_publish` fans events out per channel, with heartbeats, bounded per-stream queues that drop slow readers, and a close event at shutdown. See [SSE](docs/api.md#server-sent-events) and the [sse-clock example](examples/sse-clock/README.md).
@@ -102,6 +103,8 @@ src/
   middleware/             Compile-time request pipeline
   app/                    Application API: Ctx, c.routes/c.group, middleware, responses, forms, templates, run, config
   sys/                    File, environment and clock access over the native shim (no os import)
+  app/                    Application API: Ctx, c.routes/c.group, middleware, responses, run, config
+  sys/                    File, environment, clock and crypto (SHA-256, HMAC, CSPRNG, base64url) access over the native shim (no os import)
   events/                 Typed bounded event bus
   runtime/                Readiness loop, configuration, lifecycle, metrics
 native/posix/             Socket, signal, file and environment shim

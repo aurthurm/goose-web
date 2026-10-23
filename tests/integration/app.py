@@ -48,6 +48,18 @@ def get(path, extra=b""):
     return b"GET " + path + b" HTTP/1.1\r\nHost: x\r\n" + extra + b"\r\n"
 
 
+def post(path, extra=b"", body=b""):
+    return (b"POST " + path + b" HTTP/1.1\r\nHost: x\r\nContent-Length: " + str(len(body)).encode() +
+            b"\r\n" + extra + b"\r\n" + body)
+
+
+def flip_first(value):
+    """A copy of value with its first byte changed to another letter."""
+    changed = bytearray(value)
+    changed[0] = ord("C") if changed[0] != ord("C") else ord("D")
+    return bytes(changed)
+
+
 def test_app(executable):
     root = Path(__file__).resolve().parents[2]
     with socket.socket() as reservation:
@@ -179,6 +191,58 @@ def test_app(executable):
             assert status == 400 and json.loads(body)["error"]["code"] == "invalid_path", (bad, status, body)
         status, _, body = exchange(port, b"POST /static/hello.txt HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n")
         assert status == 404, body
+        # Signed sessions: one long Set-Cookie line that a later request reads back.
+        status, lines, body = exchange_lines(port, get(b"/session/set"))
+        session_lines = [value for name, value in lines if name == b"Set-Cookie"]
+        assert status == 200 and body == b"session set", body
+        assert len(session_lines) == 1 and session_lines[0].startswith(b"gw_session="), session_lines
+        assert session_lines[0].endswith(b"; Path=/; Max-Age=86400; HttpOnly; SameSite=Lax"), session_lines
+        assert len(session_lines[0]) <= 4096, len(session_lines[0])
+        session_value = session_lines[0].split(b";", 1)[0].split(b"=", 1)[1]
+        assert session_value.count(b".") == 1, session_value
+
+        status, fields, body = exchange(port, get(b"/session/get", b"Cookie: gw_session=" + session_value + b"\r\n"))
+        assert status == 200 and body == b"user=alice;theme=dark", body
+        assert b"Set-Cookie" not in fields, fields
+        # A changed byte in either half, or a cookie signed elsewhere, reads as an empty session.
+        status, fields, body = exchange(port, get(b"/session/get", b"Cookie: gw_session=" +
+                                                  flip_first(session_value) + b"\r\n"))
+        assert status == 200 and body == b"user=;theme=" and b"Set-Cookie" not in fields, (fields, body)
+        status, _, body = exchange(port, get(b"/session/get", b"Cookie: gw_session=garbage\r\n"))
+        assert status == 200 and body == b"user=;theme=", body
+        # Clearing expires the cookie at once.
+        status, lines, body = exchange_lines(port, get(b"/session/clear", b"Cookie: gw_session=" + session_value + b"\r\n"))
+        clears = [value for name, value in lines if name == b"Set-Cookie"]
+        assert status == 200 and clears == [b"gw_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax"], clears
+        # Ten 256-byte values fit the store; the rest are refused and the cookie stays under 4096 bytes.
+        status, lines, body = exchange_lines(port, get(b"/session/fill"))
+        fill_lines = [value for name, value in lines if name == b"Set-Cookie"]
+        assert status == 200 and body == b"stored=10", body
+        assert len(fill_lines) == 1 and len(fill_lines[0]) <= 4096, fill_lines
+
+        # CSRF: the GET issues the token (body and cookie), and the POST accepts only an echo of it.
+        status, lines, token = exchange_lines(port, get(b"/csrf/form"))
+        csrf_lines = [value for name, value in lines if name == b"Set-Cookie"]
+        assert status == 200 and len(token) == 87 and token[43:44] == b".", token
+        assert csrf_lines == [b"gw_csrf=" + token + b"; Path=/; HttpOnly; SameSite=Lax"], csrf_lines
+        cookie = b"Cookie: gw_csrf=" + token + b"\r\n"
+        status, _, body = exchange(port, post(b"/csrf/form", cookie + b"X-CSRF-Token: " + token + b"\r\n"))
+        assert status == 200 and body == b"accepted", (status, body)
+        form = b"Content-Type: application/x-www-form-urlencoded\r\n"
+        status, _, body = exchange(port, post(b"/csrf/form", form + cookie, b"title=milk&csrf_token=" + token))
+        assert status == 200 and body == b"accepted", (status, body)
+        status, _, body = exchange(port, post(b"/csrf/form", cookie + b"X-CSRF-Token: " + token + b"\r\n" +
+                                              b"Origin: http://x\r\n"))
+        assert status == 200 and body == b"accepted", (status, body)
+        status, _, body = exchange(port, post(b"/csrf/form", cookie + b"X-CSRF-Token: " + token + b"\r\n" +
+                                              b"Origin: https://evil.example\r\n"))
+        assert status == 403 and json.loads(body)["error"]["code"] == "csrf_failed", body
+        status, _, body = exchange(port, post(b"/csrf/form", cookie + b"X-CSRF-Token: " + flip_first(token) + b"\r\n"))
+        assert status == 403 and json.loads(body)["error"]["code"] == "csrf_failed", body
+        status, _, body = exchange(port, post(b"/csrf/form", b"X-CSRF-Token: " + token + b"\r\n"))
+        assert status == 403 and json.loads(body)["error"]["code"] == "csrf_failed", body
+        status, _, body = exchange(port, post(b"/csrf/form", form + cookie, b"csrf_token=" + flip_first(token)))
+        assert status == 403 and json.loads(body)["error"]["code"] == "csrf_failed", body
         status, _, body = exchange(port, get(b"/health"))
         assert status == 200, body
         assert process.poll() is None
@@ -190,7 +254,8 @@ def test_app(executable):
             process.kill()
             process.wait()
     print("App socket tests passed: routes, groups, path params, 404, 405, HEAD, JSON 201/415/400/422, CORS preflight, "
-          "X-Request-ID, typed query, cookies, repeated Set-Cookie, static files and refusals")
+          "X-Request-ID, typed query, cookies, repeated Set-Cookie, static files and refusals, signed sessions, "
+          "CSRF accept and refuse matrix")
 
 
 if __name__ == "__main__":

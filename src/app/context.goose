@@ -7,6 +7,7 @@ import src.http.headers;
 import src.http.errors;
 import src.routing.router;
 import src.app.openapi_state;
+import src.app.session_state;
 import std;
 namespace web;
 
@@ -36,6 +37,9 @@ struct Ctx {
     prefixes: const u8[:][MAX_GROUP_DEPTH],
     prefix_count: i64,
     host_scope: const u8[:],
+    // Session and CSRF middleware state (session.goose, csrf.goose); empty until installed.
+    session_state: SessionState,
+    csrf_state: CsrfState,
     oas: OpenApiState,
 }
 

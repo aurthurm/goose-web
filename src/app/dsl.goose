@@ -2,6 +2,8 @@ import src.app.context;
 import src.app.routes;
 import src.app.params;
 import src.app.templates;
+import src.app.session;
+import src.app.csrf;
 import std;
 namespace web;
 
@@ -81,6 +83,18 @@ fn ::cookie(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::cookie
 fn ::set_cookie(c: web::Ctx&, name: const u8[:], value: const u8[:], opts: web::CookieOptions = web::CookieOptions { .. }) -> bool {
     return web::set_cookie(c, name, value, opts);
 }
+
+// Signed cookie sessions. session(c, config) { ... } loads the store before the block and
+// re-issues the cookie after it when the store changed; session_get/session_set/session_clear
+// work on that store and report false (set) or "" (get) outside the middleware.
+fn ::session<F>(c: web::Ctx&, config: web::SessionConfig) { web::session(c, config, F); }
+fn ::session_get(c: web::Ctx&, key: const u8[:]) -> const u8[:] { return web::session_get(c, key); }
+fn ::session_set(c: web::Ctx&, key: const u8[:], value: const u8[:]) -> bool { return web::session_set(c, key, value); }
+fn ::session_clear(c: web::Ctx&) { web::session_clear(c); }
+
+// CSRF. csrf(c, secret) { ... } guards the block; csrf_token(c) gives the token for forms.
+fn ::csrf<F>(c: web::Ctx&, secret: const u8[:], check_origin: bool = false) { web::csrf(c, secret, check_origin, F); }
+fn ::csrf_token(c: web::Ctx&) -> const u8[:] { return web::csrf_token(c); }
 
 // OpenAPI. web::openapi(c, info) { c.routes() { ... } } serves the document; annotations
 // are no-ops except in the describe pass. Generic type arguments need the web:: form.
