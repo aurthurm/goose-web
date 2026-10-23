@@ -1,5 +1,12 @@
 # Goose Web
 
+[![Linux CI](https://github.com/aurthurm/goose-web/actions/workflows/ci.yml/badge.svg)](https://github.com/aurthurm/goose-web/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/tag/aurthurm/goose-web?label=release&sort=semver)](https://github.com/aurthurm/goose-web/tags)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://aurthurm.github.io/goose-web/)
+
+[Documentation site](https://aurthurm.github.io/goose-web/) · [Starter project](templates/starter/README.md) ·
+[API reference](docs/api.md) · [Changelog](CHANGELOG.md)
+
 An experimental HTTP framework for the [Goose programming language](https://github.com/aardappel/goose),
 with nonblocking network I/O, typed queued events, routing, and composable middleware.
 It uses a readiness loop rather than language-level async/await.
@@ -58,6 +65,68 @@ fn main() {
 - Validated runtime configuration: ports, limits, timeouts and request caps are checked before a socket opens.
 - Tested end to end: unit contracts, native socket tests, real loopback integration tests and parser fuzz/property checks.
 
+## Use it in your project
+
+Goose Web is a Goose package. A program declares it in its root file, and `goose` fetches it,
+builds its C once, and caches both under `~/.goose` (the [packaging guide](https://github.com/aardappel/goose)
+in the Goose repository explains the rules; `goose fetch program.goose` fetches ahead of a build).
+
+The fastest start is the [starter project](templates/starter/README.md):
+
+```sh
+python3 scripts/new_project.py my-api ../my-api --source .   # "." is this checkout
+cd ../my-api && goose run server.goose -- 8080              # or: goose build server.goose -o build/server
+python3 test.py                                             # builds, calls every route, stops the server
+```
+
+Leave out `--source` to write the GitHub tag form instead (`aurthurm/goose-web@v0.6.0`); that
+needs the tag to exist.
+
+By hand, the root file declares the package with its source:
+
+```goose
+import goose_web from "aurthurm/goose-web@v0.6.0";   // GitHub, at a release tag
+import std;
+
+fn app(c: web::Ctx&) {
+    c.routes() {
+        c.get("/health") { c.text("ok"); };
+    };
+}
+
+fn main() {
+    var config = web::server_config();
+    config.port = 8080;
+    let started = web::run(config) { c => app(c) };
+    if !started { abort("server failed"); }
+}
+```
+
+Other sources use the same `import goose_web from "...";` line. A local checkout is used in place,
+and was checked by building and running a consumer:
+
+```goose
+import goose_web from "../goose-web";                          // a local checkout, used in place
+import goose_web from "github.com/aurthurm/goose-web@3f2c1a9";  // a commit, per packages.md (not yet checked here)
+```
+
+The GitHub tag form was checked too: until `v0.6.0` is pushed, `goose fetch` stops with
+`Remote branch v0.6.0 not found`. Fetching it needs network access and the tag.
+
+The SQLite layer is a second package in `db/`, with its own sidecar. A program that uses it declares
+both packages from the same version:
+
+```goose
+import goose_web from "../goose-web";
+import goose_web_db from "../goose-web/db";   // the same checkout; SQLite is linked only here
+```
+
+`db/` is not a repository of its own, so it cannot be fetched from GitHub by path yet; see
+[releasing](docs/releasing.md#the-db-package).
+
+Releases are tagged `vX.Y.Z`; the history is in [CHANGELOG.md](CHANGELOG.md). `web::VERSION` holds
+the release a program was built with, and it matches the `VERSION` file.
+
 ## Run locally
 
 Requires upstream Goose (tested with runtime `4d3da949e563`), a C compiler, and Linux
@@ -93,8 +162,10 @@ event queue returns 503 before a mutation can change data. The API is documented
 ## Project layout
 
 ```text
-goose_web.goose           Public package entry
-goose_web.build           Native build definition
+goose_web.goose           Public package entry (the fetched package's entry)
+goose_web.build           Native build definition (the package's sidecar)
+VERSION                   Release version, checked against web::VERSION by tests/run.py
+CHANGELOG.md              Release notes
 src/
   constants/              Public HTTP names, fixed limits, runtime defaults
   http/                   Request parsing, response framing, headers, JSON errors
@@ -102,8 +173,6 @@ src/
   routing/                Route matching, path parameters, query decoding
   middleware/             Compile-time request pipeline
   app/                    Application API: Ctx, c.routes/c.group, middleware, responses, forms, templates, run, config
-  sys/                    File, environment and clock access over the native shim (no os import)
-  app/                    Application API: Ctx, c.routes/c.group, middleware, responses, run, config
   sys/                    File, environment, clock and crypto (SHA-256, HMAC, CSPRNG, base64url) access over the native shim (no os import)
   events/                 Typed bounded event bus
   runtime/                Readiness loop, configuration, lifecycle, metrics
@@ -120,9 +189,10 @@ tests/
   integration/            Real HTTP and runtime checks
   fuzz/                   Reproducible parser fuzz/property corpus
   run.py                  Complete test entry point
-docs/                     Architecture and API contracts
-scripts/                  Pinned compiler bootstrap
-.github/workflows/        Linux CI with GCC and Clang
+docs/                     Architecture, API contracts, releasing, and the docs site (docs/site)
+templates/starter/        Starter project copied by scripts/new_project.py
+scripts/                  Pinned compiler bootstrap and the starter generator
+.github/workflows/        Linux CI with GCC and Clang; Pages publishes docs/site
 build/                    Ignored binaries and compiler cache
 ```
 
