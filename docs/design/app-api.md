@@ -244,3 +244,57 @@ c.routes() {
   the describe pass. Paths configurable in `OpenApiInfo`.
 - Output must stay within the response cap; generation is pure and testable via a unit test that
   validates the JSON parses and contains expected paths/schemas.
+
+## v0.4 design: reflective SQLite layer (`web::db`)
+
+Inspired by V's ORM (see [research notes](../research/vlang-veb-orm.md)); Goose has no attributes or
+SQL-in-syntax, so the mapping comes from `fields<T>` reflection plus per-type registration overloads.
+Prototype (compiling, runs CRUD with bound parameters):
+`scratchpad/proto/db/{db.goose,shim.c,db.build}` from the v0.3 session.
+
+**Packaging.** SQLite must stay opt-in: the core framework does not link `libsqlite3`. Ship it as a
+second package directory `db/` (`db/goose_web_db.goose` + `db/goose_web_db.build` with
+`c_sources = ["sqlite_shim.c"]; c_libs = ["sqlite3"];`) importable as
+`import goose_web_db from "../../db";`. If the compiler only honours the root program's `.build`,
+document that apps add `c_libs = ["sqlite3"]` to their own sidecar and keep the shim in the package.
+
+**C boundary.** C keeps fixed tables of `sqlite3*` and `sqlite3_stmt*` and hands Goose integer
+handles (Goose cannot hold C pointers in data). Text crosses as `{data,len}` slices (bound with
+explicit length + `SQLITE_TRANSIENT`); results are copied into caller slices after asking for their
+length (builders `u8[>..]&` are not available to separately compiled sidecar C). No SQL text is
+ever built from values: values are always bound. Identifiers come only from `fields<T>` names and
+registered table names, validated as `[A-Za-z_][A-Za-z0-9_]*`.
+
+**API.**
+
+```goose
+struct Todo { id: i64, title: u8[..200], completed: bool }
+fn web::db_table(v: Todo&) -> const u8[:] { "todos" }        // required registration
+// optional: fn web::db_primary(v: Todo&) -> const u8[:] { "id" }  (default "id")
+
+var db = default<web::Db>();
+guard web::db_open(db, "build/app.db") else { abort(web::db_error(db)); }   // WAL + busy_timeout set
+web::migrate(db, ["ALTER TABLE todos ADD COLUMN due INTEGER NOT NULL DEFAULT 0"]);  // schema_version table
+web::create_table<Todo>(db);                       // CREATE TABLE IF NOT EXISTS from fields
+let id, ok = web::insert(db, item);                // i64 primary == 0 → INTEGER PRIMARY KEY autoincrement; returns rowid
+web::update(db, item);                             // by primary key; false + error if no row
+web::remove<Todo>(db, id);
+let t, found = web::find<Todo>(db, id);
+web::select<Todo>(db, web::query().where_eq("completed", false).order_by("id", true).limit(20)) { row => ... };
+let n = web::count<Todo>(db, web::query().where_eq("completed", true));
+let ok2 = web::transaction(db) { web::insert(db, a).1 && web::update(db, b) };   // block value decides COMMIT/ROLLBACK
+```
+
+- Types: all int widths and bool → INTEGER (range-checked on read), f32/f64 → REAL, `u8[..N]` → TEXT
+  (read truncation is an error, not silent), nested structs and limited arrays → TEXT holding JSON via
+  `json_encode`/`json_decode` (same registration idiom as the codec).
+- `Query` is a fixed-size value: up to 8 conditions (`where_eq/ne/lt/le/gt/ge/like`, AND-joined),
+  values held in a fixed-mode enum `SqlValue { Int, Real, Text { v: u8[..256] }, Null }`; column names
+  validated against `fields<T>` at run time (unknown column → `abort` with the name: programmer error).
+- Errors: every call returns bool; `web::db_error(db)` gives the last SQLite message (bounded copy).
+- `transaction` takes a block whose **value** is the commit decision; a block `return` would skip
+  COMMIT/ROLLBACK, so it is documented as forbidden inside transactions (tests prove rollback on false).
+- Blocking: calls run on the reactor thread. Document WAL, short queries, and indexes; worker-thread
+  offload is future work (only flat values may cross Goose thread queues).
+- Example: `examples/sqlite-todos/` (a compact Todo API persisted in SQLite, OpenAPI-annotated), plus
+  unit tests on `:memory:` and an integration test over sockets with restart persistence.
