@@ -520,3 +520,90 @@ Limits, stated so they are not a surprise:
   aborts while `/openapi.json` is generated, which is a programmer error; the document itself must
   fit the response cap (`MAX_RESPONSE_BODY_BYTES`, 64 KiB today).
 - The document is compact JSON with no whitespace and is regenerated per request.
+
+## SQLite (web::db)
+
+Opt-in package `db/` (`import goose_web_db from "../../db";` beside `import goose_web from "../..";`).
+Its sidecar `db/goose_web_db.build` compiles `db/native/sqlite_shim.c` and links `sqlite3`; the core
+framework links nothing new. Needs `sqlite3.h` and `libsqlite3` (Debian/Ubuntu: `libsqlite3-dev`).
+Design: [app-api.md, v0.4](design/app-api.md#v04-design-reflective-sqlite-layer-webdb).
+
+```goose
+struct Todo { id: i64, title: u8[..200], completed: bool }
+fn web::db_table(v: Todo&) -> const u8[:] { "todos" }      // required
+// fn web::db_primary(v: Todo&) -> const u8[:] { "id" }    // optional; the key must be an i64 field
+
+var database = default<web::Db>();
+guard web::db_open(database, "build/app.db") else { abort(web::db_error(database)); }
+web::create_table<Todo>(database);                          // CREATE TABLE IF NOT EXISTS
+let id, ok = web::insert(database, item);                   // rowid; a zero key is assigned
+let row, found = web::find_row<Todo>(database, id);         // found false + empty db_error: no row
+web::update(database, row);                                 // by key; false + "no row ..." if absent
+web::remove<Todo>(database, id);
+let n = web::count<Todo>(database, web::where_eq(web::query(), "completed", false));
+web::select<Todo>(database, web::limit(web::order_by(web::query(), "id", true), 20)) { row => list.push(row); };
+let saved = web::transaction(database) { web::update(database, row) && web::remove<Todo>(database, 2) };   // see below
+web::migrate(database, ["ALTER TABLE todos ADD COLUMN due INTEGER NOT NULL DEFAULT 0"]);
+web::db_close(database);
+```
+
+| Call | Result |
+| --- | --- |
+| `db_open(db, path) -> bool` | `":memory:"` or a file; WAL journal, 5 s busy timeout. Fails if already open |
+| `db_close(db)` | closes and finalizes the handle's statements; idempotent |
+| `db_error(db) -> const u8[:]` | last SQLite message, at most 256 bytes; empty after success |
+| `db_exec(db, sql) -> bool` | one statement with no values (DDL, `PRAGMA`); multi-statement text is refused |
+| `create_table<T>(db) -> bool` | `CREATE TABLE IF NOT EXISTS` from `fields<T>` |
+| `insert<T>(db, item) -> i64, bool` | every field; the key binds NULL when zero, so SQLite assigns the rowid |
+| `update<T>(db, item) -> bool` | sets the non-key fields where key = item's key |
+| `remove<T>(db, id: i64) -> bool` | deletes by key; false with `no row matches the primary key` when absent |
+| `find_row<T>(db, id: i64) -> T, bool` | the row; a missing row is `false` with an empty `db_error` |
+| `select<T>(db, q) { row => ... } -> bool` | calls the block per row, in `ORDER BY` order; false on a failed step or column |
+| `count<T>(db, q) -> i64` | matching rows (order and limit ignored); `-1` on failure |
+| `transaction(db) { ... } -> bool` | `BEGIN`, the block, `COMMIT` if it returns true, else `ROLLBACK` |
+| `migrate(db, steps) -> bool` | applies `steps` in order, each with its version bump in one transaction |
+| `identifier_valid(name) -> bool` | `[A-Za-z_][A-Za-z0-9_]*`, at most 63 bytes |
+
+**Query builder.** `web::query()` starts a value of at most 8 conditions, one `order_by` and one
+`limit`. Conditions: `where_eq`, `where_ne`, `where_lt`, `where_le`, `where_gt`, `where_ge`,
+`where_like(q, column, value)`, AND-ed. `order_by(q, column, descending: bool)` and `limit(q, n)`.
+Call them as functions (`web::where_eq(web::query(), ...)`): a UFCS chain is resolved in the caller's
+namespace and does not find them. Values are bound as parameters, never spliced into SQL. Text values are
+at most 256 bytes; a longer one, a ninth condition, a bad identifier or a negative limit is a builder
+error reported by `count` (-1) and `select` (false). An unknown column in a query aborts: it is a
+programmer error (`column_known<T>(name)` tests a name).
+
+**Mapping.** Integers and `bool` are `INTEGER`, `f32`/`f64` are `REAL`, `u8[..N]` is `TEXT`.
+Other arrays and nested structs are `TEXT` holding the codec's JSON. Reads are checked: an integer
+outside the field's range, a text longer than `N`, a malformed or overlong JSON value, or a NULL are
+errors (false, `db_error` set), never silent truncation. A `u64` above `i64` max cannot be written.
+Primary keys are `i64` fields (`INTEGER PRIMARY KEY`).
+
+Nested structs need the codec pair plus a SQLite pair (the JSON route):
+
+```goose
+fn web::json_put_value(out: u8[>..]&, v: Meta&) -> bool { return web::json_put_fields(out, v); }
+fn web::json_read_value(d: web::JsonDecoder&, out: Meta&) { web::json_read_fields(d, out); }
+fn web::sql_put_value(db: web::Db&, s: i32, index: i32, v: Meta&) -> bool { return web::sql_put_json(db, s, index, v); }
+fn web::sql_read_value(db: web::Db&, s: i32, col: i32, out: Meta&) -> bool { return web::sql_read_json(db, s, col, out); }
+```
+
+The codec also needs `json_put_value`/`json_read_value` for an element of an array, such as the
+`Todo` in a `c.json_list(todos[..])` response.
+
+**NULL.** Every column is `NOT NULL`, and Goose fields are never null. A NULL in a table made outside
+this layer is a read error. The one NULL this layer writes is the zero key on insert.
+
+**Transactions.** The block's value decides: `true` commits, `false` rolls back, and a failing step
+inside the block (its message is kept in `db_error`) makes the block false. A `return` inside a
+transaction block skips `COMMIT`/`ROLLBACK`; do not use one there. Nested transactions are refused.
+
+**Migrations.** `migrate` records how many steps ran in `schema_version`. Steps are append-only: a
+step already applied is not re-run, and a database newer than the step list is an error.
+
+**Blocking.** Every call runs on the reactor thread. Keep statements short, index columns you filter
+on (`CREATE INDEX` through `db_exec`), and do not hold a `select` open across a slow handler.
+
+**Errors.** The shim keeps a fixed table: 8 open databases and 64 statements. Each call clears
+`db_error` first, so read it right after the call. `remove`, `update` and `find_row` report a
+missing row with `false`; `find_row` alone leaves `db_error` empty for it.

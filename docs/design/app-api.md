@@ -327,3 +327,19 @@ let ok2 = web::transaction(db) { web::insert(db, a).1 && web::update(db, b) };  
 - Path parameters are documented as strings, as designed; query parameters are all optional.
 - Still open: per-field constraints beyond the integer width (for example `limit` 1..8), per-status
   error codes such as 409 and 503, and `$ref` reuse. `examples/basic/openapi.yaml` is kept for those.
+
+**Implementation notes (v0.4, as built).**
+
+- Packaging: `db/` is a local package with its own sidecar. The compiler builds a package's sidecar
+  `c_sources` and `c_libs` when the package is imported, so the core framework stays free of
+  `libsqlite3`. Verified with a probe package outside the repo.
+- `web::find` is `web::find_row`. An unqualified `find` in namespace `web` hides the stdlib `find`
+  that the core calls, which broke the framework in any program importing the package.
+- Builders are functions, `web::where_eq(web::query(), ...)`: a UFCS chain across namespaces is not resolved.
+- `order_by(q, column, descending)` takes an explicit `descending` flag.
+- `select` and `transaction` take their block as the trailing function value; `transaction` is
+  `BEGIN` plus the block's bool. `migrate` takes a `const u8[:][:]` step list.
+- Nested struct fields need the codec pair plus `sql_put_value`/`sql_read_value` (JSON route), not
+  just the codec pair, because Goose cannot tell a struct from a limited array in the generic path.
+- Primary keys must be `i64`, so `remove`, `update` and `find_row` take an `i64` key.
+- NULL: every column is `NOT NULL`; a NULL read is an error. Only the zero key on insert binds NULL.

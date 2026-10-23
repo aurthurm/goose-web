@@ -39,6 +39,8 @@ jobs:
           cmake --version
           "$CC" --version
           "$CXX" --version
+      - name: Install SQLite development files
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
       - name: Build pinned Goose compiler
         run: python3 scripts/bootstrap_goose.py
       - name: Run full test suite

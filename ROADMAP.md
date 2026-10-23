@@ -31,6 +31,7 @@
 - [x] Response bodies up to 1 MiB by default (16 MiB ceiling) in a growable, reused buffer (`max_response_bytes`); in-flight responses share a pool capped by `max_pool_bytes`, with 503 when it is full.
 - Next: chunked/streaming bodies.
 - [x] OpenAPI 3.1 generated from the routes block and struct reflection (`web::openapi`), with a `/docs` page.
+- [x] Reflective SQLite layer (`db/`, `web::db`): CRUD from `fields<T>` with bound parameters, a query builder, transactions, migrations with `schema_version`, WAL file databases, example `examples/sqlite-todos`. Blocking calls on the reactor thread; worker offload is future work.
 - Next: typed configuration from environment variables.
 
 ## Milestone 3: protocol and platform coverage
