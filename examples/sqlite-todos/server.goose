@@ -10,6 +10,15 @@ struct TodoInput { title: u8[..200] = "", completed: bool = false }
 // PATCH takes the same keys, all optional. A separate struct so the document says so.
 struct TodoPatch { title: u8[..200] = "", completed: bool = false }
 
+// Field rules (docs/api.md, "Validation"): a create needs a title of 1 to 200 characters, and a
+// patch may leave the title out but not send an empty one. Bounds count characters, not bytes.
+fn web::rules(v: TodoInput&, r: web::Rules&) {
+    r.field("title").required().min_len(1).max_len(200);
+}
+fn web::rules(v: TodoPatch&, r: web::Rules&) {
+    r.field("title").min_len(1).max_len(200);
+}
+
 const DEFAULT_DB_FILE = "build/sqlite-todos.db";
 const LIST_LIMIT = 100;
 
@@ -79,10 +88,6 @@ fn list_todos(c: web::Ctx&) {
 fn create_todo(c: web::Ctx&) {
     let input, ok = body<TodoInput>(c);
     guard ok else { return; }
-    if input.title.len == 0 {
-        c.fail(web::HTTP_UNPROCESSABLE_CONTENT, "invalid_payload", "title must not be empty");
-        return;
-    }
     var item = Todo { id: 0, title: input.title, completed: input.completed };
     let id, inserted = web::insert(database, item);
     if !inserted { db_failed(c); return; }
@@ -102,19 +107,13 @@ fn show_todo(c: web::Ctx&) {
 fn patch_todo(c: web::Ctx&) {
     let id, ok = c.param_int("id");
     guard ok else { return; }
-    let input, result = body_result<TodoInput>(c);
-    guard result.ok else { return; }
+    var input, result = web::body_decode<TodoPatch>(c);
+    guard web::validate_result(c, "body", input, result) else { return; }
     let item, found = web::find_row<Todo>(database, id);
     if !found { missing_or_failed(c); return; }
     var updated = item;
-    if web::has<TodoInput>(result, "title") {
-        if input.title.len == 0 {
-            c.fail(web::HTTP_UNPROCESSABLE_CONTENT, "invalid_payload", "title must not be empty");
-            return;
-        }
-        updated.title = input.title;
-    }
-    if web::has<TodoInput>(result, "completed") { updated.completed = input.completed; }
+    if web::has<TodoPatch>(result, "title") { updated.title = input.title; }
+    if web::has<TodoPatch>(result, "completed") { updated.completed = input.completed; }
     if !web::update(database, updated) { db_failed(c); return; }
     c.json(updated);
 }

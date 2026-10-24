@@ -6,6 +6,7 @@ import src.http.headers;
 import src.json.codec;
 import src.routing.router;
 import src.app.context;
+import src.app.validation;
 import std;
 namespace web;
 
@@ -185,6 +186,18 @@ fn query_read<T>(raw: const u8[:], out: T&, reason: u8[..128]&) -> bool {
     return true;
 }
 
+// Reads one pair value. A field declared .lax() also takes on/yes (true) and off/no (false).
+fn query_read_lax<T>(raw: const u8[:], out: T&, reason: u8[..128]&, loose: bool) -> bool {
+    return query_read(raw, out, reason);
+}
+fn query_read_lax(raw: const u8[:], out: bool&, reason: u8[..128]&, loose: bool) -> bool {
+    if loose {
+        if raw == "on" || raw == "yes" { out = true; return true; }
+        if raw == "off" || raw == "no" { out = false; return true; }
+    }
+    return query_read(raw, out, reason);
+}
+
 // Binds a query string (or a form body, which uses the same pair syntax) into T. On failure,
 // error holds the reason, field the key (or empty), and ok is false. present has bit i set
 // for field i in declaration order.
@@ -196,6 +209,7 @@ fn pairs_result<T>(query: const u8[:]) -> T, DecodeResult {
         return value, result;
     }
     var seen: u64 = 0;
+    let rs = rules_for(value);
     var pos: i64 = 0;
     while pos < query.len {
         let amp = find(query[pos..], "&");
@@ -224,7 +238,9 @@ fn pairs_result<T>(query: const u8[:]) -> T, DecodeResult {
                     return value, result;
                 }
                 seen |= bit;
-                if !query_read(text.value[..], value.A, result.error) {
+                let at = rule_index(rs, N);
+                let loose = at >= 0 && rs.items[at].lax;
+                if !query_read_lax(text.value[..], value.A, result.error, loose) {
                     json_store(result.field, json_key(value, N));
                     return value, result;
                 }
@@ -250,8 +266,8 @@ fn query_result<T>(c: Ctx&) -> T, DecodeResult {
 
 // Binds the query into T, or writes 400 invalid_query "field: reason" and returns false.
 fn query<T>(c: Ctx&) -> T, bool {
-    let value, result = query_result<T>(c);
-    if result.ok { return value, true; }
+    var value, result = query_result<T>(c);
+    if result.ok { return value, validate_result(c, "query", value, result); }
     let message = if result.field.len == 0 {
         str(result.error[..])
     } else {
@@ -281,8 +297,8 @@ fn form<T>(c: Ctx&) -> T, bool {
         fail(c, HTTP_UNSUPPORTED_MEDIA_TYPE, "unsupported_media_type", "Content-Type must be application/x-www-form-urlencoded");
         return value, false;
     }
-    let bound, result = pairs_result<T>(c.request.body);
-    if result.ok { return bound, true; }
+    var bound, result = pairs_result<T>(c.request.body);
+    if result.ok { return bound, validate_result(c, "form", bound, result); }
     let message = if result.field.len == 0 {
         str(result.error[..])
     } else {

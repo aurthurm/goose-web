@@ -8,11 +8,28 @@ namespace web;
 import std;
 import json;
 import src.http.errors;
+import src.json.issues;
 
-struct DecodeResult { ok: bool, syntax: bool, error: u8[..128], field: u8[..64], present: u64 }
+// ok, syntax (malformed text, nothing read), error and field (the first issue's raw message and
+// path, kept for callers that report one error), present (bit i: field i had a key) and failed
+// (bit i: field i had a schema error, so its value is not to be trusted). issues lists every
+// schema error found, in order, and is empty when ok.
+struct DecodeResult { ok: bool, syntax: bool, error: u8[..128], field: u8[..64], present: u64, failed: u64, issues: Issues }
 
-// The stdlib reader plus the name of the field being read, for error reports.
-struct JsonDecoder { r: json::Reader, field: u8[..64] }
+// The stdlib reader plus the decode state. A schema error is recorded as an issue and decoding
+// goes on with the next field (json_member): field is the key being read, scope the dotted path
+// of the object around it ("" at the top, "address." inside a nested struct). count is every
+// issue so far (the issues list is bounded, the count is not).
+struct JsonDecoder {
+    r: json::Reader,
+    field: u8[..64],
+    scope: u8[..64],
+    first: u8[..128],
+    first_field: u8[..64],
+    count: i64,
+    track_objects: bool,
+    issues: Issues,
+}
 
 // --- field hooks ----------------------------------------------------------------
 // json_key(v, field): the JSON name of a field (default: its declared name). json_skip(v, field):
@@ -121,7 +138,26 @@ fn json_encode(out: u8[>..]&, value: const u8[:]) -> bool {
 
 // --- decoding -------------------------------------------------------------------
 
-// The first error wins: the reader stops at it, so later reads only fall through.
+// Records one schema issue at the current path. raw is the reader-style text the legacy
+// DecodeResult.error carries for the first issue, and the legacy DecodeResult.field is its
+// innermost key; kind and msg are the Pydantic type id and text, and loc the full dotted path.
+fn json_issue(d: JsonDecoder&, raw: const u8[:], kind: const u8[:], msg: const u8[:]) {
+    let path = str(d.scope[..], d.field[..]);
+    if d.count == 0 {
+        json_store(d.first, raw);
+        json_store(d.first_field, d.field[..]);
+    }
+    d.count += 1;
+    issue_add(d.issues, path[..], kind, msg);
+}
+
+// Records a schema issue and stops the reader at this value. json_member moves past the value.
+fn json_reject(d: JsonDecoder&, raw: const u8[:], kind: const u8[:], msg: const u8[:]) {
+    json_issue(d, raw, kind, msg);
+    json::fail(d.r, raw);
+}
+
+// Fatal for the reader only: used for the syntax of a value the reader cannot read at all.
 fn json_fail(d: JsonDecoder&, what: const u8[:]) { json::fail(d.r, what); }
 
 // Keeps the key as the field name, cut to the field's capacity.
@@ -133,15 +169,20 @@ fn json_set_field(d: JsonDecoder&, key: const u8[:]) {
 
 // Copies text into a bounded string, cut to its capacity.
 fn json_store<T>(dst: T&, text: const u8[:]) {
-    dst.clear();
-    let n = if text.len > dst.cap { dst.cap } else { text.len };
-    dst.append(text[..n]);
+    issue_put(dst, text);
 }
 
 fn json_int_in(d: JsonDecoder&, lo: i64, hi: i64) -> i64 {
     let v = json::read_int(d.r);
     if d.r.error.len > 0 { return 0; }
-    if v < lo || v > hi { json_fail(d, "integer out of range"); return 0; }
+    if v < lo {
+        json_issue(d, "integer out of range", "greater_than_equal", str("Input should be greater than or equal to ", lo));
+        return 0;
+    }
+    if v > hi {
+        json_issue(d, "integer out of range", "less_than_equal", str("Input should be less than or equal to ", hi));
+        return 0;
+    }
     return v;
 }
 
@@ -178,7 +219,10 @@ fn json_read_value<T>(d: JsonDecoder&, out: T&) {
         // is valid UTF-8 and the encoder's own check never fails on it later.
         if !valid_utf8(text) { json_fail(d, "invalid UTF-8 in string"); return; }
         if !json_is_bytes(out[..]) { json_fail(d, "expected an array"); return; }
-        if text.len > out.cap { json_fail(d, "string too long"); return; }
+        if text.len > out.cap {
+            json_reject(d, "string too long", "string_too_long", str("String should have at most ", out.cap, " characters"));
+            return;
+        }
         out.resize(text.len, json_elem_default(out[..]));
         json_copy_bytes(out[..], text);
         return;
@@ -189,23 +233,64 @@ fn json_read_value<T>(d: JsonDecoder&, out: T&) {
 
 // Limited arrays only (they have a cap): a full one fails the read instead of aborting.
 fn json_read_list<T>(d: JsonDecoder&, out: T&) {
+    let parent_field = d.field;
     out.clear();
     json::each_element(d.r) {
-        if out.len == out.cap { json_fail(d, "array too long"); return; }
+        if out.len == out.cap {
+            json_reject(d, "array too long", "too_long", str("List should have at most ", out.cap, " items"));
+            return;
+        }
         out.resize(out.len + 1, json_elem_default(out[..]));
+        json_store(d.field, str(parent_field[..], "[", out.len - 1, "]"));
         json_read_value(d, out[out.len - 1]);
+        d.field = parent_field;
     };
+    d.field = parent_field;
 }
 
-// Reads one object into out; returns the bit mask of the fields present.
-fn json_read_fields<T>(d: JsonDecoder&, out: T&) -> u64 {
+// Maps a reader error that no issue explains to its Pydantic type id.
+fn json_issue_raw(d: JsonDecoder&, raw: const u8[:]) {
+    if raw == "expected an integer" { json_issue(d, raw, "int_type", "Input should be a valid integer"); }
+    else if raw == "expected a number" { json_issue(d, raw, "float_type", "Input should be a valid number"); }
+    else if raw == "expected true or false" { json_issue(d, raw, "bool_type", "Input should be a valid boolean"); }
+    else if raw == "expected a string" { json_issue(d, raw, "string_type", "Input should be a valid string"); }
+    else if raw == "expected an array" { json_issue(d, raw, "list_type", "Input should be a valid list"); }
+    else if raw == "expected '{'" { json_issue(d, raw, "model_type", "Input should be a valid object"); }
+    else { json_issue(d, raw, "value_error", raw); }
+}
+
+// Reads the value of one member. A schema error is recorded, the reader goes back to the value,
+// skips it, and decoding goes on with the next member. Returns false when the value had an error
+// (an issue was recorded for it, or the reader failed on it).
+fn json_member<T>(d: JsonDecoder&, out: T&) -> bool {
+    json::peek(d.r);
+    let start = d.r.pos;
+    let before = d.count;
+    json_read_value(d, out);
+    if d.r.error.len == 0 { return d.count == before; }
+    if d.count == before { json_issue_raw(d, d.r.error); }
+    d.r.error = "";
+    d.r.error_at = 0;
+    d.r.pos = start;
+    json::skip(d.r);
+    return false;
+}
+
+// Reads one object into out. Returns the bit mask of the fields present; failed gets the bits of
+// the fields whose value had a schema error. Nested objects extend the scope with their key.
+fn json_read_fields_level<T>(d: JsonDecoder&, out: T&, failed: u64&) -> u64 {
     var count: i64 = 0;
     const for <N, A> in fields<T> { count++; }
     if count > 64 { abort("json: a struct has more than 64 fields"); }
+    failed = 0;
     if !check_json_keys<T>() {
-        json_fail(d, "duplicate JSON key name");
+        json_issue(d, "duplicate JSON key name", "value_error", "duplicate JSON key name");
         return 0;
     }
+    let outer = d.scope;
+    let parent_field = d.field;
+    let object_path = str(outer[..], parent_field[..]);
+    if d.field.len > 0 { json_store(d.scope, str(outer[..], d.field[..], ".")); }
     var seen: u64 = 0;
     json::each_member(d.r) { key =>
         json_set_field(d, key);
@@ -215,20 +300,46 @@ fn json_read_fields<T>(d: JsonDecoder&, out: T&) -> u64 {
             // A skipped field is unknown on the wire, as if the struct did not declare it.
             if !json_skip(out, N) && key == json_key(out, N) {
                 known = true;
-                if (seen & bit) != 0 { json_fail(d, "duplicate key"); return seen; }
-                seen |= bit;
-                json_read_value(d, out.A);
+                if (seen & bit) != 0 {
+                    json_issue(d, "duplicate key", "value_error", "Duplicate key");
+                    json::skip(d.r);
+                } else {
+                    seen |= bit;
+                    if !json_member(d, out.A) { failed |= bit; }
+                }
             }
             bit <<= 1;
         }
-        if !known { json_fail(d, "unknown key"); }
+        if !known {
+            json_issue(d, "unknown key", "extra_forbidden", "Extra inputs are not permitted");
+            json::skip(d.r);
+        }
     };
+    if d.r.error.len > 0 { json_issue_raw(d, d.r.error); }
+    else if d.track_objects && object_path.len > 0 {
+        if d.issues.objects.len < d.issues.objects.cap {
+            var object = ObjectFields { present: seen, failed: failed, .. };
+            issue_put(object.loc, object_path[..]);
+            d.issues.objects.push(object);
+        } else {
+            json_issue(d, "too many nested objects", "value_error", "Too many nested objects to validate (maximum 64)");
+        }
+    }
+    d.scope = outer;
+    d.field = parent_field;
     return seen;
 }
 
+// Reads one object into out; returns the bit mask of the fields present.
+fn json_read_fields<T>(d: JsonDecoder&, out: T&) -> u64 {
+    var failed: u64 = 0;
+    return json_read_fields_level(d, out, failed);
+}
+
 // Strict decode of text into a T: syntax is checked first, on the whole text, so a
-// later failure is a schema problem. Missing keys keep the declared defaults.
-fn json_decode<T>(text: const u8[:]) -> T, DecodeResult {
+// later failure is a schema problem. Schema errors are collected (see DecodeResult). Missing
+// keys keep the declared defaults.
+fn json_decode<T>(text: const u8[:], track_objects: bool = false) -> T, DecodeResult {
     var result = DecodeResult { .. };
     var value: T = T { .. };
     if !valid_utf8(text) {
@@ -243,15 +354,19 @@ fn json_decode<T>(text: const u8[:]) -> T, DecodeResult {
         result.syntax = true;
         return value, result;
     }
-    var d = JsonDecoder { r: json::reader(text), .. };
-    let present = json_read_fields(d, value);
-    if d.r.error.len > 0 {
-        json_store(result.error, d.r.error);
-        json_store(result.field, d.field);
+    var d = JsonDecoder { r: json::reader(text), track_objects: track_objects, .. };
+    var failed: u64 = 0;
+    let present = json_read_fields_level(d, value, failed);
+    result.present = present;
+    result.failed = failed;
+    result.issues = d.issues;
+    if d.count > 0 {
+        json_store(result.error, d.first[..]);
+        json_store(result.field, d.first_field[..]);
+        result.issues = d.issues;
         return value, result;
     }
     result.ok = true;
-    result.present = present;
     return value, result;
 }
 

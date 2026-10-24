@@ -85,6 +85,7 @@ def main():
                 ("http_parser", "tests/unit/http_parser.goose"),
                 ("app_routes", "tests/unit/app_routes.goose"), ("app_security", "tests/unit/app_security.goose"),
                 ("json_codec", "tests/unit/json_codec.goose"),
+                ("validation", "tests/unit/validation.goose"),
                 ("app_middleware", "tests/unit/app_middleware.goose"),
                 ("app_params", "tests/unit/app_params.goose"),
                 ("todo_store", "tests/unit/todo_store.goose"), ("todo_query", "tests/unit/todo_query.goose"),
@@ -126,6 +127,13 @@ def main():
                  "shared", "tcp_framing", "app_logging", "app_proxy", "app_etag", "app_shedding") + (("db",) if with_sqlite else ()):
         # Run from the repository root: the static file checks use tests/fixtures/static.
         subprocess.run([str(BUILD / name)], check=True, timeout=60, cwd=ROOT)
+    # Keep settings tests independent of the invoking shell's environment.
+    validation_env = {key: value for key, value in env.items() if not key.startswith("GW_VT_")}
+    validation_env.update(GW_VT_PORT="8080", GW_VT_DEBUG="yes", GW_VT_NAME="ann",
+                          GW_VT_TOKEN_FILE=str(ROOT / "tests/fixtures/validation/secret.txt"),
+                          GW_VT_LEVEL="x", GW_VT_KEY="abc",
+                          GW_VT_KEY_FILE=str(ROOT / "tests/fixtures/validation/secret.txt"), GW_VT_PIN="abc")
+    subprocess.run([str(BUILD / "validation")], env=validation_env, check=True, timeout=60, cwd=ROOT)
     with tempfile.TemporaryDirectory(prefix="goose-todo-unit-") as directory:
         subprocess.run([str(BUILD / "todo_store"), str(Path(directory) / "todos.json")], check=True, timeout=60)
     # Static files: a link inside the served tree is served, a link to a file outside it is refused.
@@ -161,6 +169,7 @@ def main():
                     "-o", str(BUILD / "shared_native")], check=True)
     subprocess.run([str(BUILD / "shared_native")], check=True)
     run_libfuzzer(with_sqlite)
+    subprocess.run([sys.executable, str(ROOT / "tests/unit/http_reader_test.py")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/http.py"), str(BUILD / "features")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/app.py"), str(BUILD / "app")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/routing.py"), str(BUILD / "routing")], env=env, check=True)

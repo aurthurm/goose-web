@@ -66,7 +66,9 @@ def main():
     subprocess.run([GOOSE, "build", str(ROOT / "server.goose"), "-o", str(binary)], check=True, cwd=ROOT)
 
     port = free_port()
-    process = subprocess.Popen([str(binary), "--port", str(port)], cwd=ROOT,
+    settings_env = {key: value for key, value in os.environ.items() if not key.startswith("APP_")}
+    settings_env.update(APP_TITLE="Test Notes", APP_MAX_NOTES="2")
+    process = subprocess.Popen([str(binary), "--port", str(port)], cwd=ROOT, env=settings_env,
                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     try:
         wait_ready(process, port)
@@ -90,6 +92,9 @@ def main():
         status, _, text = call(port, "POST", "/notes", {"text": "x", "extra": 1})
         expect(status == 422 and error_code(text) == "invalid_payload", "unknown key is 422 invalid_payload")
 
+        status, _, text = call(port, "POST", "/notes", {"text": "third"})
+        expect(status == 409 and error_code(text) == "notes_full", "APP_MAX_NOTES limits storage")
+
         status, _, text = call(port, "GET", "/notes")
         expect(status == 200 and [n["text"] for n in json.loads(text)] == ["first", "second"], "GET /notes lists both")
         status, _, text = call(port, "GET", "/notes?limit=1")
@@ -101,6 +106,7 @@ def main():
 
         status, headers, text = call(port, "GET", "/")
         expect(status == 200 and "text/html" in headers.get("Content-Type", ""), "GET / renders HTML")
+        expect("Test Notes" in text, "APP_TITLE configures the rendered page")
         expect("2 note(s)" in text and "<li>first</li>" in text and "second (pinned)" in text,
                "the template lists notes and escapes them")
 
@@ -121,6 +127,17 @@ def main():
             process.kill()
             output, _ = process.communicate()
     print("server output:", output.strip() or "(none)")
+    invalid = subprocess.Popen([str(binary), "--port", str(free_port())], cwd=ROOT,
+                               env=dict(settings_env, APP_MAX_NOTES="0"),
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        output, _ = invalid.communicate(timeout=5)
+        expect(invalid.returncode != 0 and "invalid APP_ settings" in output,
+               "invalid application settings stop startup")
+    finally:
+        if invalid.poll() is None:
+            invalid.kill()
+            invalid.wait()
     print("all starter checks passed")
 
 

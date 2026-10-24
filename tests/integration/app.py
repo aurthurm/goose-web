@@ -130,7 +130,7 @@ def test_app(executable):
 
         status, _, body = send_json(b'{"title":"a","zzz":1}')
         assert status == 422 and json.loads(body)["error"]["code"] == "invalid_payload", body
-        assert b"zzz: unknown key" in body, body
+        assert b"zzz: Extra inputs are not permitted" in body, body
 
         status, fields, _ = exchange(port, b"OPTIONS /api/items HTTP/1.1\r\nHost: x\r\nOrigin: https://a.example\r\n"
                                      b"Access-Control-Request-Method: POST\r\n"

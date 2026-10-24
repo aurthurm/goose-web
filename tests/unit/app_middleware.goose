@@ -102,24 +102,25 @@ fn test_body_422() {
     let a, ok = body<ItemIn>(long);
     assert(!ok);
     expect_error(long, web::HTTP_UNPROCESSABLE_CONTENT, "\"code\":\"invalid_payload\"");
-    assert(find(web::body_of(long.response), "title: string too long") >= 0);
+    assert(find(web::body_of(long.response), "title: String should have at most 16 characters") >= 0);
+    assert(find(web::body_of(long.response), "\"type\":\"string_too_long\"") >= 0);
 
     var typed = make_ctx("PATCH", "/items", "Host: x\r\nContent-Type: application/json\r\n", "{\"done\":\"yes\"}");
     let b, ok2 = body<Patch>(typed);
     assert(!ok2);
     expect_error(typed, web::HTTP_UNPROCESSABLE_CONTENT, "\"code\":\"invalid_payload\"");
-    assert(find(web::body_of(typed.response), "done: expected true or false") >= 0);
+    assert(find(web::body_of(typed.response), "done: Input should be a valid boolean") >= 0);
 
     var unknown = make_ctx("POST", "/items", "Host: x\r\nContent-Type: application/json\r\n", "{\"title\":\"a\",\"zzz\":1}");
     let c, ok3 = body<ItemIn>(unknown);
     assert(!ok3);
-    assert(find(web::body_of(unknown.response), "zzz: unknown key") >= 0);
+    assert(find(web::body_of(unknown.response), "zzz: Extra inputs are not permitted") >= 0);
 
     var array = make_ctx("POST", "/items", "Host: x\r\nContent-Type: application/json\r\n", "[1]");
     let d, ok4 = body<ItemIn>(array);
     assert(!ok4);
     expect_error(array, web::HTTP_UNPROCESSABLE_CONTENT, "\"code\":\"invalid_payload\"");
-    assert(find(web::body_of(array.response), "expected '{'") >= 0);
+    assert(find(web::body_of(array.response), "Input should be a valid object") >= 0);
 }
 
 // --- c.json, c.json_list ----------------------------------------------------------

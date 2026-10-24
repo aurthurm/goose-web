@@ -2,6 +2,7 @@ import src.constants.http;
 import src.constants.limits;
 import src.json.codec;
 import src.app.context;
+import src.app.validation;
 import std;
 import json;
 namespace web;
@@ -26,7 +27,7 @@ struct OpenApiInfo {
     docs_path: const u8[:] = "/docs",
 }
 
-const OAS_ERROR_SCHEMA = "{\"type\":\"object\",\"required\":[\"error\"],\"properties\":{\"error\":{\"type\":\"object\",\"required\":[\"code\",\"message\"],\"properties\":{\"code\":{\"type\":\"string\"},\"message\":{\"type\":\"string\"}}}}}";
+const OAS_ERROR_SCHEMA = "{\"type\":\"object\",\"required\":[\"error\"],\"properties\":{\"error\":{\"type\":\"object\",\"required\":[\"code\",\"message\"],\"properties\":{\"code\":{\"type\":\"string\"},\"message\":{\"type\":\"string\"}}},\"detail\":{\"type\":\"array\",\"maxItems\":16,\"items\":{\"type\":\"object\",\"required\":[\"loc\",\"msg\",\"type\"],\"properties\":{\"loc\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"msg\":{\"type\":\"string\"},\"type\":{\"type\":\"string\"}}}},\"truncated\":{\"type\":\"boolean\"}}}";
 const OAS_DOCS_PAGE_START = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>API reference</title><link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css\"></head><body><div id=\"swagger-ui\"></div><script src=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js\"></script><script>window.onload = function () { SwaggerUIBundle({ url: ";
 const OAS_DOCS_PAGE_END = ", dom_id: \"#swagger-ui\" }); };</script></body></html>\n";
 
@@ -137,12 +138,89 @@ fn csv_has(list: const u8[:], name: const u8[:]) -> bool {
     }
 }
 
-// An object schema from struct T: properties in declaration order, required unless optional.
-// Property names are the JSON names (json_key); skipped fields are left out. optional_fields
-// lists declared names, as has<T> does.
+// Copies an object schema without one top-level keyword. Parsing the value boundaries avoids
+// accidentally removing a keyword from the item schema of an array or a nested object.
+fn schema_drop(out: u8[>..]&, part: const u8[:], key: const u8[:]) {
+    var reader = json::reader(part);
+    var first = true;
+    out.push('{');
+    json::each_member(reader) { name =>
+        json::peek(reader);
+        let start = reader.pos;
+        json::skip(reader);
+        if name != key {
+            if !first { out.push(','); }
+            first = false;
+            json::format_key(out, name);
+            out.append(part[start..reader.pos]);
+        }
+    };
+    out.push('}');
+}
+
+// The constraint keywords of a rule, each with its leading comma (JSON Schema, from the same
+// table the validator uses). Builtin patterns are documented by their regex.
+fn schema_keywords(out: u8[>..]&, rule: FieldRule&) {
+    if rule.has_min_len { out.append(",\"minLength\":"); format(out, rule.min_len); }
+    if rule.has_max_len { out.append(",\"maxLength\":"); format(out, rule.max_len); }
+    if rule.has_min_items { out.append(",\"minItems\":"); format(out, rule.min_items); }
+    if rule.has_max_items { out.append(",\"maxItems\":"); format(out, rule.max_items); }
+    if rule.has_ge { out.append(",\"minimum\":"); format(out, rule.ge); }
+    if rule.has_gt { out.append(",\"exclusiveMinimum\":"); format(out, rule.gt); }
+    if rule.has_le { out.append(",\"maximum\":"); format(out, rule.le); }
+    if rule.has_lt { out.append(",\"exclusiveMaximum\":"); format(out, rule.lt); }
+    if rule.has_multiple { out.append(",\"multipleOf\":"); format(out, rule.multiple_of); }
+    if rule.pattern_kind != PATTERN_NONE {
+        out.append(",\"pattern\":");
+        json::format_string(out, pattern_regex(rule.pattern_kind));
+    }
+    if rule.format_kind == FORMAT_EMAIL { out.append(",\"format\":\"email\""); }
+    if rule.format_kind == FORMAT_URI { out.append(",\"format\":\"uri\""); }
+}
+
+// The schema of one field: its type schema with the rule's constraints. A rule's maxLength or
+// maxItems replaces the one the capacity implies, so the document never repeats a key.
+fn json_schema_rule<T>(out: u8[>..]&, v: T&, rule: FieldRule&) {
+    var part: u8[>..] = [];
+    json_schema_value(part, v);
+    // A rule may tighten a type bound, but cannot widen the range its decoder accepts.
+    var effective = rule;
+    var reader = json::reader(part[..]);
+    json::each_member(reader) { key =>
+        if key == "minimum" && effective.has_ge {
+            let bound = json::read_int(reader);
+            if effective.ge < bound { effective.ge = bound; }
+        } else if key == "maximum" && effective.has_le {
+            let bound = json::read_int(reader);
+            if effective.le > bound { effective.le = bound; }
+        } else { json::skip(reader); }
+    };
+    var constraints: u8[>..] = [];
+    schema_keywords(constraints, effective);
+    if constraints.len == 0 {
+        out.append(part[..]);
+        return;
+    }
+    var step: u8[>..] = [];
+    if rule.has_max_len { schema_drop(step, part[..], "maxLength"); } else { step.append(part[..]); }
+    var base: u8[>..] = [];
+    if rule.has_max_items { schema_drop(base, step[..], "maxItems"); } else { base.append(step[..]); }
+    var lower: u8[>..] = [];
+    if rule.has_ge { schema_drop(lower, base[..], "minimum"); } else { lower.append(base[..]); }
+    var bounds: u8[>..] = [];
+    if rule.has_le { schema_drop(bounds, lower[..], "maximum"); } else { bounds.append(lower[..]); }
+    out.append(bounds[..bounds.len - 1]);
+    out.append(constraints[..]);
+    out.push('}');
+}
+
+// An object schema from struct T: properties in declaration order. A field with a rule is
+// required when the rule says so; other fields are required unless optional_fields lists them.
+// Property names are the JSON names (json_key); skipped fields are left out.
 fn json_schema_fields<T>(out: u8[>..]&, v: T&) {
     if !check_json_keys<T>() { abort("json: duplicate JSON key names (json_key) in a documented struct"); }
     let skipped = optional_fields(v);
+    let rs = rules_for(v);
     var req: u8[>..] = [];
     var first = true;
     out.append("{\"type\":\"object\",\"properties\":{");
@@ -151,8 +229,12 @@ fn json_schema_fields<T>(out: u8[>..]&, v: T&) {
             if !first { out.push(','); }
             first = false;
             json::format_key(out, json_key(v, N));
-            json_schema_value(out, v.A);
-            if !csv_has(skipped, N) {
+            let at = rule_index(rs, N);
+            var rule = FieldRule { .. };
+            if at >= 0 { rule = rs.items[at]; }
+            json_schema_rule(out, v.A, rule);
+            let required = if at >= 0 { rule.required } else { !csv_has(skipped, N) };
+            if required {
                 if req.len > 0 { req.push(','); }
                 json::format_string(req, json_key(v, N));
             }
@@ -230,14 +312,22 @@ fn query_params<T>(c: Ctx&) {
     if c.pass != PASS_DESCRIBE { return; }
     if !check_json_keys<T>() { abort("json: duplicate JSON key names (json_key) in a query struct"); }
     var sample: T = T { .. };
+    let rs = rules_for(sample);
     var item: u8[>..] = [];
     const for <N, A> in fields<T> {
         if !json_skip(sample, N) {
             if item.len > 0 { item.push(','); }
+            let at = rule_index(rs, N);
+            var rule = FieldRule { .. };
+            if at >= 0 { rule = rs.items[at]; }
             item.append("{\"name\":");
             json::format_string(item, json_key(sample, N));
-            item.append(",\"in\":\"query\",\"required\":false,\"schema\":");
-            json_schema_value(item, sample.A);
+            if rule.required {
+                item.append(",\"in\":\"query\",\"required\":true,\"schema\":");
+            } else {
+                item.append(",\"in\":\"query\",\"required\":false,\"schema\":");
+            }
+            json_schema_rule(item, sample.A, rule);
             item.push('}');
         }
     }
