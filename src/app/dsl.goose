@@ -4,6 +4,7 @@ import src.app.params;
 import src.app.templates;
 import src.app.session;
 import src.app.csrf;
+import src.app.auth;
 import std;
 namespace web;
 
@@ -95,6 +96,16 @@ fn ::session_clear(c: web::Ctx&) { web::session_clear(c); }
 // CSRF. csrf(c, secret) { ... } guards the block; csrf_token(c) gives the token for forms.
 fn ::csrf<F>(c: web::Ctx&, secret: const u8[:], check_origin: bool = false) { web::csrf(c, secret, check_origin, F); }
 fn ::csrf_token(c: web::Ctx&) -> const u8[:] { return web::csrf_token(c); }
+
+// Authentication (docs/api.md#authentication). basic_auth(c, realm, check) { ... } and
+// bearer_auth(c, secret) { ... } guard the block; auth_subject(c) is the verified subject inside it.
+// check is a named function (user, password) -> bool, passed as a generic function value.
+fn ::basic_auth<Check, F>(c: web::Ctx&, realm: const u8[:]) { web::basic_auth(c, realm, Check, F); }
+fn ::bearer_auth<F>(c: web::Ctx&, secret: const u8[:]) { web::bearer_auth(c, secret, F); }
+fn ::auth_subject(c: web::Ctx&) -> const u8[:] { return web::auth_subject(c); }
+
+// Redirects to a target taken from the request: local absolute paths only (400 otherwise).
+fn ::redirect_local(c: web::Ctx&, target: const u8[:], code: i32 = web::HTTP_FOUND) { web::redirect_local(c, target, code); }
 
 // OpenAPI. web::openapi(c, info) { c.routes() { ... } } serves the document; annotations
 // are no-ops except in the describe pass. Generic type arguments need the web:: form.

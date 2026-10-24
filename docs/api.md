@@ -331,7 +331,8 @@ Field names are emitted as declared, in declaration order, with no whitespace.
   it returns false and `out` is unchanged. Bytes are escaped per the stdlib writer.
 - `json_decode<T>(text) -> T, DecodeResult` is strict: unknown keys, duplicate keys, wrong
   types, out-of-range integers, overlong strings, full arrays, invalid UTF-8 and trailing
-  input are errors. Missing keys keep the declared defaults (`T { .. }`).
+  input are errors. Escapes are decoded before the check, so `\uD800` (an unpaired surrogate) decodes to bytes
+  that are not UTF-8 and is refused as `invalid UTF-8 in string`. Missing keys keep the declared defaults (`T { .. }`).
 - `DecodeResult { ok, syntax, error: u8[..128], field: u8[..64], present: u64 }`. `syntax`
   is true when the text is not JSON at all (map to 400); other errors are schema problems
   (map to 422). `field` is the key where the first error occurred. `present` bit i is set
@@ -422,7 +423,7 @@ there. Inside namespace `web` call `web::name(c, ...)` directly.
 | `c.text(s)`, `c.html(s)`, `c.json_raw(s)` | content type and body; over capacity → 500 `response_too_large` |
 | `c.json(value)`, `c.json_list(items)` | JSON responses (below) |
 | `c.body<T>()` (see below) | request body; written as `body<T>(c)` |
-| `c.no_content()`, `c.redirect(location, code)`, `c.fail(status, code, message)` | responses |
+| `c.no_content()`, `c.redirect(location, code)`, `c.redirect_local(target, code)`, `c.fail(status, code, message)` | responses; `redirect_local` accepts only a local absolute path (anything else is 400 `invalid_redirect`), so use it for targets taken from a request |
 | `c.done()` | true once a response was written; middleware can short-circuit on it |
 
 `c.body<T>()` is spelled `body<T>(c)`: the parser does not accept explicit type arguments on a
@@ -480,6 +481,8 @@ The runtime fills `Request.peer` from `getpeername` when it accepts a connection
 so behind a proxy every client shares the proxy's address.
 | `session(c, config) { }` | loads the signed session cookie, exposes `session_get`/`session_set`/`session_clear`, and re-issues the cookie after the block only when the store changed. See [Sessions](#sessions) |
 | `csrf(c, secret, check_origin = false) { }` | safe methods pass and receive a token cookie; unsafe methods need the token echoed in `X-CSRF-Token` or `csrf_token`, else 403 `csrf_failed`. See [CSRF](#csrf) |
+| `basic_auth(c, realm, check) { }` | HTTP Basic: `check(user, password)` is a named function returning bool; a true result stores the user for `c.auth_subject()` and runs the block; anything else is 401 with a `WWW-Authenticate` challenge. See [Authentication](#authentication) |
+| `bearer_auth(c, secret) { }` | `Authorization: Bearer` token verified with `verify_token`; the subject is stored like `basic_auth`; otherwise 401 `unauthorized`. See [Authentication](#authentication) |
 
 ### JSON responses and request bodies
 
@@ -717,6 +720,75 @@ Security notes:
 - `multipart/form-data` bodies are not parsed. Send the token in `X-CSRF-Token` from such forms,
   through script, or use a URL-encoded form.
 
+### Authentication
+
+Password hashing, HTTP Basic and Bearer middleware, and HMAC-signed tokens. The design and the
+threat model are in [Security](security.md#password-hashing).
+
+```goose
+const ALICE_HASH = "$pbkdf2-sha256$600000$...";     // from web::hash_password, stored by the app
+
+fn check_login(user: const u8[:], password: const u8[:]) -> bool {
+    return user == "alice" && web::verify_password(password, ALICE_HASH);
+}
+
+c.get("/admin") {
+    c.basic_auth("Admin", check_login) {
+        c.text(c.auth_subject());    // the verified user, "alice"
+    };
+};
+```
+
+Password hashes (namespace `web`):
+
+- `hash_password(password) -> u8[..128], bool` hashes with PBKDF2-HMAC-SHA256 (RFC 8018), 600000
+  iterations and a 16-byte salt from the CSPRNG. The result is
+  `$pbkdf2-sha256$<iterations>$<salt base64url>$<hash base64url>`, unpadded base64url. The bool is
+  false only when no random source answers, and then nothing is returned.
+- `hash_password_iterations(password, iterations) -> u8[..128], bool` uses an explicit count,
+  1 to 10000000. Counts below the default weaken the hash; they are for tests.
+- `verify_password(password, encoded) -> bool` compares the derived key with the stored hash in
+  constant time. It reads the count and salt from the hash, so old hashes keep working when the
+  default changes. A malformed, unsupported or over-limit encoding returns false.
+
+Middleware (`c.basic_auth(...)`, `c.bearer_auth(...)`, or `web::basic_auth(c, ...)` inside namespace
+`web`):
+
+- `basic_auth(c, realm, check) { next }` reads `Authorization: Basic`, decodes the standard base64
+  credentials and splits them at the first `:`. `check` is a named function
+  `fn(user: const u8[:], password: const u8[:]) -> bool`, passed after the realm. When it returns
+  true, the user is stored for `c.auth_subject()` and `next` runs. Otherwise the response is 401
+  `unauthorized` with `WWW-Authenticate: Basic realm="...", charset="UTF-8"`, and `next` does not
+  run. The realm is printable text of at most 128 bytes without `"` or `\`; a bad realm is a
+  programmer error (assert). Users over 64 bytes are refused.
+- `bearer_auth(c, secret) { next }` reads `Authorization: Bearer <token>` (scheme compared
+  case-insensitively), verifies the token with `verify_token`, stores the subject, and runs `next`.
+  Otherwise it answers 401 `unauthorized` with `WWW-Authenticate: Bearer` (no token given) or
+  `Bearer error="invalid_token"`. `secret` must be at least 32 bytes.
+- `c.auth_subject()` returns the subject that a verifying middleware stored, or `""` when none did.
+  A handler behind no middleware never sees a subject, so an empty result means "not verified".
+- `bearer_token(c)` returns the raw token text without verifying it. Do not trust it on its own.
+
+Signed tokens (namespace `web`), for APIs that issue bearer credentials:
+
+- `sign_token(secret, subject, ttl) -> u8[..256], bool` makes a token for `subject` (1 to 64 bytes)
+  valid for `ttl` seconds (1 to 315360000) from now. It refuses a secret under 32 bytes and an
+  unavailable clock, and then returns false with an empty token.
+- `verify_token(secret, token) -> u8[..64], bool` returns the subject when the token is well formed,
+  correctly tagged, not expired, and not issued more than 60 seconds in the future. `verify_token_at`
+  takes the clock as an argument, for tests.
+
+The token is `base64url(payload) "." base64url(tag)`, with
+`tag = HMAC-SHA256(secret, "gw-token|" || base64url(payload))`. The payload is a version byte (1),
+the issue time, the expiry time (each 8 bytes, big-endian Unix seconds) and the subject. It is not
+JWT, deliberately: there is no algorithm field for a verifier to trust, so `"alg": "none"` and
+key-confusion attacks have nothing to act on. Tokens are bearer credentials. There is no revocation;
+keep `ttl` short, and rotate the secret to sign everyone out.
+
+Password verification is CPU-bound: each check runs the full iteration count. The unit suite's
+default-count hash and verify take a few seconds in its unoptimized debug build; measure the cost on
+the target hardware before choosing a count. Use `rate_limit` on login routes.
+
 ### Static files
 
 `c.static_files(url_prefix, directory) { next }` is middleware. It serves GET and HEAD requests under
@@ -768,7 +840,8 @@ happens. Each read is bounded before any byte of the file is copied:
    `file_read_failed`. Before this change these cases answered 404.
 
 Keep served trees small and trusted, or serve
-large assets elsewhere. Symbolic links inside the directory are followed.
+large assets elsewhere. Symbolic links are followed only when their real target lies inside the
+directory; a link that leaves it answers 404 `not_found` and its target is never read.
 
 The framework reads files and the environment through `src/sys/`, not the `os` stdlib. Importing
 `os` into framework code made its global names (`read_file`, `is_dir`, `clock_ns`, ...) ambiguous
@@ -869,7 +942,7 @@ Blocking: each file is read whole with `read_file` on the reactor thread, and no
 served while that happens. The `os` stdlib has no file size query, so the read itself is not
 bounded by the response capacity. The response is: a body over `MAX_RESPONSE_BODY_BYTES` becomes
 500 `response_too_large`. Keep served trees small and trusted, or serve large assets elsewhere.
-Symbolic links inside the directory are followed.
+Symbolic links are followed only when their real target lies inside the directory (see Static files).
 
 ### OpenAPI
 

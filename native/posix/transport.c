@@ -80,12 +80,15 @@ int64_t gw_peer_address(int32_t fd, gw_bytes out) {
 }
 
 int64_t gw_recv(int32_t fd, gw_bytes bytes) {
+    /* A negative length would wrap to a huge size_t; refuse it before the call. */
+    if (bytes.len < 0 || (bytes.len > 0 && bytes.data == NULL)) return GW_IO_ERROR;
     ssize_t n = recv(fd, bytes.data, (size_t)bytes.len, 0);
     if (n >= 0) return n;
     return errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR ? GW_IO_WOULD_BLOCK : GW_IO_ERROR;
 }
 
 int64_t gw_send(int32_t fd, gw_bytes bytes) {
+    if (bytes.len < 0 || (bytes.len > 0 && bytes.data == NULL)) return GW_IO_ERROR;
 #ifdef MSG_NOSIGNAL
     ssize_t n = send(fd, bytes.data, (size_t)bytes.len, MSG_NOSIGNAL);
 #else

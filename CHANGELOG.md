@@ -8,6 +8,30 @@ The entries before 0.6.0 were design milestones, not published releases. They ar
 from [ROADMAP.md](ROADMAP.md) and the design notes in [docs/design/app-api.md](docs/design/app-api.md),
 because the repository has no tag history for them.
 
+## Unreleased
+
+### Added
+
+- Authentication: `hash_password`, `hash_password_iterations` and `verify_password` (PBKDF2-HMAC-SHA256,
+  600000 iterations by default), `basic_auth` and `bearer_auth` middleware with `c.auth_subject()`,
+  and `sign_token` and `verify_token` (HMAC-signed tokens, not JWT). See [docs/api.md](docs/api.md#authentication).
+- `redirect_local`, which accepts only local paths for targets taken from a request.
+- Fuzz programs for JSON, query, cookie and form parsing, template rendering and static paths, and clang
+  libFuzzer harnesses for the C byte-slice and SQLite shims.
+
+### Changed
+
+- Static files: a symbolic link whose real target lies outside the served directory answers 404. Links
+  that stay inside are still followed.
+- JSON decoding refuses a string whose escapes decode to bytes that are not valid UTF-8 (for example a
+  lone `\uD800`).
+
+### Security notes
+
+- The security review, its findings and their status are in [docs/security.md](docs/security.md).
+  Fixed in this release: static-file symlink escape, signalling and reaping pid 0 or a negative pid,
+  a `getrandom` zero-return loop, negative lengths in socket calls, and invalid UTF-8 from JSON escapes.
+
 ## 0.6.0
 
 First release that can be consumed as a fetched package (`import goose_web from "aurthurm/goose-web@v0.6.0";`).

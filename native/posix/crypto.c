@@ -1,5 +1,5 @@
-/* SHA-256, HMAC-SHA256 (FIPS 180-4, RFC 2104), random bytes, constant-time comparison and
-   base64url (RFC 4648 section 5, unpadded). Each function borrows its arguments for the call
+/* SHA-256, HMAC-SHA256 (FIPS 180-4, RFC 2104), PBKDF2-HMAC-SHA256 (RFC 8018), random bytes,
+   constant-time comparison and base64url (RFC 4648 section 5, unpadded). Each function borrows its arguments for the call
    only and keeps no Goose pointers. Sizes are checked against the caller's buffers; a
    failing check returns an error value instead of writing past the end. */
 #define _POSIX_C_SOURCE 200809L
@@ -18,6 +18,13 @@ typedef struct { uint8_t *data; int64_t len; } gw_bytes;
 #define GW_SHA256_DIGEST_BYTES 32
 #define GW_SHA256_BLOCK_BYTES 64
 #define GW_BASE64URL_ERROR (-1)
+
+/* Overwrites secret material so it does not stay on the stack. The volatile pointer keeps the
+   compiler from removing the stores as dead. */
+static void gw_wipe(void *memory, size_t length) {
+    volatile uint8_t *at = (volatile uint8_t *)memory;
+    while (length-- > 0) *at++ = 0;
+}
 
 static const uint32_t gw_sha256_k[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -144,6 +151,83 @@ int32_t gw_hmac_sha256(gw_bytes key, gw_bytes message, gw_bytes out) {
     gw_sha256_update(&ctx, pad, sizeof(pad));
     gw_sha256_update(&ctx, inner, sizeof(inner));
     gw_sha256_final(&ctx, out.data);
+    gw_wipe(block_key, sizeof(block_key));
+    gw_wipe(pad, sizeof(pad));
+    return 0;
+}
+
+/* Keyed HMAC-SHA256 state: the SHA-256 contexts after the inner and outer key pads, so each
+   further HMAC costs only its message blocks. PBKDF2 reuses one key for every iteration. */
+typedef struct {
+    gw_sha256_ctx inner;
+    gw_sha256_ctx outer;
+} gw_hmac_key;
+
+static void gw_hmac_key_setup(gw_hmac_key *key, gw_bytes secret) {
+    uint8_t block_key[GW_SHA256_BLOCK_BYTES];
+    uint8_t pad[GW_SHA256_BLOCK_BYTES];
+    memset(block_key, 0, sizeof(block_key));
+    if (secret.len > GW_SHA256_BLOCK_BYTES) {
+        gw_bytes hashed = {secret.data, secret.len};
+        gw_bytes digest = {block_key, GW_SHA256_DIGEST_BYTES};
+        gw_sha256(hashed, digest);
+    } else if (secret.len > 0) {
+        memcpy(block_key, secret.data, (size_t)secret.len);
+    }
+    for (size_t i = 0; i < GW_SHA256_BLOCK_BYTES; i++) pad[i] = block_key[i] ^ 0x36;
+    gw_sha256_init(&key->inner);
+    gw_sha256_update(&key->inner, pad, sizeof(pad));
+    for (size_t i = 0; i < GW_SHA256_BLOCK_BYTES; i++) pad[i] = block_key[i] ^ 0x5c;
+    gw_sha256_init(&key->outer);
+    gw_sha256_update(&key->outer, pad, sizeof(pad));
+    gw_wipe(block_key, sizeof(block_key));
+    gw_wipe(pad, sizeof(pad));
+}
+
+/* Finishes an HMAC whose inner message has been absorbed into inner_ctx (a copy of key->inner). */
+static void gw_hmac_key_finish(const gw_hmac_key *key, gw_sha256_ctx *inner_ctx, uint8_t out[32]) {
+    uint8_t inner[GW_SHA256_DIGEST_BYTES];
+    gw_sha256_final(inner_ctx, inner);
+    gw_sha256_ctx outer = key->outer;
+    gw_sha256_update(&outer, inner, sizeof(inner));
+    gw_sha256_final(&outer, out);
+}
+
+/* PBKDF2-HMAC-SHA256 (RFC 8018 section 5.2). Fills out with derived key material: block i of
+   32 bytes is T_i = U_1 xor ... xor U_c, where U_1 = HMAC(password, salt || INT_32_BE(i)) and
+   U_j = HMAC(password, U_(j-1)). iterations is 1..2^32-1 and out holds 1..1024 bytes. Returns 0
+   on success, -1 on bad arguments. The derived key is not written on failure. */
+#define GW_PBKDF2_MAX_OUTPUT_BYTES 1024
+int32_t gw_pbkdf2_sha256(gw_bytes password, gw_bytes salt, int64_t iterations, gw_bytes out) {
+    if (password.len < 0 || salt.len < 0 || iterations < 1 || iterations > 0xFFFFFFFFLL ||
+        out.len < 1 || out.len > GW_PBKDF2_MAX_OUTPUT_BYTES) return -1;
+    gw_hmac_key key;
+    gw_hmac_key_setup(&key, password);
+    uint8_t u[GW_SHA256_DIGEST_BYTES], t[GW_SHA256_DIGEST_BYTES];
+    uint8_t derived[GW_PBKDF2_MAX_OUTPUT_BYTES];
+    uint32_t index = 1;
+    for (int64_t offset = 0; offset < out.len; index++) {
+        uint8_t counter[4] = {(uint8_t)(index >> 24), (uint8_t)(index >> 16), (uint8_t)(index >> 8), (uint8_t)index};
+        gw_sha256_ctx ctx = key.inner;
+        if (salt.len > 0) gw_sha256_update(&ctx, salt.data, (size_t)salt.len);
+        gw_sha256_update(&ctx, counter, sizeof(counter));
+        gw_hmac_key_finish(&key, &ctx, u);
+        memcpy(t, u, sizeof(t));
+        for (int64_t j = 1; j < iterations; j++) {
+            gw_sha256_ctx step = key.inner;
+            gw_sha256_update(&step, u, sizeof(u));
+            gw_hmac_key_finish(&key, &step, u);
+            for (size_t k = 0; k < sizeof(t); k++) t[k] ^= u[k];
+        }
+        int64_t take = out.len - offset < GW_SHA256_DIGEST_BYTES ? out.len - offset : GW_SHA256_DIGEST_BYTES;
+        memcpy(derived + offset, t, (size_t)take);
+        offset += take;
+    }
+    memcpy(out.data, derived, (size_t)out.len);
+    gw_wipe(derived, sizeof(derived));
+    gw_wipe(u, sizeof(u));
+    gw_wipe(t, sizeof(t));
+    gw_wipe(&key, sizeof(key));
     return 0;
 }
 
@@ -160,6 +244,8 @@ int32_t gw_random_bytes(gw_bytes out) {
             if (errno == EINTR) continue;
             break;
         }
+        /* A nonzero request never legitimately returns 0; treat it as failure, not a retry. */
+        if (n == 0) break;
         total += (size_t)n;
     }
     if (total == want) return 1;

@@ -40,6 +40,11 @@ int main(void) {
 
     /* A pid that is not our child is reaped at once with status -1 (ECHILD). */
     assert(gw_wait_child(999999, &status) == GW_CHILD_REAPED && status == -1);
+    /* pid 0 and negative pids name a process group or every child: both are refused, so no signal
+       reaches this group and no unrelated child is reaped. */
+    assert(gw_kill(0, SIGTERM) == GW_IO_ERROR && gw_kill(-1, SIGTERM) == GW_IO_ERROR);
+    assert(gw_wait_child(0, &status) == GW_CHILD_REAPED && status == -1);
+    assert(gw_wait_child(-1, &status) == GW_CHILD_REAPED && status == -1);
 
     /* Records cross the pipe whole. An empty pipe reads WOULD_BLOCK; after the writer closes, EOF. */
     int32_t read_end = -1, write_end = -1;

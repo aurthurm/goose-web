@@ -23,6 +23,39 @@ def sqlite_available(cc):
         return result.returncode == 0
 
 
+FUZZ_SECONDS = int(os.environ.get("GOOSE_FUZZ_SECONDS", "10"))
+
+
+def clang_fuzzer_available():
+    """libFuzzer and AddressSanitizer need clang. Probe by building a one-function harness."""
+    probe = ("#include <stdint.h>\n#include <stddef.h>\n"
+             "int LLVMFuzzerTestOneInput(const uint8_t *d, size_t n) { (void)d; (void)n; return 0; }\n")
+    with tempfile.TemporaryDirectory(prefix="goose-fuzzer-probe-") as directory:
+        source = Path(directory) / "probe.c"
+        source.write_text(probe)
+        result = subprocess.run(["clang", "-fsanitize=fuzzer,address", str(source),
+                                 "-o", str(Path(directory) / "probe")], capture_output=True)
+        return result.returncode == 0
+
+
+def run_libfuzzer(with_sqlite):
+    """Bounded libFuzzer runs of the C byte-slice and SQLite shim harnesses. Each runs for
+    GOOSE_FUZZ_SECONDS (default 10) and writes any crash input under build/. Skipped without clang."""
+    if not clang_fuzzer_available():
+        print("SKIP: clang with -fsanitize=fuzzer,address not found; skipping the libFuzzer harnesses "
+              "(see docs/security.md for the commands)", flush=True)
+        return
+    harnesses = [("codec_fuzz", "tests/fuzz/native/codec_fuzz.c", [])]
+    if with_sqlite:
+        harnesses.append(("sqlite_fuzz", "tests/fuzz/native/sqlite_fuzz.c", ["-lsqlite3"]))
+    for name, source, libraries in harnesses:
+        subprocess.run(["clang", "-std=c11", "-g", "-O1", "-Wall", "-Wextra", "-Werror",
+                        "-fsanitize=fuzzer,address", str(ROOT / source), *libraries, "-o", str(BUILD / name)],
+                       check=True)
+        subprocess.run([str(BUILD / name), f"-max_total_time={FUZZ_SECONDS}", "-seed=20261022",
+                        f"-artifact_prefix={BUILD}/"], check=True, timeout=FUZZ_SECONDS + 300)
+
+
 def check_version():
     """The VERSION file and web::VERSION in src/constants/runtime.goose must name the same release."""
     version = (ROOT / "VERSION").read_text().strip()
@@ -61,7 +94,10 @@ def main():
                 ("app_openapi", "tests/unit/app_openapi.goose"), ("sse", "tests/unit/sse.goose"),
                 ("app_templates", "tests/unit/app_templates.goose"),
                 ("sessions", "tests/unit/sessions.goose"), ("csrf", "tests/unit/csrf.goose"),
-                ("parser_fuzz", "tests/fuzz/parser.goose"), ("features", "tests/fixtures/features.goose"),
+                ("parser_fuzz", "tests/fuzz/parser.goose"), ("json_fuzz", "tests/fuzz/json.goose"),
+                ("input_fuzz", "tests/fuzz/input.goose"), ("template_fuzz", "tests/fuzz/template.goose"),
+                ("static_fuzz", "tests/fuzz/static.goose"), ("auth", "tests/unit/auth.goose"),
+                ("features", "tests/fixtures/features.goose"),
                 ("app", "tests/fixtures/app.goose"), ("routing", "tests/fixtures/routing.goose"),
                 ("hello", "examples/hello/server.goose"),
                 ("pages", "examples/pages/server.goose"), ("server", "examples/basic/server.goose"),
@@ -74,12 +110,21 @@ def main():
                        env=env, check=True, cwd=ROOT)
     for name in ("core", "router", "application", "app_routes", "app_security", "app_middleware", "app_params", "constants",
                  "http_parser", "json_codec", "todo_query", "todo_api", "app_openapi", "app_templates", "parser_fuzz",
+                 "json_fuzz", "input_fuzz", "template_fuzz", "static_fuzz", "auth",
                  "app_config", "global_names", "sse", "sessions", "csrf") + (("db",) if with_sqlite else ()):
         # Run from the repository root: the static file checks use tests/fixtures/static.
         subprocess.run([str(BUILD / name)], check=True, timeout=60, cwd=ROOT)
     with tempfile.TemporaryDirectory(prefix="goose-todo-unit-") as directory:
         subprocess.run([str(BUILD / "todo_store"), str(Path(directory) / "todos.json")], check=True, timeout=60)
-    with tempfile.TemporaryDirectory(prefix="goose-static-unit-") as directory:
+    # Static files: a link inside the served tree is served, a link to a file outside it is refused.
+    with tempfile.TemporaryDirectory(prefix="goose-static-unit-") as directory, \
+            tempfile.TemporaryDirectory(prefix="goose-static-outside-") as outside:
+        root = Path(directory)
+        (root / "inside-target.txt").write_text("linked inside")
+        (root / "inside-link.txt").symlink_to(root / "inside-target.txt")
+        secret = Path(outside) / "secret.txt"
+        secret.write_text("secret outside the root")
+        (root / "escape.txt").symlink_to(secret)
         subprocess.run([str(BUILD / "static_files"), directory], check=True, timeout=60)
     # The reactor has two backends (epoll on Linux, poll elsewhere); both run the same native checks.
     for name, flags in (("transport", []), ("transport_poll", ["-DGW_REACTOR_POLL"])):
@@ -95,6 +140,7 @@ def main():
     subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/process.c"),
                     "-o", str(BUILD / "process")], check=True)
     subprocess.run([str(BUILD / "process")], check=True)
+    run_libfuzzer(with_sqlite)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/http.py"), str(BUILD / "features")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/app.py"), str(BUILD / "app")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/routing.py"), str(BUILD / "routing")], env=env, check=True)
