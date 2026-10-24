@@ -55,6 +55,7 @@ fn main() {
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
 - Development loop: `python3 scripts/dev.py server.goose` rebuilds and restarts on save, and the page reloads (or shows the compiler error). `web::live_reload` is the browser side. See [development server](docs/api.md#development-server-and-live-reload).
 - Edge middleware: `secure_headers` (CSP, nosniff, frame DENY, referrer policy, optional HSTS) and a bounded per-client `rate_limit` that answers 429 with `Retry-After`. `c.peer()` gives the TCP peer address.
+- Operations: `json_logger` (one JSON object per request), `trust_proxies` (X-Forwarded-For and Forwarded from allow-listed proxies only), `etag` with `If-None-Match` to 304, `shed_load` (503 with `Retry-After` under connection or pool pressure) and `body_limit`. See [Request logs, proxies, caching and load](docs/api.md#request-logs-proxies-caching-and-load).
 - Signed cookie sessions (`session`, 16 entries, HMAC-SHA256) and double-submit CSRF protection (`csrf`) with a CSPRNG-backed token. See [Sessions](docs/api.md#sessions) and [CSRF](docs/api.md#csrf); the security notes there say what these do not protect.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
 - Nonblocking reactor: epoll readiness on Linux (poll elsewhere) with one registration per connection, bounded client slots, partial writes, read and write deadlines.

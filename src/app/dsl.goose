@@ -83,6 +83,18 @@ fn ::secure_headers<F>(c: web::Ctx&, content_security_policy: const u8[:] = "def
     web::secure_headers(c, content_security_policy, hsts, F);
 }
 
+// Structured logs, trusted proxies, conditional GET, load shedding and body caps (logging.goose, proxy.goose,
+// etag.goose, shedding.goose). json_logger(c, include_query) { ... }; client_ip(c) is the proxy-aware address.
+fn ::json_logger<F>(c: web::Ctx&, include_query: bool = false) { web::json_logger(c, include_query, F); }
+fn ::trust_proxies<F>(c: web::Ctx&, cfg: web::ProxyConfig) { web::trust_proxies(c, cfg, F); }
+fn ::client_ip(c: web::Ctx&) -> const u8[:] { return web::client_ip(c); }
+fn ::route_pattern(c: web::Ctx&) -> const u8[:] { return web::route_pattern(c); }
+fn ::etag<F>(c: web::Ctx&) { web::etag(c, F); }
+fn ::cache_control(c: web::Ctx&, value: const u8[:]) -> web::Ctx& { return web::cache_control(c, value); }
+fn ::shed_load<F>(c: web::Ctx&, policy: web::LoadPolicy) { web::shed_load(c, policy, F); }
+fn ::server_pressure(c: web::Ctx&) -> web::ServerPressure { return web::server_pressure(c); }
+fn ::body_limit<F>(c: web::Ctx&, bytes: i64) { web::body_limit(c, bytes, F); }
+
 // Cookies. c.cookie(name) reads the request; c.set_cookie(name, value, opts) returns false when
 // the name, value or options are invalid (nothing is set in that case).
 fn ::cookie(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::cookie(c, name); }

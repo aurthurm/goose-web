@@ -95,7 +95,8 @@ fn reason(status: i32) -> const u8[:] {
 
 // Invalid status, content type or headers become a 500 with a fixed body.
 fn prepare_response(r: Response&) {
-    var valid = r.status >= HTTP_MIN_RESPONSE_STATUS && r.status <= HTTP_MAX_STATUS && r.content_type.len > 0;
+    var valid = r.status >= HTTP_MIN_RESPONSE_STATUS && r.status <= HTTP_MAX_STATUS &&
+        (r.content_type.len > 0 || r.status == HTTP_NOT_MODIFIED);
     for c in r.content_type { if c < 32 || c == 127 { valid = false; } }
     for h in r.headers {
         if !valid_response_header(h.name, h.value) { valid = false; }
@@ -125,7 +126,7 @@ fn serialize_head(out: u8[>..]&, r: Response&, close: bool, keep_alive: bool) {
     if close { format(out, HEADER_CONNECTION, ": ", CONNECTION_CLOSE, "\r\n"); }
     else if keep_alive { format(out, HEADER_CONNECTION, ": ", CONNECTION_KEEP_ALIVE, "\r\n"); }
     if !no_body { format(out, HEADER_CONTENT_LENGTH, ": ", body_len(r), "\r\n"); }
-    format(out, HEADER_CONTENT_TYPE, ": ", r.content_type, "\r\n");
+    if r.content_type.len > 0 { format(out, HEADER_CONTENT_TYPE, ": ", r.content_type, "\r\n"); }
     for h in r.headers { format(out, h.name, ": ", h.value, "\r\n"); }
     if r.set_cookie_line.len > 0 { format(out, HEADER_SET_COOKIE, ": ", r.set_cookie_line[..], "\r\n"); }
     out.append("\r\n");

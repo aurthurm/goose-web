@@ -877,12 +877,101 @@ short-circuits. Nesting gives the order: the outer middleware's `before` runs fi
 | `logger(c) { }` | after `Next`, prints one line: `METHOD path status bytes`; control bytes are masked |
 | `cors(c, origin = "*") { }` | sets `Access-Control-Allow-Origin` (plus `Vary: Origin` for a non-wildcard origin). A preflight (OPTIONS with `Access-Control-Request-Method`) gets 204 with Allow-Methods, Allow-Headers (echoes the request's headers when valid, else `Content-Type`) and `Max-Age: 600`, and `Next` is not called |
 | `require_json(c) { }` | 415 `unsupported_media_type` unless the media type is `application/json` (parameters ignored, case-insensitive). It applies to every request in its block, so wrap body-carrying routes |
-| `rate_limit(c, limit, window_ms) { }` | fixed window per client address (`c.peer()`): at most `limit` requests per `window_ms`. A refused request gets 429 `rate_limited` with `Retry-After` in whole seconds. Each `(limit, window_ms)` pair counts separately. The table is process-wide and bounded at 1024 clients; when it is full, the least recently seen client is recycled. Requests with no known peer share one bucket. With the shared store on (the default), every worker of one server counts into the same window, so the limit holds across workers; with it off, each worker counts alone. Separate server instances never share a count |
+| `rate_limit(c, limit, window_ms) { }` | fixed window per client address (`client_ip(c)`: the TCP peer, or the address `trust_proxies` resolved; see [Trusted proxies](#trusted-proxies)): at most `limit` requests per `window_ms`. A refused request gets 429 `rate_limited` with `Retry-After` in whole seconds. Each `(limit, window_ms)` pair counts separately. The table is process-wide and bounded at 1024 clients; when it is full, the least recently seen client is recycled. Requests with no known peer share one bucket. With the shared store on (the default), every worker of one server counts into the same window, so the limit holds across workers; with it off, each worker counts alone. Separate server instances never share a count |
+| `json_logger(c, include_query = false) { }` | after `Next`, prints one JSON object per line (ts, level, request_id, method, path, route, status, bytes, duration_us, peer, client_ip, user_agent, pid in workers). See [Structured logs](#structured-logs) |
+| `trust_proxies(c, cfg) { }` | sets the client address from `X-Forwarded-For` (or `Forwarded`) when the TCP peer is trusted. `client_ip(c)` returns it. See [Trusted proxies](#trusted-proxies) |
+| `etag(c) { }` | after `Next`, a 200 GET or HEAD response gets a strong `ETag` (SHA-256 of the body), and a matching `If-None-Match` turns it into 304. See [ETag](#etag) |
+| `shed_load(c, LoadPolicy { ... }) { }` | 503 `overloaded` with `Retry-After` when the reactor reports connection or pool pressure above the policy. See [Load shedding](#load-shedding) |
+| `body_limit(c, bytes) { }` | 413 `payload_too_large` when the request body is longer than `bytes`, before the handler runs |
 | `secure_headers(c, content_security_policy = "default-src 'self'", hsts = "") { }` | sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin` and `Content-Security-Policy` (an empty policy leaves it unset). `Strict-Transport-Security` is sent only when `hsts` is nonempty. Headers are set before `Next`, so a handler can replace one with `c.set`. The default policy blocks the CDN script on the `/docs` page, so wrap that page with `""` or a policy that allows it |
 
 The runtime fills `Request.peer` from `getpeername` when it accepts a connection
-(`gw_peer_address` in `native/posix/transport.c`). It is the TCP peer, never a forwarded header,
-so behind a proxy every client shares the proxy's address.
+(`gw_peer_address` in `native/posix/transport.c`). It is the TCP peer, never a forwarded header.
+Behind a proxy, add `trust_proxies` (below) so that `client_ip(c)` names the real client.
+
+### Request logs, proxies, caching and load
+
+#### Structured logs
+
+`json_logger(c, include_query = false) { }` prints one line per request, after the inner chain:
+
+```json
+{"ts":"2026-10-24T10:15:03Z","level":"info","request_id":12,"method":"GET","path":"/users/42","route":"/users/:id","status":200,"bytes":9,"duration_us":84,"peer":"127.0.0.1","client_ip":"203.0.113.9","user_agent":"curl/8.7.1"}
+```
+
+- `ts` is RFC 3339 UTC to the second (`CLOCK_REALTIME`). `duration_us` comes from the monotonic clock.
+- `level` is `error` for 5xx, `warn` for 4xx and `info` otherwise.
+- `route` is the matched route pattern (`/users/:id`), or `null` when no route matched.
+- `path` excludes the query string unless `include_query` is true, because queries may carry secrets.
+- `peer` is the TCP peer; `client_ip` is what `client_ip(c)` returns (equal to `peer` without `trust_proxies`).
+- `user_agent` is cut at 128 bytes. `pid` appears only in worker processes (`workers` other than 1).
+- Every text value is made JSON-safe: bytes outside printable ASCII become `?`, then quotes and
+  backslashes are escaped, so a crafted request cannot break the line.
+- `logger` (the text line) is unchanged and may be used alongside it.
+
+The timestamp has whole-second precision (`src/sys` exposes wall-clock seconds only).
+
+#### Trusted proxies
+
+```goose
+const TRUSTED = "127.0.0.1/32, 10.0.0.0/8, 2001:db8::/32";
+c.trust_proxies(web::trusted_proxies(TRUSTED)) { ... };
+```
+
+- `trusted_proxies(list)` parses a comma-separated list of IPv4 or IPv6 addresses and CIDR networks
+  (up to 16). A malformed entry, an empty entry, or more than 16 entries makes `cfg.valid` false, and
+  `trust_proxies` asserts on that. A bare address is one host. Host bits are cleared.
+- IPv4-mapped IPv6 (`::ffff:10.0.0.1`), which a dual-stack socket reports for IPv4 clients, matches IPv4 entries.
+- Rules, when the TCP peer is trusted: the `X-Forwarded-For` lines are read as one list and walked
+  from the right. Trusted addresses are skipped; the first untrusted address is the client. A chain
+  made only of trusted addresses gives its leftmost one. A malformed entry met on the walk, or a
+  missing header, gives the TCP peer.
+- When the TCP peer is untrusted or unknown, forwarded headers are ignored and the client is the peer.
+  A spoofed `X-Forwarded-For` from the internet changes nothing.
+- `cfg.forwarded = true` reads RFC 7239 `Forwarded: for=...` instead (the `for` parameter, unquoted;
+  bracketed IPv6 and a port are accepted; `unknown` and obfuscated identifiers are malformed).
+- List only proxies you run: the headers of a trusted peer are believed. Put `trust_proxies` before
+  `rate_limit` and the loggers that should see the client address. The result is valid for one request.
+
+#### ETag
+
+`etag(c) { }` runs after the inner chain. For a 200 response to GET or HEAD with a body and no
+`ETag` set by the handler, it sets a strong tag: the base64url of the first 16 bytes of SHA-256 of the
+body, in quotes (22 characters). A handler-set `ETag` is kept and used for matching.
+
+When `If-None-Match` matches (list members, `*`, or weak `W/` on either side, which is the weak
+comparison of RFC 9110), the response becomes `304 Not Modified` with no body and no `Content-Type`
+(RFC 9110 15.4.5). `ETag` and `Cache-Control` are kept. Other methods, other statuses, empty bodies and
+SSE streams are left unchanged.
+
+`cache_control(c, "public, max-age=60")` sets `Cache-Control`. Static files (`static_files`) are not
+given an `ETag` by this middleware; wrap the static route in `etag` if the tag matters.
+
+#### Load shedding
+
+```goose
+c.get("/search") {
+    shed_load(c, web::LoadPolicy { max_active_connections_pct: 90, max_pool_used_pct: 90, retry_after_s: 2 }) {
+        ...
+    };
+};
+```
+
+- `LoadPolicy` fields: `max_active_connections_pct` (default 90) and `max_pool_used_pct` (default 90)
+  are the levels at which requests are refused, 1 to 100; 0 turns that check off. `retry_after_s`
+  (default 1) is the `Retry-After` value.
+- A refused request gets 503 with `error.code` `overloaded` and `Retry-After`. It never reaches the handler.
+- Pressure is read from the reactor. Before each handler runs, the runtime records `live_pressure`:
+  open connections against `max_clients`, response bytes in flight against the response pool
+  (`max_pool_bytes`), and staged SSE messages. `c.server_pressure()` returns the same numbers as a
+  `web::ServerPressure` for handlers that want their own policy.
+- Each worker process has its own reactor, so each sheds on its own numbers.
+- Connections are not refused by shedding at accept time; a request is answered with 503 and the
+  connection is kept or closed as usual. Keep health checks outside `shed_load`.
+
+`body_limit(c, bytes) { }` refuses a longer request body with 413 `payload_too_large` before the
+handler runs. The whole body is already buffered, so this is a route policy. It cannot exceed
+`ServerConfig.max_request_bytes`, which still bounds every request.
 | `session(c, config) { }` | loads the signed session cookie, exposes `session_get`/`session_set`/`session_clear`, and re-issues the cookie after the block only when the store changed. See [Sessions](#sessions) |
 | `csrf(c, secret, check_origin = false) { }` | safe methods pass and receive a token cookie; unsafe methods need the token echoed in `X-CSRF-Token` or `csrf_token`, else 403 `csrf_failed`. See [CSRF](#csrf) |
 

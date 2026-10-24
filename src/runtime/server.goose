@@ -28,6 +28,16 @@ struct ServerStats {
     timeouts: i64, forced_closes: i64, bytes_read: i64, bytes_written: i64, reused: i64,
     sse_active: i64, sse_sent: i64, sse_dropped: i64
 }
+// Load snapshot for load shedding (src/app/shedding.goose). record_pressure refreshes it before each handler runs.
+// active: open connections; max_clients: the limit. pool_bytes_*: response bytes in flight and the pool's
+// capacity. queued_events / max_queued_events: SSE messages staged in the outbox.
+struct ServerPressure {
+    active: i64, max_clients: i64, pool_bytes_used: i64, pool_bytes_max: i64,
+    queued_events: i64, max_queued_events: i64
+}
+var live_pressure: ServerPressure = default<ServerPressure>();
+// True in a worker process of serve_workers, so loggers can report its pid (src/app/logging.goose).
+var worker_process: bool = false;
 // One event stream slot, indexed like the connection slot it belongs to.
 struct SseSlot { active: bool, channel: i32 }
 // sse_limit, sse_slots and the message table are reactor state that sse_publish stages into. The
@@ -119,6 +129,14 @@ struct Connection {
     idle: bool, deadline: i64, served: i64, head: i64, head_start: i64,
     peer: u8[MAX_PEER_BYTES], peer_len: i64, sse: bool, sse_closing: bool, sse_channel: i32, slot: i64,
     watch_write: bool, input_at: i64, input_cap: i64, input_class: i64
+}
+
+// Copies the reactor's load into live_pressure. Called once per request, before the handler runs.
+fn record_pressure(config: ServerConfig, control: ServerControl&, pool: ChunkPool&) {
+    live_pressure = ServerPressure { active: control.stats.active, max_clients: config.max_clients,
+        pool_bytes_used: (pool.count - pool.free_count) * RESPONSE_CHUNK_BYTES,
+        pool_bytes_max: pool.max_chunks * RESPONSE_CHUNK_BYTES,
+        queued_events: control.sse_msg_count, max_queued_events: MAX_SSE_OUTBOX_MESSAGES };
 }
 
 // Chunks that a new response could still take: freed ones plus never-used capacity.
@@ -681,6 +699,7 @@ fn serve_loop<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&,
             }
             if status == PARSE_INCOMPLETE { continue; }
             // scratch is empty here: the previous response was reset after staging.
+            record_pressure(config, control, pool);
             if status == HTTP_OK { H(request, scratch); }
             else { scratch.status = status; set_body(scratch, reason(status)); }
             if status == HTTP_OK && scratch.sse {
@@ -844,6 +863,7 @@ fn spawn_worker<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
     let pid = fork_process();
     if pid != 0 { return pid; }
     gw_close(read_end);
+    worker_process = true;
     // The inherited handlers are the parent's; restore the originals, then take this worker's own.
     gw_signals_end();
     if gw_signals_begin() < 0 { exit(1); }
