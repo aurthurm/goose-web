@@ -2,6 +2,7 @@ import src.constants.http;
 import src.constants.limits;
 import src.json.codec;
 import src.app.context;
+import src.app.validation;
 import std;
 import json;
 namespace web;
@@ -137,12 +138,71 @@ fn csv_has(list: const u8[:], name: const u8[:]) -> bool {
     }
 }
 
-// An object schema from struct T: properties in declaration order, required unless optional.
-// Property names are the JSON names (json_key); skipped fields are left out. optional_fields
-// lists declared names, as has<T> does.
+// Removes the `,"key":value` member from a schema object (our schemas always put a member
+// with a comma before it), copying the rest to out.
+fn schema_drop(out: u8[>..]&, part: const u8[:], key: const u8[:]) {
+    var needle: u8[>..] = [];
+    needle.push('"');
+    needle.append(key);
+    needle.append("\":");
+    let at = find(part, needle[..]);
+    if at <= 0 {
+        out.append(part);
+        return;
+    }
+    var stop = at + needle.len;
+    while stop < part.len && part[stop] != ',' && part[stop] != '}' { stop += 1; }
+    out.append(part[..at - 1]);
+    out.append(part[stop..]);
+}
+
+// The constraint keywords of a rule, each with its leading comma (JSON Schema, from the same
+// table the validator uses). Builtin patterns are documented by their regex.
+fn schema_keywords(out: u8[>..]&, rule: FieldRule&) {
+    if rule.has_min_len { out.append(",\"minLength\":"); format(out, rule.min_len); }
+    if rule.has_max_len { out.append(",\"maxLength\":"); format(out, rule.max_len); }
+    if rule.has_min_items { out.append(",\"minItems\":"); format(out, rule.min_items); }
+    if rule.has_max_items { out.append(",\"maxItems\":"); format(out, rule.max_items); }
+    if rule.has_ge { out.append(",\"minimum\":"); format(out, rule.ge); }
+    if rule.has_gt { out.append(",\"exclusiveMinimum\":"); format(out, rule.gt); }
+    if rule.has_le { out.append(",\"maximum\":"); format(out, rule.le); }
+    if rule.has_lt { out.append(",\"exclusiveMaximum\":"); format(out, rule.lt); }
+    if rule.has_multiple { out.append(",\"multipleOf\":"); format(out, rule.multiple_of); }
+    if rule.pattern_kind != PATTERN_NONE {
+        out.append(",\"pattern\":");
+        json::format_string(out, pattern_regex(rule.pattern_kind));
+    }
+    if rule.format_kind == FORMAT_EMAIL { out.append(",\"format\":\"email\""); }
+    if rule.format_kind == FORMAT_URI { out.append(",\"format\":\"uri\""); }
+}
+
+// The schema of one field: its type schema with the rule's constraints. A rule's maxLength or
+// maxItems replaces the one the capacity implies, so the document never repeats a key.
+fn json_schema_rule<T>(out: u8[>..]&, v: T&, rule: FieldRule&) {
+    var part: u8[>..] = [];
+    json_schema_value(part, v);
+    var constraints: u8[>..] = [];
+    schema_keywords(constraints, rule);
+    if constraints.len == 0 {
+        out.append(part[..]);
+        return;
+    }
+    var step: u8[>..] = [];
+    if rule.has_max_len { schema_drop(step, part[..], "maxLength"); } else { step.append(part[..]); }
+    var base: u8[>..] = [];
+    if rule.has_max_items { schema_drop(base, step[..], "maxItems"); } else { base.append(step[..]); }
+    out.append(base[..base.len - 1]);
+    out.append(constraints[..]);
+    out.push('}');
+}
+
+// An object schema from struct T: properties in declaration order. A field with a rule is
+// required when the rule says so; other fields are required unless optional_fields lists them.
+// Property names are the JSON names (json_key); skipped fields are left out.
 fn json_schema_fields<T>(out: u8[>..]&, v: T&) {
     if !check_json_keys<T>() { abort("json: duplicate JSON key names (json_key) in a documented struct"); }
     let skipped = optional_fields(v);
+    let rs = rules_for(v);
     var req: u8[>..] = [];
     var first = true;
     out.append("{\"type\":\"object\",\"properties\":{");
@@ -151,8 +211,12 @@ fn json_schema_fields<T>(out: u8[>..]&, v: T&) {
             if !first { out.push(','); }
             first = false;
             json::format_key(out, json_key(v, N));
-            json_schema_value(out, v.A);
-            if !csv_has(skipped, N) {
+            let at = rule_index(rs, N);
+            var rule = FieldRule { .. };
+            if at >= 0 { rule = rs.items[at]; }
+            json_schema_rule(out, v.A, rule);
+            let required = if at >= 0 { rule.required } else { !csv_has(skipped, N) };
+            if required {
                 if req.len > 0 { req.push(','); }
                 json::format_string(req, json_key(v, N));
             }
@@ -230,14 +294,22 @@ fn query_params<T>(c: Ctx&) {
     if c.pass != PASS_DESCRIBE { return; }
     if !check_json_keys<T>() { abort("json: duplicate JSON key names (json_key) in a query struct"); }
     var sample: T = T { .. };
+    let rs = rules_for(sample);
     var item: u8[>..] = [];
     const for <N, A> in fields<T> {
         if !json_skip(sample, N) {
             if item.len > 0 { item.push(','); }
+            let at = rule_index(rs, N);
+            var rule = FieldRule { .. };
+            if at >= 0 { rule = rs.items[at]; }
             item.append("{\"name\":");
             json::format_string(item, json_key(sample, N));
-            item.append(",\"in\":\"query\",\"required\":false,\"schema\":");
-            json_schema_value(item, sample.A);
+            if rule.required {
+                item.append(",\"in\":\"query\",\"required\":true,\"schema\":");
+            } else {
+                item.append(",\"in\":\"query\",\"required\":false,\"schema\":");
+            }
+            json_schema_rule(item, sample.A, rule);
             item.push('}');
         }
     }

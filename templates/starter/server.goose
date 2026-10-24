@@ -13,14 +13,27 @@ struct Note { text: u8[..MAX_NOTE_BYTES], pinned: bool = false }
 struct NotesPage { title: u8[..32], empty: bool, count: i64, notes: Note[..MAX_NOTES] }
 struct ListQuery { limit: i64 = 10 }
 
+// Settings from the environment: APP_TITLE and APP_MAX_NOTES (docs/api.md, "Settings").
+struct AppSettings { title: u8[..32] = "Notes", max_notes: i64 = MAX_NOTES }
+
+// Field rules for the settings and for the note body (docs/api.md, "Validation").
+fn web::rules(v: AppSettings&, r: web::Rules&) {
+    r.field("title").min_len(1).max_len(32);
+    r.field("max_notes").ge(1).le(MAX_NOTES);
+}
+fn web::rules(v: Note&, r: web::Rules&) {
+    r.field("text").required().min_len(1).max_len(MAX_NOTE_BYTES);
+}
+
 // c.json_list encodes each element through this registration (api.md, "JSON responses").
 fn web::json_put_value(out: u8[>..]&, v: Note&) -> bool { return web::json_put_fields(out, v); }
 
 // In-memory storage: the notes live as long as the process does.
 var notes: Note[..MAX_NOTES] = [];
+var app_settings = AppSettings { .. };
 
 fn render_home(c: web::Ctx&) {
-    let page = NotesPage { title: "Notes", empty: notes.len == 0, count: notes.len, notes: notes };
+    let page = NotesPage { title: app_settings.title, empty: notes.len == 0, count: notes.len, notes: notes };
     c.html_template(embed_file("views/home.html"), page);
 }
 
@@ -71,7 +84,7 @@ fn app(c: web::Ctx&) {
                 c.post("/notes") {
                     let note, ok = body<Note>(c);
                     guard ok else { return; }
-                    if notes.len == MAX_NOTES {
+                    if notes.len >= app_settings.max_notes {
                         c.fail(web::HTTP_CONFLICT, "notes_full", "The note list is full");
                         return;
                     }
@@ -91,9 +104,17 @@ fn main() {
         print("views/home.html: ", problem[..]);
         abort("views/home.html is not a valid template");
     }
-    var settings = config;
-    settings.handle_signals = true;
-    print("Starter listening on http://127.0.0.1:", settings.port);
-    let started = web::run(settings) { c => app(c) };
+    let rules_ok, rules_problem = web::check_rules<AppSettings>();
+    if !rules_ok { abort(rules_problem); }
+    let loaded, problems = web::settings<AppSettings>("APP_");
+    if problems.items.len > 0 {
+        for i in problems.items.len { print("setting ", problems.items[i].loc[..], ": ", problems.items[i].msg[..]); }
+        abort("invalid APP_ settings");
+    }
+    app_settings = loaded;
+    var server = config;
+    server.handle_signals = true;
+    print("Starter listening on http://127.0.0.1:", server.port);
+    let started = web::run(server) { c => app(c) };
     if !started { abort("server failed"); }
 }

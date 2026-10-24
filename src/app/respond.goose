@@ -5,6 +5,7 @@ import src.http.request;
 import src.http.errors;
 import src.json.codec;
 import src.app.context;
+import src.app.validation;
 import std;
 namespace web;
 
@@ -48,9 +49,11 @@ fn is_json_media_type(value: const u8[:]) -> bool {
     return equal_header(base, CONTENT_TYPE_JSON);
 }
 
-// Decodes the request body. Failures write the error response before returning, and
-// the result says which class it was: 415, 400 (empty or syntax), or 422 (schema).
-fn body_result<T>(c: Ctx&) -> T, DecodeResult {
+// Decodes the request body without validating it. A wrong media type writes 415, an empty or
+// malformed body writes 400 invalid_json, and both leave the response written. Schema problems
+// are collected in result.issues and leave the response unwritten: validate_result (or body<T>)
+// reports them together with the constraint checks.
+fn body_decode<T>(c: Ctx&) -> T, DecodeResult {
     var value: T = T { .. };
     if !is_json_media_type(c.header(HEADER_CONTENT_TYPE)) {
         var result = DecodeResult { .. };
@@ -65,23 +68,30 @@ fn body_result<T>(c: Ctx&) -> T, DecodeResult {
         return value, result;
     }
     let decoded, result = json_decode<T>(c.request.body);
-    if result.ok { return decoded, result; }
-    if result.syntax {
-        let message = str("Malformed JSON: ", result.error[..]);
-        fail(c, HTTP_BAD_REQUEST, "invalid_json", message[..]);
-        return decoded, result;
-    }
-    let message = if result.field.len == 0 {
-        str(result.error[..])
-    } else {
-        str(result.field[..], ": ", result.error[..])
-    };
-    fail(c, HTTP_UNPROCESSABLE_CONTENT, "invalid_payload", message[..]);
+    if result.ok || result.issues.items.len > 0 { return decoded, result; }
+    let message = str("Malformed JSON: ", result.error[..]);
+    fail(c, HTTP_BAD_REQUEST, "invalid_json", message[..]);
     return decoded, result;
 }
 
-// Decodes the request body into T. On false the error response is already written.
+// Decodes the request body. Failures write the error response before returning: 415, 400
+// (empty or syntax), or 422 with detail for every schema issue. The 422 carries the decode
+// issues only; body<T> also runs the constraint checks (validate_result).
+fn body_result<T>(c: Ctx&) -> T, DecodeResult {
+    let decoded, result = body_decode<T>(c);
+    if !result.ok && !c.written && result.issues.items.len > 0 {
+        var issues = result.issues;
+        issues_root(issues, "body");
+        issues_fail(c, "invalid_payload", issues);
+    }
+    return decoded, result;
+}
+
+// Decodes the request body into T, normalizes and validates it. On false the error response is
+// already written: 400 for malformed JSON, 415 for the media type, or 422 with detail for every
+// decode and constraint issue (docs/api.md, "Validation").
 fn body<T>(c: Ctx&) -> T, bool {
-    let value, result = body_result<T>(c);
-    return value, result.ok;
+    var value, result = body_decode<T>(c);
+    if c.written { return value, false; }
+    return value, validate_result(c, "body", value, result);
 }
