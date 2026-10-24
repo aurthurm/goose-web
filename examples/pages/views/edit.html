@@ -1,0 +1,10 @@
+<section class="panel">
+  <p><a href="/todos/{{id}}">&larr; Back</a></p>
+  <h1>Edit todo {{id}}</h1>
+  {{#has_error}}<p class="error" role="alert">{{error}}</p>{{/has_error}}
+  <form method="post" action="/todos/{{id}}/edit" class="stack">
+    <input type="hidden" name="csrf_token" value="{{meta.csrf_token}}">
+    <label>Title <input name="title" maxlength="64" value="{{title}}" required></label>
+    <div class="actions"><button type="submit">Save</button> <a href="/todos/{{id}}">Cancel</a></div>
+  </form>
+</section>

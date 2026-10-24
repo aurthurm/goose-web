@@ -51,7 +51,7 @@ fn main() {
 - Field names and skipping for JSON, typed queries and OpenAPI: `web::json_key` renames a field (`completed` as `done`), `web::json_skip` leaves it out. See [API contracts](docs/api.md#field-names-and-skipping).
 - Reflective JSON in and out: `body<T>(c)` decodes strict structs (415, 400, 422 written for you); `c.json(value)` encodes any struct.
 - Typed forms and query strings: `form<T>(c)` binds urlencoded bodies and `query<T>(c)` binds the query, both strict.
-- Compile-time HTML templates: `embed_file("views/page.html")` with `{{escaped}}`, `{{{raw}}}`, sections, `each` over struct arrays and comments; `check_template` validates them at startup. See [Templates](docs/api.md#templates).
+- Compile-time HTML templates: `embed_file("views/page.html")` with `{{escaped}}`, `{{{raw}}}`, sections, `each` (with `else`, `@index`), named blocks in shared layouts, partials, dotted struct fields, and flash messages; `check_template` validates pages and layouts at startup. See [Templates](docs/api.md#templates).
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
 - Development loop: `python3 scripts/dev.py server.goose` rebuilds and restarts on save, and the page reloads (or shows the compiler error). `web::live_reload` is the browser side. See [development server](docs/api.md#development-server-and-live-reload).
 - Edge middleware: `secure_headers` (CSP, nosniff, frame DENY, referrer policy, optional HSTS) and a bounded per-client `rate_limit` that answers 429 with `Retry-After`. `c.peer()` gives the TCP peer address.
@@ -207,7 +207,7 @@ bench/load.c              Keep-alive HTTP load generator for benchmarks
 examples/hello/           Smallest app: health, path parameter, typed POST
 examples/basic/           Todo API, OpenAPI contract, and application modules
 examples/sqlite-todos/    Todo API persisted in a SQLite file through web::db
-examples/pages/           Server-rendered todo list: embedded templates and a form POST
+examples/pages/           Server-rendered multi-page todo app: layout, partials, flash, CSRF forms, validation, 404
 examples/jobs/            Background prime counts on worker threads, SSE completion, scheduled cleanup
 tests/
   unit/                   Goose contract tests (including the SQLite layer on :memory:)

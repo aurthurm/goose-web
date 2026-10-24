@@ -22,6 +22,7 @@ import .src.app.openapi;
 import .src.app.run;
 import .src.app.params;
 import .src.app.templates;
+import .src.app.page;
 import .src.app.cookies;
 import .src.app.static;
 import .src.app.session_state;

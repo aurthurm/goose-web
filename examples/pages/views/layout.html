@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{meta.title}} · Todo Pages</title>
+<link rel="stylesheet" href="/static/style.css">
+{{$head}}{{/head}}
+</head>
+<body>
+{{> nav}}
+<main>
+{{#meta.has_flash}}
+<p class="flash flash-{{meta.flash_kind}}" role="status">{{meta.flash_message}}</p>
+{{/meta.has_flash}}
+{{> content}}
+</main>
+{{> footer}}
+</body>
+</html>

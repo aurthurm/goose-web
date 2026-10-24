@@ -61,21 +61,27 @@ application API; nothing here needs a separate server or a code generator.</p>
 
 <h2 id="templates">Templates</h2>
 <p>Templates are bytes embedded into the program at compile time. <code>embed_file("views/list.html")</code> reads the file
-relative to the source that calls it, so a missing file is a compile error. Check each template in <code>main</code>
-before the server starts, so a typo stops the program at startup rather than on a request:</p>
+relative to the source that calls it, so a missing file is a compile error. Pages share a layout: the page's
+blocks fill the layout's slots, and <code>{{&gt; content}}</code> places the page body. Partials come from a
+registry built once at startup, and <code>check_template</code> validates a page, its layout and its partials
+before the server starts:</p>
 <pre><code>struct Todo { id: i64, title: u8[..64], done: bool }
-struct ListPage { title: u8[..32], empty: bool, todos: Todo[..32] }
+struct ListPage { meta: web::PageMeta, todos: Todo[..32] }
+
+var views = web::templates();
 
 fn main() {
-    let valid, problem = check_template&lt;ListPage&gt;(embed_file("views/list.html"));
-    if !valid { print(problem[..]); abort("views/list.html is not a valid template"); }
+    web::add_template(views, "nav", embed_file("views/_nav.html"));
+    let valid, problem = check_template&lt;ListPage&gt;(embed_file("views/layout.html"), embed_file("views/list.html"), views);
+    if !valid { print(problem[..]); abort("views are not valid templates"); }
     // ... web::run as usual
 }
 
 fn app(c: web::Ctx&amp;) {
     c.routes() {
         c.get("/") {
-            c.html_template(embed_file("views/list.html"), ListPage { title: "Todos", empty: true, todos: [] });
+            c.html_page(views, embed_file("views/layout.html"), embed_file("views/list.html"),
+                ListPage { meta: web::page_meta(c, "Todos"), .. });
         };
     };
 }</code></pre>
@@ -85,12 +91,18 @@ fn app(c: web::Ctx&amp;) {
   <tbody>
     <tr><td><code>{{name}}</code></td><td>the value, HTML-escaped</td></tr>
     <tr><td><code>{{{name}}}</code></td><td>the value, unescaped. Only for trusted text</td></tr>
+    <tr><td><code>{{meta.title}}</code></td><td>a field of a struct field (dotted names)</td></tr>
     <tr><td><code>{{#name}}...{{/name}}</code>, <code>{{^name}}...{{/name}}</code></td><td>the body when a bool field is true or false</td></tr>
-    <tr><td><code>{{#each name}}...{{/each}}</code></td><td>the body once per element of an array field</td></tr>
+    <tr><td><code>{{#each name}}...{{else}}...{{/each}}</code></td><td>the body once per element, or the else part when the array is empty</td></tr>
+    <tr><td><code>{{@index}}</code>, <code>{{@count}}</code>, <code>{{#@first}}</code>, <code>{{#@last}}</code></td><td>loop position and flags inside <code>each</code></td></tr>
+    <tr><td><code>{{$name}}...{{/name}}</code></td><td>a block: a page defines it, a layout fills its slot from it</td></tr>
+    <tr><td><code>{{&gt; name}}</code>, <code>{{&gt; content}}</code></td><td>a partial from the registry with the current data; the page body in a layout</td></tr>
     <tr><td><code>{{! text }}</code></td><td>a comment, dropped from the output</td></tr>
   </tbody>
 </table>
-<p>Escaping covers element content and quoted attributes. Put untrusted text in <code>{{name}}</code>, never in
+<p>Flash messages (<code>c.flash(kind, message)</code>) live in the signed session and show once on the next page,
+through <code>web::page_meta</code>, so a redirect after a form carries its result. Escaping covers element content and
+quoted attributes. Put untrusted text in <code>{{name}}</code>, never in
 <code>{{{name}}}</code> or inside a script or style element. The templates must be valid UTF-8.</p>
 
 <h2 id="sessions">Sessions</h2>

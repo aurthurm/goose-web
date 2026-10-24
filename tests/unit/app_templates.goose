@@ -173,6 +173,190 @@ fn test_html_helper() {
     assert(find(web::body_of(failed.response), "unknown field: nope") >= 0);
 }
 
+// --- composition: layouts, blocks, partials, nested structs, loop helpers ------------------
+
+// A nested struct field. Registration (api.md, Templates): refuse printing and each, and let
+// dotted names reach its fields.
+struct Author { name: u8[..16], admin: bool }
+struct Post { title: u8[..32], author: Author, featured: bool, items: Item[..4] }
+struct Shell { meta: web::PageMeta, body: u8[..16] }
+
+fn web::tpl_show(out: u8[>..]&, v: Author&, escape: bool) -> bool { return false; }
+fn web::tpl_each_value(out: u8[>..]&, body: const u8[:], v: Author&, checking: bool, depth: i64, env: web::TplEnv&, count: i64&, result: web::TemplateResult&) -> bool {
+    return web::tpl_fail(result, "each needs an array of structs");
+}
+fn web::tpl_show_sub(out: u8[>..]&, v: Author&, tail: const u8[:], escape: bool, result: web::TemplateResult&) -> bool {
+    return web::tpl_field(out, v, tail, escape, result);
+}
+fn web::tpl_flag_sub(data: Author&, tail: const u8[:], flag: bool&, result: web::TemplateResult&) -> bool {
+    return web::tpl_flag(data, tail, flag, result);
+}
+
+fn sample_post() -> Post {
+    var post = Post { title: "Hello", author: Author { name: "ann<", admin: true }, featured: false, .. };
+    post.items.push(Item { name: "a<", done: true, qty: 1 });
+    post.items.push(Item { name: "b", done: false, qty: 2 });
+    return post;
+}
+
+// Renders with a registry (or an empty one) and requires exactly want.
+fn expect_with<T>(template: const u8[:], data: T&, partials: web::Templates&, want: const u8[:]) {
+    var out: u8[>..] = [];
+    let ok, result = web::render_result<T>(out, template, data, partials);
+    assert(ok);
+    assert(out[..] == want);
+}
+
+// Renders and requires the reason.
+fn expect_fail_with<T>(template: const u8[:], data: T&, partials: web::Templates&, reason: const u8[:]) {
+    var out: u8[>..] = [];
+    let ok, result = web::render_result<T>(out, template, data, partials);
+    assert(!ok);
+    assert(out.len == 0);
+    assert(result.error[..] == reason);
+}
+
+// Renders a page into a layout and requires the bytes.
+fn expect_layout(layout: const u8[:], page: const u8[:], data: Post&, partials: web::Templates&, want: const u8[:]) {
+    var out: u8[>..] = [];
+    let ok, result = web::render_layout_result<Post>(out, layout, page, data, partials);
+    assert(ok);
+    assert(out[..] == want);
+}
+
+fn test_layouts() {
+    var post = sample_post();
+    var none = web::templates();
+    // Page blocks fill the layout's slots; the default shows when the page does not define one.
+    expect_layout("<t>{{$title}}Site{{/title}}</t>[{{> content}}]", "{{$title}}{{title}}{{/title}}body {{title}}", post, none, "<t>Hello</t>[body Hello]");
+    expect_layout("<t>{{$title}}Site{{/title}}</t>[{{> content}}]", "plain", post, none, "<t>Site</t>[plain]");
+    // Blocks defined in the page are not shown in its body; a block can sit inside a section.
+    expect_layout("{{> content}}", "a{{$x}}hidden{{/x}}b", post, none, "ab");
+    expect_layout("{{$head}}H{{/head}}|{{$scripts}}S{{/scripts}}|{{> content}}", "{{$scripts}}X{{/scripts}}body", post, none, "H|X|body");
+
+    // A layout's partials and page content.
+    var views = web::templates();
+    assert(web::add_template(views, "nav", "<nav>{{title}}</nav>"));
+    expect_layout("{{> nav}}|{{> content}}", "p", post, views, "<nav>Hello</nav>|p");
+
+    // The same block twice, and content outside a layout, are errors.
+    var out: u8[>..] = [];
+    let twice_ok, twice = web::render_layout_result<Post>(out, "{{> content}}", "{{$x}}a{{/x}}{{$x}}b{{/x}}", post, none);
+    assert(!twice_ok && twice.error[..] == "block defined twice: x");
+    expect_fail_with("{{> content}}", post, none, "content is only in a layout");
+    expect_fail_with("{{$x}}{{nope}}{{/x}}", post, none, "unknown field: nope");
+}
+
+fn test_partials() {
+    var post = sample_post();
+    var views = web::templates();
+    assert(web::add_template(views, "nav", "<nav>{{title}}</nav>"));
+    assert(web::add_template(views, "loop", "x{{> loop}}"));
+    assert(!web::add_template(views, "nav", "again"));
+    assert(!web::add_template(views, "content", "c"));
+    assert(!web::add_template(views, "bad name", "c"));
+    assert(!web::add_template(views, "bad}", "c"));
+    let invalid: u8[1] = [0xff];
+    assert(!web::add_template(views, "nul", invalid[..]));
+    assert(web::add_template(views, "item", "{{@index}}:{{name}}"));
+    assert(views.count == 3);
+
+    expect_with<Post>("a{{> nav}}b", post, views, "a<nav>Hello</nav>b");
+    // Partials see the loop they are in.
+    expect_with<Post>("{{#each items}}[{{> item}}]{{/each}}", post, views, "[0:a&lt;][1:b]");
+    // A partial that includes itself fails; the depth limit still bounds longer chains.
+    expect_fail_with("{{> loop}}", post, views, "partial includes itself: loop");
+    expect_fail_with("{{> missing}}", post, views, "unknown partial: missing");
+
+    var chain = web::templates();
+    assert(web::add_template(chain, "c1", "{{> c2}}"));
+    assert(web::add_template(chain, "c2", "{{> c3}}"));
+    assert(web::add_template(chain, "c3", "{{> c4}}"));
+    assert(web::add_template(chain, "c4", "{{> c5}}"));
+    assert(web::add_template(chain, "c5", "{{> c6}}"));
+    assert(web::add_template(chain, "c6", "{{> c7}}"));
+    assert(web::add_template(chain, "c7", "{{> c8}}"));
+    assert(web::add_template(chain, "c8", "end"));
+    assert(web::add_template(chain, "c9", "{{> c1}}"));
+    expect_with<Post>("{{> c1}}", post, chain, "end");
+    expect_fail_with("{{> c9}}", post, chain, "partials are nested too deeply");
+}
+
+fn test_check_layouts() {
+    var views = web::templates();
+    assert(web::add_template(views, "nav", "<nav>{{title}}</nav>"));
+    let good, message = web::check_template<Post>("{{> nav}}{{> content}}", "{{$x}}{{title}}{{/x}}", views);
+    assert(good && message.len == 0);
+    let missing_ok, missing = web::check_template<Post>("{{> nope}}{{> content}}", "page", views);
+    assert(!missing_ok && missing[..] == "layout: unknown partial: nope");
+    let page_ok, page_message = web::check_template<Post>("{{> content}}", "{{nope}}", views);
+    assert(!page_ok && page_message[..] == "page: unknown field: nope");
+
+    // A partial is checked where a template uses it: an unused one is not, a used one that
+    // includes itself is refused, and content is not allowed in a plain template.
+    var broken = web::templates();
+    assert(web::add_template(broken, "loop", "x{{> loop}}"));
+    let unused_ok, unused_message = web::check_template<Post>("plain", broken);
+    assert(unused_ok && unused_message.len == 0);
+    let loop_ok, loop_message = web::check_template<Post>("{{> loop}}", broken);
+    assert(!loop_ok && loop_message[..] == "partial includes itself: loop");
+    let content_ok, content_message = web::check_template<Post>("{{> content}}");
+    assert(!content_ok && content_message[..] == "content is only in a layout");
+    let plain_ok, plain_message = web::check_template<Post>("{{> nav}}", views);
+    assert(plain_ok && plain_message.len == 0);
+}
+
+fn test_loop_helpers() {
+    var page = sample();
+    var none = web::templates();
+    var empty = empty_page();
+    expect_with<Page>("{{#each items}}{{@index}}{{#@first}}F{{/@first}}{{#@last}}L{{/@last}}[{{name}}]{{/each}}", page, none, "0F[a&lt;]1L[b]");
+    expect_with<Page>("{{#each items}}{{@count}}{{/each}}", page, none, "22");
+    expect_with<Page>("{{#each items}}{{^@first}}, {{/@first}}{{name}}{{/each}}", page, none, "a&lt;, b");
+    expect_with<Page>("{{#each items}}{{name}}{{else}}none{{/each}}", page, none, "a&lt;b");
+    expect_with<Page>("{{#each items}}{{name}}{{else}}none{{/each}}", empty, none, "none");
+    expect_with<Page>("[{{#each items}}x{{else}}]{{/each}}", empty, none, "[]");
+
+    expect_fail_with("{{@index}}", page, none, "loop values are only inside each");
+    expect_fail_with("{{else}}", page, none, "else is only inside each");
+    expect_fail_with("{{#each items}}{{@nope}}{{/each}}", page, none, "unknown loop value: nope");
+}
+
+fn test_dotted_paths() {
+    var post = sample_post();
+    var none = web::templates();
+    expect_with<Post>("{{author.name}}", post, none, "ann&lt;");
+    expect_with<Post>("{{#author.admin}}A{{/author.admin}}{{^author.admin}}N{{/author.admin}}", post, none, "A");
+    expect_with<Post>("{{#author.admin}}A{{/author.admin}}{{^featured}}F{{/featured}}", post, none, "AF");
+    expect_fail_with("{{author.nope}}", post, none, "unknown field: nope");
+    expect_fail_with("{{title.x}}", post, none, "no registered struct for: x");
+    expect_fail_with("{{nope.x}}", post, none, "unknown field: nope");
+    expect_fail_with("{{author}}", post, none, "value cannot be printed: author");
+    expect_fail_with("{{#author.name}}x{{/author.name}}", post, none, "section needs a bool field: name");
+
+    let good, message = web::check_template<Post>("{{author.name}}{{#author.admin}}x{{/author.admin}}");
+    assert(good && message.len == 0);
+    let bad, bad_message = web::check_template<Post>("{{author.nope}}");
+    assert(!bad && bad_message[..] == "unknown field: nope");
+
+    // PageMeta is registered in page.goose: dotted values and flags work through the struct field.
+    var shell = Shell { .. };
+    shell.meta.title.append("Home");
+    shell.meta.path.append("/");
+    shell.meta.has_flash = true;
+    shell.meta.flash_message.append("Saved");
+    expect_with<Shell>("{{meta.title}}|{{meta.path}}|{{#meta.has_flash}}[{{meta.flash_message}}]{{/meta.has_flash}}|{{meta.csrf_token}}", shell, none, "Home|/|[Saved]|");
+    shell.meta.has_flash = false;
+    expect_with<Shell>("{{#meta.has_flash}}x{{/meta.has_flash}}{{^meta.has_flash}}none{{/meta.has_flash}}", shell, none, "none");
+}
+
+fn test_blocks_in_plain_render() {
+    var post = sample_post();
+    var none = web::templates();
+    // Outside a layout a block shows its body in place.
+    expect_with<Post>("a{{$x}}in{{/x}}b", post, none, "ainb");
+}
+
 fn main() {
     test_escaping();
     test_raw_and_scalars();
@@ -184,5 +368,11 @@ fn main() {
     test_check_template();
     test_xss_payloads();
     test_html_helper();
-    print("App template tests passed: escaping, raw values, sections, each, comments, error classes, check_template, XSS payloads, html_template");
+    test_layouts();
+    test_partials();
+    test_check_layouts();
+    test_loop_helpers();
+    test_dotted_paths();
+    test_blocks_in_plain_render();
+    print("App template tests passed: escaping, raw values, sections, each, comments, error classes, check_template, XSS payloads, html_template, layouts, blocks, partials, cycles and depth, each helpers, dotted paths");
 }

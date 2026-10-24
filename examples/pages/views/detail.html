@@ -1,0 +1,13 @@
+{{$head}}<meta name="robots" content="noindex">{{/head}}
+<section class="panel">
+  <p><a href="/">&larr; All todos</a></p>
+  <h1>{{title}}</h1>
+  <p>Status: {{#done}}done{{/done}}{{^done}}open{{/done}}</p>
+  <p class="actions">
+    <a class="button" href="/todos/{{id}}/edit">Edit</a>
+    <form method="post" action="/todos/{{id}}/delete" class="inline">
+      <input type="hidden" name="csrf_token" value="{{meta.csrf_token}}">
+      <button type="submit" class="danger">Delete</button>
+    </form>
+  </p>
+</section>
