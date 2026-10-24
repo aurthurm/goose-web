@@ -7,8 +7,8 @@ Usage:
 NAME    project name: starts with a letter, then lowercase letters, digits, "-" or "_".
 DIR     where to create it (default: ./NAME). It must not exist, or must be an empty directory.
 --source
-        where the program fetches goose_web from, written into its import line. Default: the
-        GitHub tag matching this checkout's VERSION file, for example aurthurm/goose-web@v0.6.0.
+        where the program imports goose_web from, written into its import line. Default: this
+        checkout, so the generated starter and its framework APIs match.
         A local directory (the path to a goose-web checkout) also works; it is written relative
         to the new project, so the generated program builds in place.
 """
@@ -23,14 +23,12 @@ ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE = ROOT / "templates" / "starter"
 SOURCE_PLACEHOLDER = "GOOSE_WEB_SOURCE"
 NAME_PLACEHOLDER = "PROJECT_NAME"
-DEFAULT_REPOSITORY = "aurthurm/goose-web"
 NAME_PATTERN = re.compile(r"[a-z][a-z0-9_-]*")
 TEXT_SUFFIXES = {".goose", ".md", ".py", ".html", ".txt", ".build", ""}
 
 
 def default_source():
-    version = (ROOT / "VERSION").read_text().strip()
-    return f"{DEFAULT_REPOSITORY}@v{version}"
+    return str(ROOT)
 
 
 def package_source(value, destination):
@@ -81,13 +79,15 @@ def main():
             if updated != text:
                 path.write_text(updated, encoding="utf-8")
 
-    # The development server (rebuild and reload on change) is copied in, so the project runs without this checkout.
+    # Ship the development watcher and task commands with the generated project.
     (destination / "scripts").mkdir(exist_ok=True)
     shutil.copy2(ROOT / "scripts" / "dev.py", destination / "scripts" / "dev.py")
+    shutil.copy2(ROOT / "manage.py", destination / "manage.py")
+    shutil.copy2(ROOT / "Makefile", destination / "Makefile")
 
     print(f"created {destination}")
     print(f"import goose_web from \"{source}\";")
-    print(f"next: cd {destination} && python3 test.py")
+    print(f"next: cd {destination} && python3 manage.py ci")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 # Continuous integration
 
-`.github/workflows/ci.yml` runs the complete `python3 tests/run.py` suite on
+`.github/workflows/ci.yml` runs the `python3 manage.py ci` command (documentation links and the complete test suite) on
 Ubuntu 24.04 with GCC and Clang. Both `CC` (native transport tests) and
 `GOOSE_CC` (Goose-generated programs) select the matrix compiler. The Goose
 compiler itself is built using a C++20 compiler (`g++` in CI).
@@ -36,8 +36,8 @@ library development headers. From the repository root:
 python3 scripts/bootstrap_goose.py
 export GOOSE="$PWD/build/tools/goose/build/goose"
 export GOOSE_STDLIB="$PWD/build/tools/goose/source/stdlib"
-CC=gcc GOOSE_CC=gcc python3 tests/run.py
-CC=clang GOOSE_CC=clang python3 tests/run.py
+CC=gcc GOOSE_CC=gcc python3 manage.py ci
+CC=clang GOOSE_CC=clang python3 manage.py ci
 ```
 
 The script downloads the fixed revision into `build/tools/goose/source`, builds
@@ -53,3 +53,11 @@ To upgrade Goose, update both constants in `scripts/bootstrap_goose.py`, inspect
 upstream changes, build in a fresh destination, and run both compiler variants.
 Update this document with the new source revision and runtime identifier. GitHub
 Actions results are available only after the workflow is pushed and executed.
+
+## Application CI commands
+
+`python3 manage.py ci` is the shared command for local checks and the GitHub workflow. `make ci`
+is an optional alias. In the framework it checks local Markdown files/anchors and runs the suite;
+in generated apps it typechecks the entry point and runs `test.py`. Child failures stop the
+command and preserve a nonzero exit status. Neither command installs tools or deploys a service.
+See [project tooling](guide/project-tooling.md) and [testing](guide/testing.md).

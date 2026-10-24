@@ -12,6 +12,13 @@ because the repository has no tag history for them.
 
 ### Added
 
+- A framework guidebook under `docs/guide/`, indexed by `docs/README.md`, with setup, routing,
+  validation, persistence, security, operations, testing and project structure walkthroughs.
+- `manage.py` project commands and optional Make aliases for check/build/run/dev/test/ci/docs/new;
+  local documentation link checks now run in framework CI. Generated projects include the tools.
+- A modular SQLite Issue Board example with one executable entry point, projects/issues,
+  settings, migrations, validation, business transitions and restart-persistence socket tests.
+
 - Field rules (`web::rules`) for typed bodies, queries, forms and settings, normalization and
   model hooks, startup rule checks, and matching OpenAPI constraints. Validation 422 responses
   now include a bounded `detail` list and `truncated` while retaining the `error` object.
@@ -56,6 +63,12 @@ because the repository has no tag history for them.
   libFuzzer harnesses for the C byte-slice and SQLite shims.
 
 ### Changed
+
+- Minimal consumers no longer need an `os` import for the supervisor's restart-budget diagnostic;
+  it uses the framework's native writer, with a regression that instantiates `run` without `os`.
+
+- The starter generator defaults to its matching framework checkout instead of v0.6.0, which
+  lacks APIs used by the current template. `--source` remains available for compatible sources.
 
 - Static files: a symbolic link whose real target lies outside the served directory answers 404. Links
   that stay inside are still followed.

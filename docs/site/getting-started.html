@@ -42,6 +42,7 @@ li{margin:.25em 0}
   <a class="brand" href="index.html">Goose Web</a>
   <nav>
     <a href="getting-started.html">Getting started</a>
+    <a href="https://github.com/aurthurm/goose-web/blob/main/docs/README.md">Guides</a>
     <a href="http.html">Requests and responses</a>
     <a href="features.html">Features</a>
     <a href="operations.html">Operations</a>
@@ -49,6 +50,9 @@ li{margin:.25em 0}
   </nav>
 </header>
 <main>
+<p class="note"><strong>Version scope:</strong> these pages describe current main.
+The published v0.6.0 package predates some features. See the
+<a href="https://github.com/aurthurm/goose-web/blob/main/docs/README.md">guidebook</a> for release notes and complete workflows.</p>
 <h1>Getting started</h1>
 <p class="lead">Goose Web is a package. Your program's root file declares it, the Goose compiler fetches and
 builds it, and the result is an ordinary executable.</p>
@@ -65,13 +69,17 @@ builds it, and the result is an ordinary executable.</p>
 <h2>Start from the starter</h2>
 <p>The starter is a small project with routes, middleware, JSON, a template, OpenAPI and an end-to-end test
 script. The generator copies it and writes the package import for you.</p>
-<pre><code>python3 scripts/new_project.py my-api ../my-api --source /path/to/goose-web
+<pre><code>python3 manage.py new my-api ../my-api
 cd ../my-api
-goose run server.goose -- 8080     # serve on port 8080
-python3 test.py                    # build, call every route, stop</code></pre>
-<p>Leave out <code>--source</code> to write the release form (<code>aurthurm/goose-web@v0.6.0</code>), which needs
-the tag to exist on GitHub. The <a href="https://github.com/aurthurm/goose-web/blob/main/templates/starter/README.md">starter README</a>
-describes the files.</p>
+python3 manage.py dev --port 8080
+python3 manage.py ci</code></pre>
+<p>Run generation from the framework checkout. Without <code>--source</code>, the new project
+imports that checkout by relative path, so the template and framework APIs match. Keep the checkout
+available. An explicit source must provide the same APIs; current starters use validation/settings
+features absent in <code>v0.6.0</code>. The
+<a href="https://github.com/aurthurm/goose-web/blob/main/templates/starter/README.md">starter README</a>
+and <a href="https://github.com/aurthurm/goose-web/blob/main/docs/guide/project-tooling.md">project command guide</a>
+explain the generated files, Make aliases and CI commands.</p>
 
 <h2>Declare the package</h2>
 <p>A program that uses Goose Web declares it in its root file, the one you pass to <code>goose</code>. Only the
@@ -85,10 +93,9 @@ root file declares packages. The source decides which version you get:</p>
     <tr><td><code>import goose_web from "../goose-web";</code></td><td>A checkout you are developing. Edits apply on the next build.</td></tr>
   </tbody>
 </table>
-<div class="note"><strong>Before v0.6.0 is tagged</strong>, the GitHub forms stop at <code>goose fetch</code> with
-<code>Remote branch v0.6.0 not found</code>. Use the local checkout form. The checkout form was built and run as a
-consumer; the commit and other-host forms follow the Goose packaging guide and are not yet exercised against this
-repository.</div>
+<div class="note"><strong>Match source and docs.</strong> The published <code>v0.6.0</code> tag
+contains the initial package release. Later main-only APIs require a compatible checkout or newer
+release. The current guidebook labels those differences.</div>
 
 <p>Then the compiler does the rest:</p>
 <pre><code>goose fetch program.goose      # optional: download everything the root file declares
@@ -161,6 +168,6 @@ above exits at once on Ctrl+C; set the flag before <code>web::run</code> to get 
   <li><a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md">API contracts</a>: every call, limit and error code.</li>
 </ul>
 </main>
-<footer>Documentation for release 0.6.0. Pages are plain HTML; no build step.</footer>
+<footer>Documentation for current main; latest published release: 0.6.0. Pages are plain HTML; no build step.</footer>
 </body>
 </html>

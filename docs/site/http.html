@@ -44,6 +44,7 @@ li{margin:.25em 0}
   <a class="brand" href="index.html">Goose Web</a>
   <nav>
     <a href="getting-started.html">Getting started</a>
+    <a href="https://github.com/aurthurm/goose-web/blob/main/docs/README.md">Guides</a>
     <a href="http.html">Requests and responses</a>
     <a href="features.html">Features</a>
     <a href="operations.html">Operations</a>
@@ -51,6 +52,9 @@ li{margin:.25em 0}
   </nav>
 </header>
 <main>
+<p class="note"><strong>Version scope:</strong> these pages describe current main.
+The published v0.6.0 package predates some features. See the
+<a href="https://github.com/aurthurm/goose-web/blob/main/docs/README.md">guidebook</a> for release notes and complete workflows.</p>
 <h1>Requests and responses</h1>
 <p class="lead">Routes, request data, responses and middleware. Every example here uses the same
 <code>app(c: web::Ctx&)</code> shape as the starter; the complete contracts are in the
@@ -213,7 +217,7 @@ limits do not separate users there; limits are per process, not shared between i
 the connection. Write your own with <code>c.fail(status, code, message)</code>; the codes you choose become part of your API, so
 document them with the route (the OpenAPI helpers do this, see <a href="features.html#openapi">Features</a>).</p>
 </main>
-<footer>Documentation for release 0.6.0. The API reference is the authority: <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#routing-dsl">routing</a>,
+<footer>Documentation for current main; latest published release: 0.6.0. The API reference is the authority: <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#routing-dsl">routing</a>,
 <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#middleware-and-application-errors">middleware</a>.</footer>
 </body>
 </html>

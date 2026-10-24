@@ -22,8 +22,8 @@ moved after publication; a mistake gets the next patch version.
    python3 scripts/bootstrap_goose.py
    export GOOSE="$PWD/build/tools/goose/build/goose"
    export GOOSE_STDLIB="$PWD/build/tools/goose/source/stdlib"
-   CC=gcc GOOSE_CC=gcc python3 tests/run.py
-   CC=clang GOOSE_CC=clang python3 tests/run.py
+   CC=gcc GOOSE_CC=gcc python3 manage.py ci
+   CC=clang GOOSE_CC=clang python3 manage.py ci
    ```
 
    The Linux CI workflow must be green on the commit that will be tagged.
@@ -38,8 +38,10 @@ moved after publication; a mistake gets the next patch version.
    The maintainer or release automation does this, not a feature branch.
 6. **Verify the tag from outside the repository.** In an empty directory, write a program with
    `import goose_web from "aurthurm/goose-web@vX.Y.Z";`, run `goose fetch program.goose`, then
-   `goose build` and run it. Check `web::VERSION` and `GET /health`. The starter does the same thing:
-   `python3 scripts/new_project.py smoke` followed by `python3 test.py` inside the new directory.
+   `goose build` and run it. Check `web::VERSION` and `GET /health`. To test the starter against
+   the published tag, explicitly generate with `python3 manage.py new smoke --source aurthurm/goose-web@vX.Y.Z`,
+   then run `python3 manage.py ci` in that directory. The generator's default local checkout
+   does not verify remote consumption.
 7. **Publish the notes.** Create a GitHub release from the tag with the changelog section as its body.
 8. **Site.** The Pages workflow (`.github/workflows/pages.yml`) republishes `docs/site` on each push to
    `main`. Update the version shown in `docs/site` when the release changes the documented API.

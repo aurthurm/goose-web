@@ -70,6 +70,7 @@ def check_version():
 def main():
     BUILD.mkdir(exist_ok=True)
     check_version()
+    subprocess.run([sys.executable, str(ROOT / "tests/unit/tooling_test.py")], check=True)
     env = dict(os.environ)
     env.setdefault("GOOSE_HOME", str(BUILD / "cache"))
     compiler = os.environ.get("GOOSE", "goose")
@@ -116,7 +117,8 @@ def main():
                 ("tcp-proxy", "examples/tcp-proxy/server.goose"),
                 ("observability", "tests/fixtures/observability.goose")]
     if with_sqlite:
-        programs += [("db", "tests/unit/db.goose"), ("sqlite_todos", "examples/sqlite-todos/server.goose")]
+        programs += [("db", "tests/unit/db.goose"), ("sqlite_todos", "examples/sqlite-todos/server.goose"),
+                     ("issue_board", "examples/issue-board/server.goose")]
     for name, source in programs:
         subprocess.run([compiler, "build", str(ROOT / source), "--debug", "-o", str(BUILD / name)],
                        env=env, check=True, cwd=ROOT)
@@ -194,13 +196,15 @@ def main():
     if with_sqlite:
         subprocess.run([sys.executable, str(ROOT / "tests/integration/sqlite_todos.py"), str(BUILD / "sqlite_todos")],
                        env=env, check=True)
+        subprocess.run([sys.executable, str(ROOT / "tests/integration/issue_board.py"), str(BUILD / "issue_board")],
+                       env=env, check=True)
     # The starter a user copies: generate it against this checkout, then build and exercise it.
     starter_env = dict(env, GOOSE=compiler)
     with tempfile.TemporaryDirectory(prefix="goose-starter-") as directory:
         project = Path(directory) / "starter"
         subprocess.run([sys.executable, str(ROOT / "scripts/new_project.py"), "starter-check", str(project),
                         "--source", str(ROOT)], check=True, cwd=ROOT)
-        subprocess.run([sys.executable, str(project / "test.py")], env=starter_env, check=True, cwd=project)
+        subprocess.run([sys.executable, str(project / "manage.py"), "ci"], env=starter_env, check=True, cwd=project)
 
 
 if __name__ == "__main__":

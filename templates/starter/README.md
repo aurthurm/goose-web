@@ -58,16 +58,34 @@ Details are in [development server](https://github.com/aurthurm/goose-web/blob/m
 ## Test it
 
 ```sh
-python3 test.py
+python3 manage.py ci
 ```
 
-The script builds `server.goose`, starts it on a free port, checks every route, and stops it. It
-prints one line per check and exits nonzero on the first failure.
+`manage.py ci` typechecks `server.goose`, then runs `test.py`, which builds the app, starts it on
+a free port, checks every route and settings behavior, and stops it. Failures produce a nonzero
+exit status. `python3 manage.py test` and `make ci` are available too.
+
+## Project commands
+
+```sh
+python3 manage.py check
+python3 manage.py dev --port 8080
+python3 manage.py build --release
+python3 manage.py run -- --port 9000
+python3 manage.py ci
+```
+
+The optional Makefile provides `make check`, `make dev PORT=8080`, `make build`, `make release`
+and `make ci`. `GOOSE` selects the compiler. Dependencies are declared in Goose imports; there
+is no extra TOML manifest. The command wrapper keeps `GOOSE_HOME` absolute under `build/cache`
+unless you override it. `new` and documentation commands are framework-checkout tools.
 
 ## Layout
 
 ```text
 server.goose          routes, middleware, OpenAPI, main
+manage.py             project command interface (Python standard library)
+Makefile              optional aliases for manage.py
 views/home.html       the page template, checked at startup and embedded at compile time
 test.py               end-to-end checks (standard library only)
 ```
@@ -80,11 +98,11 @@ test.py               end-to-end checks (standard library only)
 import goose_web from "GOOSE_WEB_SOURCE";
 ```
 
-The script writes the source it was given here. By default it is `aurthurm/goose-web@v0.6.0`, a
-fetched package pinned to a release tag. The compiler downloads it into `~/.goose` on
-the first build. Other forms (a local checkout, a commit, a branch) are described in the
-[getting started guide](https://aurthurm.github.io/goose-web/getting-started.html). Only the root
-file declares packages, so this line is the only place to change the version.
+The generator writes the source it was given here. By default it is a relative path to the
+framework checkout that generated the project, so template and framework APIs match. Keep that
+checkout available. `--source` can choose another compatible source. The current template uses
+validation and settings APIs absent in `v0.6.0`; do not point it at that older tag. Only the root
+file declares package sources. See the [framework guides](https://github.com/aurthurm/goose-web/blob/main/docs/README.md).
 
 ## Next steps
 
