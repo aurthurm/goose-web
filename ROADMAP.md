@@ -60,6 +60,8 @@
 - [x] Many idle keep-alive connections do not delay other clients (integration test at `max_clients`).
 - Chunked encoding for general streaming bodies with explicit ownership/backpressure (server-sent events are done).
 - [x] Linux epoll readiness behind one reactor API (level-triggered, registration per connection), poll kept as the portable fallback.
+- [x] Pre-forked worker processes (`workers`): shared listener, one reactor per worker, supervised restarts with backoff, graceful drain, aggregated stats; per-worker state and SQLite connections opened after fork are documented.
+- Shared state across workers (a shared store, or per-worker publish for server-sent events).
 - kqueue for BSD and macOS, and a Windows transport, measured under load.
 - TLS integration and deployment guidance.
 

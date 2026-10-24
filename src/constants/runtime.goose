@@ -49,3 +49,22 @@ const INPUT_CLASSES = 4;
 const SERVER_STARTED = 1;
 const SERVER_STOPPING = 2;
 const SERVER_STOPPED = 3;
+
+// Worker processes (workers != 1). 1 keeps the single-process reactor; 0 means one per CPU.
+const DEFAULT_WORKERS = 1;
+// One ServerStats record on the worker pipe: twelve i64 fields, written whole (writes below PIPE_BUF are atomic).
+const STATS_RECORD_BYTES = 96;
+// A worker that exits without being asked is restarted after a backoff that doubles from the
+// minimum to the maximum. A worker that lived this long resets its backoff.
+const WORKER_BACKOFF_MIN_MS = 50;
+const WORKER_BACKOFF_MAX_MS = 2000;
+const WORKER_STABLE_MS = 10000;
+// More restarts than this within WORKER_RESTART_WINDOW_MS stop the whole server with an error.
+const WORKER_RESTART_BUDGET = 30;
+const WORKER_RESTART_WINDOW_MS = 60000;
+// Children have the full shutdown grace period; the parent then sends SIGKILL this much later.
+const WORKER_KILL_MARGIN_MS = 500;
+// How long the parent sleeps between supervision passes when no stats record arrives.
+const WORKER_SUPERVISE_MS = 20;
+const SIGNAL_TERM = 15;
+const SIGNAL_KILL = 9;

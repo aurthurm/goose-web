@@ -71,6 +71,30 @@ fn test_rejections() {
     expect_error(argv_of("server", "9000", "extra", ""), "unexpected argument: extra");
 }
 
+fn test_workers() {
+    // --workers is 0 (one per CPU) or 1..MAX_WORKERS; the default keeps the single-process reactor.
+    assert(web::server_config().workers == 1);
+    let config, ok, message = web::config_from_args(argv_of("server", "--workers", "4", ""));
+    if !ok { abort(message[..]); }
+    assert(config.workers == 4);
+    let zero, zero_ok, zero_message = web::config_from_args(argv_of("server", "--workers=0", "", ""));
+    if !zero_ok { abort(zero_message[..]); }
+    assert(zero.workers == 0);
+    let maximum, max_ok, max_message = web::config_from_args(argv_of("server", "--workers", "256", ""));
+    if !max_ok { abort(max_message[..]); }
+    assert(maximum.workers == web::MAX_WORKERS);
+    expect_error(argv_of("server", "--workers", "257", ""), "invalid value for --workers");
+    expect_error(argv_of("server", "--workers", "-1", ""), "invalid value for --workers");
+    expect_error(argv_of("server", "--workers", "two", ""), "invalid value for --workers");
+    var bad = web::server_config();
+    bad.workers = -1;
+    assert(!web::validate_server_config(bad));
+    bad.workers = web::MAX_WORKERS + 1;
+    assert(!web::validate_server_config(bad));
+    bad.workers = web::MAX_WORKERS;
+    assert(web::validate_server_config(bad));
+}
+
 fn test_environment_defaults() {
     // The test runner does not set GOOSE_WEB_*, so the defaults must come back as ok.
     let config, ok, message = web::config_from_env();
@@ -81,6 +105,7 @@ fn test_environment_defaults() {
 fn main() {
     test_positional_and_flags();
     test_rejections();
+    test_workers();
     test_environment_defaults();
-    print("App config tests passed: positional port, flags, ranges, messages, environment defaults");
+    print("App config tests passed: positional port, flags, workers, ranges, messages, environment defaults");
 }

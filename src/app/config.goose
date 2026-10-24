@@ -14,12 +14,14 @@ namespace web;
 //   --port N               1..65535
 //   --host public|loopback public_bind = true (all IPv4 interfaces) or false (127.0.0.1)
 //   --max-clients N        1..MAX_CLIENTS
-//   --max-requests N       0 = unlimited; stop after N completed responses
+//   --max-requests N       0 = unlimited; stop after N completed responses (per worker when workers > 1)
+//   --workers N            1 = single process (default); 0 = one worker per CPU; 2..256 = that many
 // Each option also accepts --name=value. Other arguments are errors, so an application that
 // takes its own positional arguments passes only the prefix it owns (see examples/basic).
 //
 // Environment: GOOSE_WEB_PORT takes the --port rule. GOOSE_WEB_PUBLIC takes "1" or "true" for
-// public, "0" or "false" for loopback. Unset and empty variables keep the defaults.
+// public, "0" or "false" for loopback. GOOSE_WEB_WORKERS takes the --workers rule. Unset and
+// empty variables keep the defaults.
 
 const OPTION_OK = 0;
 const OPTION_UNKNOWN = 1;
@@ -51,6 +53,14 @@ fn clients_text(text: const u8[:], out: i64&) -> bool {
     var value: i64 = 0;
     if !parse_config_number(text, value) || value < 1 || value > MAX_CLIENTS { return false; }
     out = value;
+    return true;
+}
+
+// 0 means one worker per CPU; the count is resolved when the server starts.
+fn workers_text(text: const u8[:], out: i32&) -> bool {
+    var value: i64 = 0;
+    if !parse_config_number(text, value) || value > MAX_WORKERS { return false; }
+    out = value as i32;
     return true;
 }
 
@@ -93,6 +103,10 @@ fn set_option(config: ServerConfig&, name: const u8[:], value: const u8[:]) -> i
     }
     if name == "--max-requests" {
         if requests_text(value, config.max_requests) { return OPTION_OK; }
+        return OPTION_INVALID;
+    }
+    if name == "--workers" {
+        if workers_text(value, config.workers) { return OPTION_OK; }
         return OPTION_INVALID;
     }
     return OPTION_UNKNOWN;
@@ -151,6 +165,9 @@ fn config_from_env() -> ServerConfig, bool, u8[>..] {
     let public_length = getenv_into("GOOSE_WEB_PUBLIC", text[..]);
     if public_length == ENV_TOO_LONG { return env_failure("GOOSE_WEB_PUBLIC"); }
     if public_length > 0 && !switch_text(text[..public_length], config.public_bind) { return env_failure("GOOSE_WEB_PUBLIC"); }
+    let workers_length = getenv_into("GOOSE_WEB_WORKERS", text[..]);
+    if workers_length == ENV_TOO_LONG { return env_failure("GOOSE_WEB_WORKERS"); }
+    if workers_length > 0 && !workers_text(text[..workers_length], config.workers) { return env_failure("GOOSE_WEB_WORKERS"); }
     if !validate_server_config(config) { return argument_failure("invalid server configuration"); }
     return config, true, "";
 }

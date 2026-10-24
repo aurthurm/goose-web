@@ -111,14 +111,18 @@ and put it behind something you trust.</p>
 streams receive their close event. Keep the grace period longer than your slowest handler. The <code>logger</code> middleware prints one line per
 response to standard output, so a supervisor or log shipper can collect it directly.</p>
 
-<h3>Several processes <span class="soon">coming</span></h3>
-<p>Pre-forked workers are being added, so that one binary can run several reactor processes on one port. That work is not
-released yet, and the configuration for it is not final. Until it lands, run one process per port and balance across them
-at the proxy. The <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md">API reference</a> is the place to watch
-for the final fields.</p>
+<h3>Several processes</h3>
+<p>Set <code>workers</code> (or pass <code>--workers N</code>, or <code>GOOSE_WEB_WORKERS</code>) to pre-fork that many reactor
+processes on one port; <code>0</code> means one per CPU. The parent owns the listener and signals, restarts a worker that
+crashes, drains all of them on SIGTERM and sums their stats. On a 16-core development box the hello example served about
+129k requests/s with one worker and about 395k with four (keep-alive load, two local load generators).</p>
+<pre><code>./build/server --port 8080 --workers 4</code></pre>
+<p>Each worker has its own copy of the program's globals: in-memory stores, sessions, rate-limit counters and server-sent
+event streams are per worker. Keep shared state in SQLite (each worker opens its own connection after the fork) or another
+external store. Details are in the <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#worker-processes">API reference</a>.</p>
 
 <h2>Performance notes</h2>
-<p>Goose Web is single-threaded per process: one readiness loop accepts, reads, runs handlers and writes. Memory is bounded by
+<p>Each Goose Web process is single-threaded: one readiness loop accepts, reads, runs handlers and writes. Memory is bounded by
 the configuration of each process. Some properties to design around:</p>
 <ul>
   <li><strong>Handlers run on the reactor.</strong> Work that blocks (a slow file, a long SQLite query, a network call made

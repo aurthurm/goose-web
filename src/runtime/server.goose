@@ -20,7 +20,7 @@ struct ServerConfig {
     read_timeout_ms: i64, write_timeout_ms: i64, idle_timeout_ms: i64, poll_timeout_ms: i32,
     shutdown_grace_ms: i64, max_requests: i64, max_requests_per_connection: i64, keep_alive: bool,
     handle_signals: bool, max_pool_bytes: i64, max_sse_clients: i64, sse_heartbeat_ms: i64,
-    sse_max_queued_bytes: i64
+    sse_max_queued_bytes: i64, workers: i32
 }
 struct ServerStats {
     accepted: i64, active: i64, completed: i64, rejected: i64,
@@ -49,7 +49,7 @@ fn server_config() -> ServerConfig {
         max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION, keep_alive: DEFAULT_KEEP_ALIVE,
         handle_signals: DEFAULT_HANDLE_SIGNALS, max_pool_bytes: DEFAULT_MAX_POOL_BYTES,
         max_sse_clients: DEFAULT_MAX_SSE_CLIENTS, sse_heartbeat_ms: DEFAULT_SSE_HEARTBEAT_MS,
-        sse_max_queued_bytes: DEFAULT_SSE_MAX_QUEUED_BYTES };
+        sse_max_queued_bytes: DEFAULT_SSE_MAX_QUEUED_BYTES, workers: DEFAULT_WORKERS };
 }
 // Millisecond durations are capped at one day to keep nanosecond arithmetic safe.
 // The pool must hold one maximal response, so a single response never needs more than the pool.
@@ -67,7 +67,8 @@ fn validate_server_config(c: ServerConfig) -> bool {
         c.shutdown_grace_ms >= 0 && c.shutdown_grace_ms <= MAX_TIMEOUT_MS &&
         c.max_sse_clients >= 0 && c.max_sse_clients <= MAX_SSE_CLIENTS &&
         c.sse_heartbeat_ms >= 1 && c.sse_heartbeat_ms <= MAX_TIMEOUT_MS &&
-        c.sse_max_queued_bytes >= MIN_SSE_QUEUED_BYTES && c.sse_max_queued_bytes <= MAX_SSE_QUEUED_BYTES;
+        c.sse_max_queued_bytes >= MIN_SSE_QUEUED_BYTES && c.sse_max_queued_bytes <= MAX_SSE_QUEUED_BYTES &&
+        c.workers >= 0 && c.workers <= MAX_WORKERS;
 }
 fn request_shutdown(control: ServerControl&) { control.shutdown_requested = true; }
 extern fn gw_accept(listener: i32) -> i32;
@@ -440,11 +441,25 @@ fn sse_upgrade(c: Connection&, control: ServerControl&, config: ServerConfig, po
 // Signal ownership is process-wide and opt-in: only one signal-enabled server may run.
 fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&) -> bool {
     if !validate_server_config(config) || control.running { return false; }
+    if config.workers != 1 { return serve_workers(config, control, H, Tick, Lifecycle); }
     var listener = gw_listen_config(config.port, if config.public_bind { 1 } else { 0 });
     if listener < 0 { return false; }
-    if gw_reactor_open() < 0 { gw_close(listener); return false; }
-    if gw_reactor_add(LISTENER_TOKEN, listener, 0) < 0 { gw_reactor_close(); gw_close(listener); return false; }
-    if config.handle_signals && gw_signals_begin() < 0 { gw_reactor_close(); gw_close(listener); return false; }
+    if config.handle_signals && gw_signals_begin() < 0 { gw_close(listener); return false; }
+    return serve_loop(config, control, listener, H, Tick, Lifecycle);
+}
+
+// The reactor on an open listener. serve_config calls it for workers = 1; a worker process calls it
+// on the listener it inherited. The readiness instance is opened here, so each worker process owns
+// its own (no epoll descriptor crosses fork). It returns after the listener is closed and, when
+// config.handle_signals, after signal ownership is released.
+fn serve_loop<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&, inherited: i32) -> bool {
+    var listener = inherited;
+    if gw_reactor_open() < 0 || gw_reactor_add(LISTENER_TOKEN, listener, 0) < 0 {
+        gw_reactor_close();
+        gw_close(listener);
+        if config.handle_signals { gw_signals_end(); }
+        return false;
+    }
     control.stats = default<ServerStats>();
     control.running = true;
     control.stopping = false;
@@ -683,6 +698,167 @@ fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
     gw_close(listener);
     gw_reactor_close();
     if config.handle_signals { gw_signals_end(); }
+    control.running = false;
+    Lifecycle(SERVER_STOPPED, control.stats);
+    return success;
+}
+
+// ---- Worker processes (workers != 1) -------------------------------------------------------
+// The parent opens the listener and owns SIGINT/SIGTERM, and it never serves. It forks each worker,
+// which inherits the listener and runs serve_loop with workers = 1, handle_signals = true and the
+// ignore_lifecycle callback. A worker writes its ServerStats to a pipe when it stops; the parent
+// sums those records into control.stats, which SERVER_STOPPED reports. See docs/api.md.
+// Worker callbacks (H, Tick) run in the workers; the parent runs Tick and the lifecycle stages.
+extern "gw_pipe_write_record" fn write_record(fd: i32, record: ServerStats&, size: i64) -> i64;
+extern "gw_pipe_read_record" fn read_record(fd: i32, record: ServerStats&, size: i64) -> i64;
+
+struct WorkerSlot { pid: i32, started: i64, spawn_at: i64, backoff_ms: i64 }
+
+fn add_stats(total: ServerStats&, s: ServerStats) {
+    total.accepted += s.accepted;
+    total.active += s.active;
+    total.completed += s.completed;
+    total.rejected += s.rejected;
+    total.timeouts += s.timeouts;
+    total.forced_closes += s.forced_closes;
+    total.bytes_read += s.bytes_read;
+    total.bytes_written += s.bytes_written;
+    total.reused += s.reused;
+    total.sse_active += s.sse_active;
+    total.sse_sent += s.sse_sent;
+    total.sse_dropped += s.sse_dropped;
+}
+
+// Reads every complete stats record waiting on the pipe into control.stats.
+fn collect_worker_stats(read_end: i32, control: ServerControl&) {
+    var record = default<ServerStats>();
+    loop {
+        if read_record(read_end, record, STATS_RECORD_BYTES) != STATS_RECORD_BYTES { break; }
+        add_stats(control.stats, record);
+    }
+}
+
+// Forks one worker. The parent gets the child's pid, or -1 when fork fails. The child serves
+// until it stops, reports its stats and exits; it never returns from this function.
+fn spawn_worker<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&, listener: i32,
+        read_end: i32, write_end: i32) -> i32 {
+    let pid = fork_process();
+    if pid != 0 { return pid; }
+    gw_close(read_end);
+    // The inherited handlers are the parent's; restore the originals, then take this worker's own.
+    gw_signals_end();
+    if gw_signals_begin() < 0 { exit(1); }
+    var worker = config;
+    worker.workers = 1;
+    worker.handle_signals = true;
+    let ok = serve_loop(worker, control, listener, H, Tick, ignore_lifecycle);
+    write_record(write_end, control.stats, STATS_RECORD_BYTES);
+    gw_close(write_end);
+    if ok { exit(0); }
+    exit(1);
+}
+
+// Preforked workers. The listener is opened once, here, and every worker accepts from it.
+// Restarts follow the policy in runtime/constants (backoff, restart budget). When the budget is
+// spent, or fork fails, the whole server stops and returns false.
+fn serve_workers<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&) -> bool {
+    var listener = gw_listen_config(config.port, if config.public_bind { 1 } else { 0 });
+    if listener < 0 { return false; }
+    if gw_signals_begin() < 0 { gw_close(listener); return false; }
+    var read_end: i32 = INVALID_SOCKET;
+    var write_end: i32 = INVALID_SOCKET;
+    if stats_pipe(read_end, write_end) < 0 { gw_signals_end(); gw_close(listener); return false; }
+    var wanted: i64 = config.workers;
+    if wanted == 0 { wanted = cpu_count(); }
+    control.stats = default<ServerStats>();
+    control.running = true;
+    control.stopping = false;
+    var slots: WorkerSlot[MAX_WORKERS] = [default<WorkerSlot>(); MAX_WORKERS];
+    for i in wanted { slots[i].pid = 0; slots[i].backoff_ms = WORKER_BACKOFF_MIN_MS; }
+    var restarts: i64[WORKER_RESTART_BUDGET] = [0; WORKER_RESTART_BUDGET];
+    var restart_count: i64 = 0;
+    var success = true;
+    var stopping = false;
+    var killed = false;
+    var grace_deadline: i64 = 0;
+    for i in wanted {
+        let pid = spawn_worker(config, control, listener, read_end, write_end, H, Tick, Lifecycle);
+        if pid < 0 { success = false; control.shutdown_requested = true; break; }
+        slots[i].pid = pid;
+        slots[i].started = clock_ns();
+    }
+    Lifecycle(SERVER_STARTED, control.stats);
+    loop {
+        Tick();
+        if gw_signal_pending() != 0 { request_shutdown(control); }
+        let now = clock_ns();
+        if control.shutdown_requested && !stopping {
+            stopping = true;
+            control.stopping = true;
+            gw_close(listener);
+            listener = INVALID_SOCKET;
+            grace_deadline = now + (config.shutdown_grace_ms + WORKER_KILL_MARGIN_MS) * NANOSECONDS_PER_MILLISECOND;
+            Lifecycle(SERVER_STOPPING, control.stats);
+            for i in wanted { if slots[i].pid > 0 { signal_process(slots[i].pid, SIGNAL_TERM); } }
+        }
+        // Reap workers that stopped. One that stopped unasked is restarted after its backoff.
+        for i in wanted {
+            if slots[i].pid <= 0 { continue; }
+            var status: i32 = 0;
+            if wait_child(slots[i].pid, status) == 0 { continue; }
+            slots[i].pid = 0;
+            if stopping { continue; }
+            if now - slots[i].started >= WORKER_STABLE_MS * NANOSECONDS_PER_MILLISECOND {
+                slots[i].backoff_ms = WORKER_BACKOFF_MIN_MS;
+            }
+            let window_start = now - WORKER_RESTART_WINDOW_MS * NANOSECONDS_PER_MILLISECOND;
+            var kept: i64 = 0;
+            for k in restart_count {
+                if restarts[k] >= window_start { restarts[kept] = restarts[k]; kept += 1; }
+            }
+            restart_count = kept;
+            if restart_count >= WORKER_RESTART_BUDGET {
+                success = false;
+                control.shutdown_requested = true;
+                continue;
+            }
+            restarts[restart_count] = now;
+            restart_count += 1;
+            slots[i].spawn_at = now + slots[i].backoff_ms * NANOSECONDS_PER_MILLISECOND;
+            slots[i].backoff_ms = if slots[i].backoff_ms * 2 > WORKER_BACKOFF_MAX_MS { WORKER_BACKOFF_MAX_MS } else { slots[i].backoff_ms * 2 };
+        }
+        if !stopping {
+            for i in wanted {
+                if slots[i].pid != 0 || now < slots[i].spawn_at { continue; }
+                let pid = spawn_worker(config, control, listener, read_end, write_end, H, Tick, Lifecycle);
+                if pid < 0 { success = false; control.shutdown_requested = true; break; }
+                slots[i].pid = pid;
+                slots[i].started = now;
+            }
+        }
+        var wait_ms = WORKER_SUPERVISE_MS as i32;
+        if stopping {
+            let remaining_ms = (grace_deadline - clock_ns()) / NANOSECONDS_PER_MILLISECOND;
+            if remaining_ms < wait_ms { wait_ms = if remaining_ms > 0 { remaining_ms as i32 } else { 0 }; }
+        }
+        wait_readable(read_end, wait_ms);
+        collect_worker_stats(read_end, control);
+        if stopping {
+            var live = false;
+            for i in wanted { if slots[i].pid > 0 { live = true; } }
+            if !live { break; }
+            if !killed && clock_ns() >= grace_deadline {
+                killed = true;
+                for i in wanted { if slots[i].pid > 0 { signal_process(slots[i].pid, SIGNAL_KILL); } }
+            }
+        }
+    }
+    collect_worker_stats(read_end, control);
+    gw_close(read_end);
+    gw_close(write_end);
+    gw_close(listener);
+    gw_signals_end();
+    control.stopping = true;
     control.running = false;
     Lifecycle(SERVER_STOPPED, control.stats);
     return success;

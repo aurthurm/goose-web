@@ -57,6 +57,7 @@ fn main() {
 - Signed cookie sessions (`session`, 16 entries, HMAC-SHA256) and double-submit CSRF protection (`csrf`) with a CSPRNG-backed token. See [Sessions](docs/api.md#sessions) and [CSRF](docs/api.md#csrf); the security notes there say what these do not protect.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
 - Nonblocking reactor: epoll readiness on Linux (poll elsewhere) with one registration per connection, bounded client slots, partial writes, read and write deadlines.
+- Multi-core serving with pre-forked worker processes (`--workers N`, `0` for one per CPU): shared listener, supervised restarts, graceful drain, aggregated stats. Per-worker state is documented in [worker processes](docs/api.md#worker-processes).
 - Server-sent events: `c.sse(channel)` upgrades a route to a chunked event stream, `web::sse_publish` fans events out per channel, with heartbeats, bounded per-stream queues that drop slow readers, and a close event at shutdown. See [SSE](docs/api.md#server-sent-events) and the [sse-clock example](examples/sse-clock/README.md).
 - Bounded memory: fixed capacities for headers, routes, queues and clients; request input and response bodies grow on demand (input up to `max_request_bytes`, responses up to `max_response_bytes`, 1 MiB default, 16 MiB ceiling), in-flight responses share a pool capped by `max_pool_bytes`, and idle connections hold no input memory. `examples/hello` starts at about 3.2 MB resident.
 - Typed event bus: subscriptions, one-shot listeners, FIFO queue with visible backpressure.
@@ -141,6 +142,19 @@ goose build examples/basic/server.goose -o build/server
 The example listens on `127.0.0.1`. Ctrl+C or SIGTERM stops accepting clients and
 drains existing connections within a five-second grace period.
 
+To use every core, pre-fork worker processes. Apps whose `main` calls `web::config_from_args`
+accept `--workers N` (`0` for one per CPU) and read `GOOSE_WEB_WORKERS`:
+
+```sh
+goose build examples/hello/server.goose -o build/hello
+./build/hello --port 8080 --workers 0     # one worker process per CPU
+```
+
+The basic Todo example keeps its store in memory, so each worker would hold its own list; run it
+with the default single process. `examples/sqlite-todos` keeps its data in a file and works with
+several workers. A load generator for measurements is in `bench/load.c`:
+`cc -O2 bench/load.c -o build/load`, then `build/load -c 64 -d 5 -p /health`.
+
 ```sh
 curl http://127.0.0.1:8080/health
 curl -i -H 'Content-Type: application/json' \
@@ -175,16 +189,17 @@ src/
   app/                    Application API: Ctx, c.routes/c.group, middleware, responses, forms, templates, run, config
   sys/                    File, environment, clock and crypto (SHA-256, HMAC, CSPRNG, base64url) access over the native shim (no os import)
   events/                 Typed bounded event bus
-  runtime/                Readiness loop, configuration, lifecycle, metrics
-native/posix/             Socket, signal, file and environment shim
+  runtime/                Readiness loop, configuration, lifecycle, metrics, worker processes
+native/posix/             Socket, signal, file, environment and process shim
 db/                       Opt-in SQLite package (goose_web_db): query builder, typed records, C shim
+bench/load.c              Keep-alive HTTP load generator for benchmarks
 examples/hello/           Smallest app: health, path parameter, typed POST
 examples/basic/           Todo API, OpenAPI contract, and application modules
 examples/sqlite-todos/    Todo API persisted in a SQLite file through web::db
 examples/pages/           Server-rendered todo list: embedded templates and a form POST
 tests/
   unit/                   Goose contract tests (including the SQLite layer on :memory:)
-  native/                 C socket tests
+  native/                 C socket, system, crypto and process tests
   fixtures/               Server programs used by integration tests
   integration/            Real HTTP and runtime checks
   fuzz/                   Reproducible parser fuzz/property corpus

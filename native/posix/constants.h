@@ -23,5 +23,9 @@
 #define GW_FILE_ERROR (-1)
 #define GW_ENV_UNSET (-1)
 #define GW_ENV_TOO_LONG (-2)
+/* src/constants/limits.goose (MAX_WORKERS) and native/posix/process.c. */
+#define GW_MAX_WORKERS 256
+#define GW_CHILD_RUNNING 0
+#define GW_CHILD_REAPED 1
 
 #endif

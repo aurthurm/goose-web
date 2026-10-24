@@ -65,7 +65,8 @@ def main():
                 ("app", "tests/fixtures/app.goose"), ("routing", "tests/fixtures/routing.goose"),
                 ("hello", "examples/hello/server.goose"),
                 ("pages", "examples/pages/server.goose"), ("server", "examples/basic/server.goose"),
-                ("sse_fixture", "tests/fixtures/sse.goose"), ("sse_clock", "examples/sse-clock/server.goose")]
+                ("sse_fixture", "tests/fixtures/sse.goose"), ("sse_clock", "examples/sse-clock/server.goose"),
+                ("workers", "tests/fixtures/workers.goose")]
     if with_sqlite:
         programs += [("db", "tests/unit/db.goose"), ("sqlite_todos", "examples/sqlite-todos/server.goose")]
     for name, source in programs:
@@ -91,6 +92,9 @@ def main():
     subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/crypto.c"),
                     "-o", str(BUILD / "crypto")], check=True)
     subprocess.run([str(BUILD / "crypto")], check=True)
+    subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/process.c"),
+                    "-o", str(BUILD / "process")], check=True)
+    subprocess.run([str(BUILD / "process")], check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/http.py"), str(BUILD / "features")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/app.py"), str(BUILD / "app")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/routing.py"), str(BUILD / "routing")], env=env, check=True)
@@ -98,6 +102,8 @@ def main():
     subprocess.run([sys.executable, str(ROOT / "tests/integration/pages.py"), str(BUILD / "pages")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/todos.py"), str(BUILD / "server")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/runtime.py")], env=env, check=True)
+    subprocess.run([sys.executable, str(ROOT / "tests/integration/workers.py"), str(BUILD / "workers")],
+                   env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/sse.py"), str(BUILD / "sse_fixture")],
                    env=env, check=True)
     if with_sqlite:
