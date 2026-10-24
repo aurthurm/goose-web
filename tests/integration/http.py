@@ -8,23 +8,34 @@ import subprocess
 import sys
 import time
 
+class ResponseReader:
+    """Frame responses on one socket, retaining bytes from pipelined responses."""
+
+    def __init__(self, client):
+        self.client = client
+        self.buffer = b""
+
+    def fill(self):
+        chunk = self.client.recv(16384)
+        assert chunk, "connection closed before response was complete"
+        self.buffer += chunk
+
+    def read(self, head=False):
+        while b"\r\n\r\n" not in self.buffer:
+            self.fill()
+        headers, self.buffer = self.buffer.split(b"\r\n\r\n", 1)
+        status = int(headers.split(b" ", 2)[1])
+        fields = dict(line.split(b": ", 1) for line in headers.split(b"\r\n")[1:])
+        length = 0 if head or status in (204, 304) else int(fields.get(b"Content-Length", b"0"))
+        while len(self.buffer) < length:
+            self.fill()
+        body, self.buffer = self.buffer[:length], self.buffer[length:]
+        return status, fields, body
+
+
 def read_response(client, head=False):
-    # Frames one response by Content-Length, so persistent connections stay usable.
-    buffer = b""
-    while b"\r\n\r\n" not in buffer:
-        chunk = client.recv(16384)
-        assert chunk, "connection closed before response headers"
-        buffer += chunk
-    headers, body = buffer.split(b"\r\n\r\n", 1)
-    status = int(headers.split(b" ", 2)[1])
-    fields = dict(line.split(b": ", 1) for line in headers.split(b"\r\n")[1:])
-    length = 0 if head else int(fields.get(b"Content-Length", b"0"))
-    while len(body) < length:
-        chunk = client.recv(16384)
-        assert chunk, "connection closed inside response body"
-        body += chunk
-    assert len(body) == length, (headers, body[:80])
-    return status, fields, body[:length]
+    # Fresh reader for exchanges that discard the socket after this response.
+    return ResponseReader(client).read(head)
 
 
 def exchange(port, raw, fragments=False):
@@ -71,8 +82,14 @@ def malformed_requests(port):
     first = (b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: " +
              str(len(body)).encode() + b"\r\n\r\n" + body)
     extra = b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"
-    status, _, echoed = exchange(port, first + extra)
-    assert status == 200 and echoed == body
+    with socket.create_connection(("127.0.0.1", port), timeout=3) as client:
+        client.sendall(first + extra)
+        reader = ResponseReader(client)
+        status, _, echoed = reader.read()
+        assert status == 200 and echoed == body
+        status, _, payload = reader.read()
+        assert status == 200 and payload == b'{"status":"ok"}\n'
+
 
 
 def test_server(executable):
@@ -103,11 +120,12 @@ def test_server(executable):
             health(port)
             assert time.monotonic() - start < 1, "incomplete client blocked another request"
             slow.sendall(b" localhost\r\n\r\n")
-            status, _, _ = read_response(slow)
+            reader = ResponseReader(slow)
+            status, _, _ = reader.read()
             assert status == 200
             # Same socket, second request: keep-alive is the default.
             slow.sendall(b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n")
-            assert read_response(slow)[0] == 200
+            assert reader.read()[0] == 200
         with ThreadPoolExecutor(max_workers=24) as pool:
             list(pool.map(health, [port] * 48))
         payload = b"hello\x00from goose\xff"
