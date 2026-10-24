@@ -43,6 +43,12 @@ const MAX_SSE_OUTBOX_BYTES = 262144;
 const MAX_SSE_OUTBOX_MESSAGES = 64;
 // Pre-forked worker processes (ServerConfig.workers). Each worker holds its own connection slots.
 const MAX_WORKERS = 256;
+// Shared store (native/posix/shared.c): an entry's key and value are bounded by its slot, and the
+// store as a whole by MAX_SHARED_STORE_BYTES. Streams registered in it are capped at SHARED_STREAMS.
+const SHARED_KEY_MAX_BYTES = 128;
+const SHARED_VALUE_MAX_BYTES = 1024;
+const MAX_SHARED_STORE_BYTES = 268435456;
+const SHARED_STREAMS = 2048;
 
 // One Set-Cookie line written by the session middleware (name, value and attributes). Longer
 // than a header value, so it has its own field in Response; 4096 is the RFC 6265 minimum that

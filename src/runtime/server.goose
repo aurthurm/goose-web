@@ -7,6 +7,7 @@ import src.http.errors;
 import src.http.sse;
 import std;
 import src.sys.process;
+import src.sys.shared;
 namespace web;
 
 extern fn gw_listen_config(port: i32, public_bind: i32) -> i32;
@@ -20,7 +21,7 @@ struct ServerConfig {
     read_timeout_ms: i64, write_timeout_ms: i64, idle_timeout_ms: i64, poll_timeout_ms: i32,
     shutdown_grace_ms: i64, max_requests: i64, max_requests_per_connection: i64, keep_alive: bool,
     handle_signals: bool, max_pool_bytes: i64, max_sse_clients: i64, sse_heartbeat_ms: i64,
-    sse_max_queued_bytes: i64, workers: i32
+    sse_max_queued_bytes: i64, workers: i32, shared_store_bytes: i64
 }
 struct ServerStats {
     accepted: i64, active: i64, completed: i64, rejected: i64,
@@ -40,6 +41,11 @@ struct ServerControl {
 // Framed SSE bytes staged by sse_publish. It stays empty until the first publish, so an application
 // that never streams allocates nothing for it. It is capped at MAX_SSE_OUTBOX_BYTES.
 var sse_outbox: u8[>..] = [];
+// With the shared store, each process reads the SSE ring from its own position. sse_stage holds one
+// framed message between the ring and the outbox, and is allocated on first use only.
+var sse_read_position: i64 = 0;
+var sse_read_seq: i64 = 0;
+var sse_stage: u8[>..] = [];
 fn server_config() -> ServerConfig {
     return ServerConfig { port: DEFAULT_PORT, public_bind: DEFAULT_PUBLIC_BIND, max_clients: DEFAULT_MAX_CLIENTS,
         max_request_bytes: DEFAULT_MAX_REQUEST_BYTES, max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
@@ -49,7 +55,8 @@ fn server_config() -> ServerConfig {
         max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION, keep_alive: DEFAULT_KEEP_ALIVE,
         handle_signals: DEFAULT_HANDLE_SIGNALS, max_pool_bytes: DEFAULT_MAX_POOL_BYTES,
         max_sse_clients: DEFAULT_MAX_SSE_CLIENTS, sse_heartbeat_ms: DEFAULT_SSE_HEARTBEAT_MS,
-        sse_max_queued_bytes: DEFAULT_SSE_MAX_QUEUED_BYTES, workers: DEFAULT_WORKERS };
+        sse_max_queued_bytes: DEFAULT_SSE_MAX_QUEUED_BYTES, workers: DEFAULT_WORKERS,
+        shared_store_bytes: DEFAULT_SHARED_STORE_BYTES };
 }
 // Millisecond durations are capped at one day to keep nanosecond arithmetic safe.
 // The pool must hold one maximal response, so a single response never needs more than the pool.
@@ -68,7 +75,8 @@ fn validate_server_config(c: ServerConfig) -> bool {
         c.max_sse_clients >= 0 && c.max_sse_clients <= MAX_SSE_CLIENTS &&
         c.sse_heartbeat_ms >= 1 && c.sse_heartbeat_ms <= MAX_TIMEOUT_MS &&
         c.sse_max_queued_bytes >= MIN_SSE_QUEUED_BYTES && c.sse_max_queued_bytes <= MAX_SSE_QUEUED_BYTES &&
-        c.workers >= 0 && c.workers <= MAX_WORKERS;
+        c.workers >= 0 && c.workers <= MAX_WORKERS &&
+        (c.shared_store_bytes == 0 || (c.shared_store_bytes >= MIN_SHARED_STORE_BYTES && c.shared_store_bytes <= MAX_SHARED_STORE_BYTES));
 }
 fn request_shutdown(control: ServerControl&) { control.shutdown_requested = true; }
 extern fn gw_accept(listener: i32) -> i32;
@@ -198,6 +206,7 @@ fn close_connection(c: Connection&, control: ServerControl&, pool: ChunkPool&, i
     if c.sse {
         control.stats.sse_active -= 1;
         control.sse_slots[c.slot].active = false;
+        gw_shared_stream_remove(c.slot as i32);
         c.sse = false;
         c.sse_closing = false;
     }
@@ -343,6 +352,31 @@ fn sse_fan_out(clients: Connection[MAX_CLIENTS]&, control: ServerControl&, pool:
     control.sse_msg_count = 0;
 }
 
+// Copies the messages published since this process last looked, from the shared ring, to the streams of
+// this process. Without the shared store the outbox holds them instead, so this is then sse_fan_out.
+fn sse_deliver(clients: Connection[MAX_CLIENTS]&, control: ServerControl&, pool: ChunkPool&, inputs: InputPool&, config: ServerConfig) {
+    if !shared_enabled() {
+        sse_fan_out(clients, control, pool, inputs, config);
+        return;
+    }
+    if sse_stage.len == 0 { sse_stage.resize(MAX_SSE_OUTBOX_BYTES, 0); }
+    var channel: i32 = 0;
+    loop {
+        var position = sse_read_position;
+        var seq = sse_read_seq;
+        let n = gw_shared_ring_read(position, seq, channel, sse_stage[..]);
+        sse_read_position = position;
+        sse_read_seq = seq;
+        if n <= 0 { return; }
+        sse_outbox.clear();
+        sse_outbox.append(sse_stage[0..n]);
+        control.sse_msg_channel[0] = channel;
+        control.sse_msg_end[0] = sse_outbox.len;
+        control.sse_msg_count = 1;
+        sse_fan_out(clients, control, pool, inputs, config);
+    }
+}
+
 // Shutdown: every stream gets the close event and the terminating chunk, then closes once flushed.
 fn sse_close_all(clients: Connection[MAX_CLIENTS]&, control: ServerControl&, pool: ChunkPool&, inputs: InputPool&, config: ServerConfig) {
     var closing: u8[>..] = [];
@@ -423,6 +457,8 @@ fn sse_upgrade(c: Connection&, control: ServerControl&, config: ServerConfig, po
     prepare_response(r);
     if r.status != HTTP_OK { return HTTP_INTERNAL_SERVER_ERROR; }
     if !stage_stream(c, pool, head_buf, r, config.write_timeout_ms) { return HTTP_SERVICE_UNAVAILABLE; }
+    // With the shared store, the stream is registered where every worker can count it; a full registry refuses it.
+    if shared_enabled() && gw_shared_stream_add(c.slot as i32, r.sse_channel) < 0 { return HTTP_SERVICE_UNAVAILABLE; }
     c.sse = true;
     c.sse_closing = false;
     c.sse_channel = r.sse_channel;
@@ -441,6 +477,8 @@ fn sse_upgrade(c: Connection&, control: ServerControl&, config: ServerConfig, po
 // Signal ownership is process-wide and opt-in: only one signal-enabled server may run.
 fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&) -> bool {
     if !validate_server_config(config) || control.running { return false; }
+    // The shared store is made before any fork, so the single process and every worker share one layout.
+    if !shared_store_open(config.shared_store_bytes) { return false; }
     if config.workers != 1 { return serve_workers(config, control, H, Tick, Lifecycle); }
     var listener = gw_listen_config(config.port, if config.public_bind { 1 } else { 0 });
     if listener < 0 { return false; }
@@ -466,6 +504,12 @@ fn serve_loop<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&,
     control.sse_limit = config.sse_max_queued_bytes;
     control.sse_msg_count = 0;
     sse_outbox.clear();
+    // A worker reads the ring from the current end: it sees only messages published from now on.
+    var head_position: i64 = 0;
+    var head_seq: i64 = 0;
+    gw_shared_ring_head(head_position, head_seq);
+    sse_read_position = head_position;
+    sse_read_seq = head_seq;
     for i in MAX_CLIENTS { control.sse_slots[i].active = false; }
     var clients: Connection[MAX_CLIENTS] = [default<Connection>(); MAX_CLIENTS];
     for i in clients.len {
@@ -498,7 +542,7 @@ fn serve_loop<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&,
             Lifecycle(SERVER_STOPPING, control.stats);
         }
         // Events published before the stop reach the streams before their close events.
-        sse_fan_out(clients, control, pool, inputs, config);
+        sse_deliver(clients, control, pool, inputs, config);
         if control.stopping && !sse_closing_begun {
             sse_closing_begun = true;
             sse_close_all(clients, control, pool, inputs, config);
@@ -878,21 +922,33 @@ fn serve<H, Tick>(port: i32 = DEFAULT_PORT, max_requests: i64 = UNLIMITED_REQUES
 // staged in sse_outbox; the reactor copies it into each stream at its next iteration. Returns the
 // number of streams on the channel when the message was accepted, 0 when nothing can receive it
 // (not running, stopping, or no subscriber), and -1 when it is refused: an invalid event name,
-// a message over sse_max_queued_bytes or MAX_SSE_MESSAGE_BYTES, or a full outbox.
+// a message over sse_max_queued_bytes or MAX_SSE_MESSAGE_BYTES, or a full outbox. With the shared
+// store the count covers the streams of every worker, and the message goes to the shared ring.
 fn sse_publish(control: ServerControl&, channel: i32, event: const u8[:], data: const u8[:]) -> i64 {
     if !control.running || control.stopping { return 0; }
     if !sse_event_valid(event) || data.len > MAX_SSE_MESSAGE_BYTES { return -1; }
+    // With the shared store, subscribers are counted in every worker, and the message goes to the shared ring.
+    let shared = shared_enabled();
     var subscribers: i64 = 0;
-    for s in control.sse_slots {
-        if s.active && s.channel == channel { subscribers += 1; }
+    if shared {
+        subscribers = gw_shared_stream_count(channel);
+    } else {
+        for s in control.sse_slots {
+            if s.active && s.channel == channel { subscribers += 1; }
+        }
     }
     if subscribers == 0 { return 0; }
-    if control.sse_msg_count == MAX_SSE_OUTBOX_MESSAGES { return -1; }
+    if !shared && control.sse_msg_count == MAX_SSE_OUTBOX_MESSAGES { return -1; }
     var message: u8[>..] = [];
     if !sse_format_message(message, event, data) { return -1; }
     var framed: u8[>..] = [];
     sse_frame(framed, message[..]);
-    if framed.len > control.sse_limit || sse_outbox.len + framed.len > MAX_SSE_OUTBOX_BYTES { return -1; }
+    if framed.len > control.sse_limit || framed.len > MAX_SSE_OUTBOX_BYTES { return -1; }
+    if shared {
+        if gw_shared_ring_push(channel, framed[..]) < 0 { return -1; }
+        return subscribers;
+    }
+    if sse_outbox.len + framed.len > MAX_SSE_OUTBOX_BYTES { return -1; }
     sse_outbox.append(framed[..]);
     control.sse_msg_channel[control.sse_msg_count] = channel;
     control.sse_msg_count += 1;

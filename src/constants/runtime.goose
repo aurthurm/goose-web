@@ -68,3 +68,9 @@ const WORKER_KILL_MARGIN_MS = 500;
 const WORKER_SUPERVISE_MS = 20;
 const SIGNAL_TERM = 15;
 const SIGNAL_KILL = 9;
+// Shared store size in bytes (ServerConfig.shared_store_bytes); 0 turns it off. The store holds
+// key/value entries, the SSE ring and the stream registry; see docs/api.md#shared-store.
+const DEFAULT_SHARED_STORE_BYTES = 1048576;
+const MIN_SHARED_STORE_BYTES = 262144;
+// Longest time-to-live the store accepts: 365 days, so a server-side session can outlast a day.
+const SHARED_TTL_MAX_MS = 31536000000;

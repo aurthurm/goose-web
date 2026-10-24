@@ -136,6 +136,7 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | sse_heartbeat_ms | 15000 | 1..86400000, interval of the `: ping` comment on each stream |
 | sse_max_queued_bytes | 262144 | 256..4194304, unsent bytes one stream may hold before it is dropped |
 | workers | 1 | 0..256; 1 is the single-process reactor; 0 is one worker process per CPU; more than 1 pre-forks that many workers (see [Worker processes](#worker-processes)) |
+| shared_store_bytes | 1048576 | 0 or 262144..268435456; the [shared store](#shared-store) that workers and streams use across processes; 0 turns it off |
 
 Memory is bounded by these limits and is charged on demand. Each of the `max_clients` slots costs a
 small record. A connection holds an input block only while it has request bytes to parse (1 KiB, doubling
@@ -217,14 +218,16 @@ begins) and `SERVER_STOPPED` (with the aggregated stats). Workers run `ignore_li
 **State is per worker.** A fork copies the program's memory, and nothing is shared afterwards.
 Anything a request can change is private to the worker that handled it:
 
-- Global variables, route tables, sessions held in memory, `rate_limit` counters, the request
-  counter behind `request_id` and any in-memory store differ from worker to worker. The basic Todo
+- Global variables, route tables, the request counter behind `request_id` and any in-memory store
+  differ from worker to worker. Entries, counters, `rate_limit` counts, server-side sessions and events
+  are shared through the [shared store](#shared-store) while it is on (the default). Signed-cookie
+  sessions live in the cookie and need no sharing. The basic Todo
   example keeps its list in memory and rewrites its JSON file from that copy, so it must run with
   `workers = 1`: several workers would overwrite each other's data. Keep such state in a database
   (`examples/sqlite-todos`) or run one worker.
-- `web::sse_publish` reaches only the streams open in the calling process. A publish from a
-  worker's tick or handler does not reach a stream held by another worker. Use one worker for
-  SSE fan-out, or publish through a shared store.
+- `web::sse_publish` reaches the streams of every worker while the shared store is on (the default):
+  the message goes through the store's event ring and each worker copies it to its own streams. With
+  the store off, it reaches only the streams open in the calling process.
 - `max_requests` counts per worker: each worker stops after that many responses and the parent
   replaces it. The parent does not apply the limit to the server as a whole.
 - `max_clients`, `max_sse_clients` and `max_pool_bytes` are per worker, so the process total is
@@ -304,9 +307,13 @@ fn main() {
   LF or is longer than 128 bytes, the data exceeds 65536 bytes, the framed message exceeds
   `sse_max_queued_bytes`, or the outbox is full. `0` means nothing could receive it: the server is not
   running, is stopping, or no stream subscribes to the channel. Otherwise the result is the number of
-  streams on the channel when the message was accepted.
+  streams on the channel when the message was accepted. With the shared store on, that count covers
+  the streams of every worker, and the message is accepted when it fits the event ring.
 - Publishing is staged in a bounded outbox (256 KiB, 64 messages) and copied to each stream at the
-  start of the next loop iteration, so events reach the sockets in publish order.
+  start of the next loop iteration, so events reach the sockets in publish order. With the shared store
+  on, the framed message goes to the store's event ring instead (a quarter of the store, the oldest
+  messages overwritten first), and every worker copies new messages to its streams in the same order.
+  See [Shared store](#shared-store).
 - Heartbeats: every `sse_heartbeat_ms` each stream gets a `: ping` comment. Streams have no read or idle
   timeout. Bytes the client sends on a stream are discarded.
 - A stream whose unsent bytes would pass `sse_max_queued_bytes`, or when the pool has no chunks left,
@@ -320,6 +327,89 @@ fn main() {
 
 A complete example that sends the time every second, with a browser page using `EventSource`, is in
 [examples/sse-clock](../examples/sse-clock/README.md).
+
+## Shared store
+
+A fixed-size memory region that every worker process of one server reads and writes. The parent creates
+it in `serve_config`, before it forks the workers, so a single-process server creates it too and the code
+path is the same. It has three parts: key/value entries with optional expiry, counters, and the event ring
+that carries `sse_publish` between workers. The size is `shared_store_bytes`: 1 MiB by default, 0 to turn
+it off, and 256 KiB to 256 MiB otherwise. A quarter of the space after the header holds the event ring, a
+fixed registry holds the open streams (2048), and the rest is the entry table, about 650 entries of up to
+1 KiB each at the default size. The store is created when the server starts and is not persisted: a restart
+starts it empty. It stays mapped after the server returns until the process exits or another server starts.
+
+```goose
+fn app(c: web::Ctx&) {
+    c.routes() {
+        c.get("/visits") {
+            let total, ok = web::shared_incr("visits", 1, 0);
+            if !ok { c.fail(web::HTTP_SERVICE_UNAVAILABLE, "store_full", "No room for the counter"); return; }
+            c.text(str(total));
+        };
+    };
+}
+```
+
+| Call | Meaning |
+| --- | --- |
+| `web::shared_set(key, value, ttl_ms = 0) -> bool` | Stores `value` under `key`, replacing an earlier value. `ttl_ms = 0` keeps it until it is deleted or replaced; otherwise it expires after `ttl_ms` milliseconds. Returns `false`, storing nothing, when refused or full. |
+| `web::shared_get(key, out: u8[>..]&) -> bool` | Copies the live value into `out`, which is cleared first. Returns `false`, with `out` empty, when the key is absent, expired or the store is off. |
+| `web::shared_delete(key) -> bool` | Removes a live entry. |
+| `web::shared_incr(key, delta, ttl_ms) -> i64, bool` | Adds `delta` to a counter and returns the new value. A missing or expired counter starts at 0 and takes `ttl_ms`. An existing counter keeps its expiry, so `ttl_ms` opens a fixed window that later increments do not extend. |
+| `web::shared_incr_window(key, delta, ttl_ms) -> i64, i64, bool` | As `shared_incr`, and also the milliseconds left before expiry (0 when it never expires). |
+| `web::shared_enabled() -> bool` | Whether this server has a store. |
+
+**Bounds.** Keys are 1 to 128 bytes and values are at most 1024 bytes. A key or value outside those
+bounds is refused, never truncated. `ttl_ms` is at most 365 days. A counter is an 8-byte integer, so
+`shared_incr` fails on a key that holds some other value, and on overflow.
+
+**Full table.** A new key is refused when no slot is free. The store never evicts a live entry to make
+room. Deleting an entry frees its slot, and so does expiry: an expired entry's slot goes to the next new
+key that probes over it. Check the return value of `shared_set` when the table can fill up.
+
+**Crash safety.** The table, the ring and the stream registry sit behind one process-shared robust mutex.
+A worker that dies while holding it does not block the others: the next locker takes the mutex over
+(`EOWNERDEAD`, then `pthread_mutex_consistent`) and drops any entry whose write was in progress, so an
+interrupted entry is absent afterwards and its old value is not restored. A ring message becomes visible
+only after it is complete, so no reader sees a partial event. Streams registered by a dead worker are
+removed the next time another process counts or adds streams. The lock has no timeout, so a worker that
+is stopped (SIGSTOP) while holding it stalls the others until it resumes. `tests/native/shared.c` kills
+a child while it holds the lock and checks that the next locker recovers.
+
+**Events.** With the store on, `sse_publish` appends the framed message to the ring, and each worker copies
+the messages it has not yet seen to its own streams, in publish order, at the start of its next loop pass.
+A worker starts reading at the current end of the ring, so it never replays older events. A worker that
+falls more than a ring behind loses the messages that were overwritten; the store counts them in its `lost`
+total, which native code and tests can read but the Goose API does not expose yet. The count that
+`sse_publish` returns covers every worker's streams. A stream opened when the registry is full gets 503.
+
+**What is shared.** With the store on (the default):
+
+| State | Scope |
+| --- | --- |
+| `shared_*` entries and counters | every worker of one server |
+| `rate_limit` counts | every worker; the per-process table takes over only when the store is off or full |
+| Server-side sessions (`SessionConfig.store`) | every worker |
+| `sse_publish` events and stream counts | every worker |
+
+Still per worker: global variables, route tables, any cache you keep in memory, the `request_id` counter,
+`max_requests`, and each worker's sockets, buffers and stream queues. Stats are still summed by the parent.
+
+**Which store to use.**
+
+- The shared store fits small, fast state that every worker on one host must agree on, and that may be
+  lost on restart: counters, rate limits, short-lived sessions, one-time tokens, presence, cache entries
+  and event fan-out to streams on that host. Its size is fixed, it has no queries, and it covers one host only.
+- SQLite (`web::db`) fits data that must survive restarts and needs queries, indexes or transactions on one
+  host. Open the connection in each worker after the fork, as `examples/sqlite-todos` does. SQLite serializes
+  writers, so keep write transactions short.
+- An external database (PostgreSQL or similar) fits data that several machines must share, durability and
+  backups beyond one disk, replication, or data larger than memory. The shared store is per host: two
+  instances, or two machines, each have their own.
+
+If losing the state on restart is acceptable and one host is enough, use the shared store. If the data must
+survive restarts, use SQLite. If several hosts must see one copy, use an external database.
 
 ## JSON codec
 
@@ -472,7 +562,7 @@ short-circuits. Nesting gives the order: the outer middleware's `before` runs fi
 | `logger(c) { }` | after `Next`, prints one line: `METHOD path status bytes`; control bytes are masked |
 | `cors(c, origin = "*") { }` | sets `Access-Control-Allow-Origin` (plus `Vary: Origin` for a non-wildcard origin). A preflight (OPTIONS with `Access-Control-Request-Method`) gets 204 with Allow-Methods, Allow-Headers (echoes the request's headers when valid, else `Content-Type`) and `Max-Age: 600`, and `Next` is not called |
 | `require_json(c) { }` | 415 `unsupported_media_type` unless the media type is `application/json` (parameters ignored, case-insensitive). It applies to every request in its block, so wrap body-carrying routes |
-| `rate_limit(c, limit, window_ms) { }` | fixed window per client address (`c.peer()`): at most `limit` requests per `window_ms`. A refused request gets 429 `rate_limited` with `Retry-After` in whole seconds. Each `(limit, window_ms)` pair counts separately. The table is process-wide and bounded at 1024 clients; when it is full, the least recently seen client is recycled. Requests with no known peer share one bucket. Limits are per process, so several instances do not share a count |
+| `rate_limit(c, limit, window_ms) { }` | fixed window per client address (`c.peer()`): at most `limit` requests per `window_ms`. A refused request gets 429 `rate_limited` with `Retry-After` in whole seconds. Each `(limit, window_ms)` pair counts separately. The table is process-wide and bounded at 1024 clients; when it is full, the least recently seen client is recycled. Requests with no known peer share one bucket. With the shared store on (the default), every worker of one server counts into the same window, so the limit holds across workers; with it off, each worker counts alone. Separate server instances never share a count |
 | `secure_headers(c, content_security_policy = "default-src 'self'", hsts = "") { }` | sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin` and `Content-Security-Policy` (an empty policy leaves it unset). `Strict-Transport-Security` is sent only when `hsts` is nonempty. Headers are set before `Next`, so a handler can replace one with `c.set`. The default policy blocks the CDN script on the `/docs` page, so wrap that page with `""` or a policy that allows it |
 
 The runtime fills `Request.peer` from `getpeername` when it accepts a connection
@@ -631,8 +721,17 @@ fn app(c: web::Ctx&) {
 | `max_age` | `86400` | Seconds from the last change. Sent as `Max-Age` and enforced by the server |
 | `secure` | `false` | Adds `Secure`. Required when `same_site` is `None` |
 | `same_site` | `"Lax"` | `Strict`, `Lax` or `None` (not empty) |
+| `store` | `false` | `true` keeps the session in the [shared store](#shared-store) instead of the cookie. The cookie then holds a random id and a tag, and the record lives for `max_age` seconds. Needs `shared_store_bytes` > 0 |
 
 `HttpOnly` is always set and `Path=/` is always sent.
+
+In store mode (`store = true`) the cookie is `id.tag`, where the tag is an HMAC of the id under the
+secret, so a client cannot name a record it was not issued. The record holds the same entries as the
+cookie mode, but its payload is one shared-store value, at most 1024 bytes, so the session holds less
+data. Each change writes the record and re-issues the cookie with the same id; `session_clear` (logout)
+deletes it. A record that is missing or expired gives an empty session. When the write fails (the table
+is full), the response keeps the previous cookie and the change is lost, so check the `session_set`
+result if that matters. A server restart clears every server-side session.
 
 - `c.session_get(key) -> const u8[:]` returns the value, or `""` when the key is absent or no
   session middleware runs.

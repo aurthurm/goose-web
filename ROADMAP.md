@@ -47,7 +47,7 @@
 - [x] Host-scoped routes with `c.host(...)`: exact names and one-label `*.example.com` patterns, port stripped, case-insensitive; documented in OpenAPI like other routes.
 - [x] Peer address on `Request.peer` and `c.peer()`, filled from `getpeername` at accept.
 - [x] `rate_limit` (fixed window per client, bounded to 1024 clients, 429 with `Retry-After`) and `secure_headers` (CSP, nosniff, DENY, referrer policy, optional HSTS).
-- Next: token-bucket limits and shared counters across instances.
+- Next: token-bucket limits. Shared counters within one host are done (the shared store); across hosts they remain open.
 
 
 ## Milestone 3: protocol and platform coverage
@@ -61,7 +61,8 @@
 - Chunked encoding for general streaming bodies with explicit ownership/backpressure (server-sent events are done).
 - [x] Linux epoll readiness behind one reactor API (level-triggered, registration per connection), poll kept as the portable fallback.
 - [x] Pre-forked worker processes (`workers`): shared listener, one reactor per worker, supervised restarts with backoff, graceful drain, aggregated stats; per-worker state and SQLite connections opened after fork are documented.
-- Shared state across workers (a shared store, or per-worker publish for server-sent events).
+- [x] Shared state across workers: a bounded shared store (entries, counters, `rate_limit`, server-side sessions, server-sent events across workers) with a robust lock; see [docs/api.md](docs/api.md#shared-store).
+- Shared store follow-ups: expose the lost-event count to Goose, and a per-entry lock-free read path if profiling shows the mutex matters.
 - kqueue for BSD and macOS, and a Windows transport, measured under load.
 - TLS integration and deployment guidance.
 

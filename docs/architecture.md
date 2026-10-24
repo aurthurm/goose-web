@@ -27,6 +27,7 @@ own globals (a Goose import adds no namespace). Use `src/sys/` instead.
 | `native/posix/transport.c` | Nonblocking socket calls, the readiness reactor (epoll on Linux, poll elsewhere), optional signals | POSIX |
 | `native/posix/system.c` | stat, bounded file read, getenv, clock | POSIX |
 | `native/posix/process.c` | fork, nonblocking reap, kill, CPU count, stats record pipe | POSIX (fork and prctl on Linux) |
+| `native/posix/shared.c` | The [shared store](api.md#shared-store): entries, counters, the SSE event ring and the stream registry in one `MAP_SHARED` mapping behind a process-shared robust mutex | POSIX (pthreads, `mmap`) |
 
 Keep protocol policy in Goose. The C shim owns no application buffers and retains
 no Goose pointers. Its only process-wide state is optional signal ownership; the process calls
@@ -124,6 +125,11 @@ framework uses every core without threads: Goose threads share no memory and may
   single-process behavior is the code path it always was.
 - Worker state is copied at fork and is private afterwards; SQLite connections are opened after fork
   (see [docs/api.md](api.md#worker-processes)). Only the stats record crosses back, over one pipe.
+- The shared store is the one region that workers do see in common. `serve_config` creates it before the
+  fork, so it is inherited, and every access takes its robust mutex. It carries the state that must agree
+  across workers: entries and counters, `rate_limit` counts, server-side sessions and the SSE event ring
+  (each worker copies new events to its own streams). Its layout and crash rules are in
+  [docs/api.md](api.md#shared-store).
 - The shim functions for this live in `native/posix/process.c`; `tests/native/process.c` covers them.
 
 ## Composition

@@ -1,2 +1,3 @@
-c_sources = ["native/posix/transport.c", "native/posix/system.c", "native/posix/crypto.c", "native/posix/process.c"];
+c_sources = ["native/posix/transport.c", "native/posix/system.c", "native/posix/crypto.c", "native/posix/process.c", "native/posix/shared.c"];
+c_libs = ["pthread"];
 main_thread_only = true;
