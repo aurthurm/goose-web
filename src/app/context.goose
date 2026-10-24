@@ -30,6 +30,7 @@ struct AppScratch {
     table: Router,
     session_state: SessionState,
     csrf_state: CsrfState,
+    auth_state: AuthState,
     oas: OpenApiState,
 }
 
@@ -53,6 +54,7 @@ struct Ctx {
     // Session and CSRF middleware state (session.goose, csrf.goose); empty until installed.
     session_state: SessionState&,
     csrf_state: CsrfState&,
+    auth_state: AuthState&,
     oas: OpenApiState&,
     // The OpenAPI describe text (see openapi.goose). Per request, so it starts empty. It is the
     // final field: Goose requires that for a resizable field.
@@ -69,6 +71,7 @@ fn scratch_reset(s: AppScratch&) {
     s.session_state.count = 0;
     s.csrf_state.active = false;
     s.csrf_state.token = "";
+    s.auth_state.subject = "";
     s.oas.config.enabled = false;
     s.oas.op_count = 0;
 }
@@ -78,7 +81,8 @@ fn scratch_reset(s: AppScratch&) {
 fn new_ctx(request: Request, response: Response&, scratch: AppScratch&) -> Ctx {
     scratch_reset(scratch);
     return Ctx { request: request, response: response, table: scratch.table,
-        session_state: scratch.session_state, csrf_state: scratch.csrf_state, oas: scratch.oas, .. };
+        session_state: scratch.session_state, csrf_state: scratch.csrf_state, auth_state: scratch.auth_state,
+        oas: scratch.oas, .. };
 }
 
 fn method(c: Ctx&) -> const u8[:] { return c.request.method; }
@@ -171,6 +175,26 @@ fn redirect(c: Ctx&, location: const u8[:], code: i32 = HTTP_FOUND) {
     }
     c.response.status = code;
     drop_body(c.response);
+}
+
+// Redirect to a target taken from the request, such as a return URL. Only a local absolute path
+// is followed: a single "/" and then no "/" or "\\" (so "//host" and "/\\host" are refused), no
+// scheme, and no control bytes. A refused target answers 400 invalid_redirect and redirects nothing.
+fn redirect_local(c: Ctx&, target: const u8[:], code: i32 = HTTP_FOUND) {
+    if !local_redirect_target(target) {
+        fail(c, HTTP_BAD_REQUEST, "invalid_redirect", "Redirect target must be a local path");
+        return;
+    }
+    redirect(c, target, code);
+}
+
+fn local_redirect_target(target: const u8[:]) -> bool {
+    if target.len == 0 || target[0] != '/' { return false; }
+    if target.len > 1 && (target[1] == '/' || target[1] == '\\') { return false; }
+    for ch in target {
+        if ch < 32 || ch == 127 || ch == '\\' { return false; }
+    }
+    return true;
 }
 
 // Upgrades the connection to a server-sent event stream on channel. Returns false, changing

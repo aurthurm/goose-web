@@ -31,8 +31,19 @@ because the repository has no tag history for them.
 
 - Custom TCP protocols: `web::tcp_config`, `web::tcp_serve`, `web::tcp_connect` and the connection functions in `src/net/tcp.goose`, with framing helpers in `src/net/framing.goose`. Own readiness instance in `native/posix/net.c`. Examples `examples/tcp-echo`, `examples/tcp-chat`, `examples/tcp-proxy`. See the TCP section of `docs/api.md`.
 
+- Authentication: `hash_password`, `hash_password_iterations` and `verify_password` (PBKDF2-HMAC-SHA256,
+  600000 iterations by default), `basic_auth` and `bearer_auth` middleware with `c.auth_subject()`,
+  and `sign_token` and `verify_token` (HMAC-signed tokens, not JWT). See [docs/api.md](docs/api.md#authentication).
+- `redirect_local`, which accepts only local paths for targets taken from a request.
+- Fuzz programs for JSON, query, cookie and form parsing, template rendering and static paths, and clang
+  libFuzzer harnesses for the C byte-slice and SQLite shims.
+
 ### Changed
 
+- Static files: a symbolic link whose real target lies outside the served directory answers 404. Links
+  that stay inside are still followed.
+- JSON decoding refuses a string whose escapes decode to bytes that are not valid UTF-8 (for example a
+  lone `\uD800`).
 - The worker stats record is a fixed-size frame (`STATS_RECORD_BYTES`, 272 bytes): a magic word
   `GWSTATS1`, the field count, then each `i64` field as little-endian bytes. It is encoded and
   decoded with `const for` over `fields<ServerStats>`, and the parent sums with the same walk, so a
@@ -40,6 +51,12 @@ because the repository has no tag history for them.
   moves opaque bytes, and the record format is internal to the build (parent and workers are one
   binary).
 - The parent drops a stats frame that does not match its build instead of adding it.
+
+### Security notes
+
+- The security review, its findings and their status are in [docs/security.md](docs/security.md).
+  Fixed in this release: static-file symlink escape, signalling and reaping pid 0 or a negative pid,
+  a `getrandom` zero-return loop, negative lengths in socket calls, and invalid UTF-8 from JSON escapes.
 
 ## 0.6.0
 

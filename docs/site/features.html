@@ -57,6 +57,7 @@ application API; nothing here needs a separate server or a code generator.</p>
 
 <div class="toc">
   <a href="#templates">Templates</a><a href="#sessions">Sessions</a><a href="#csrf">CSRF</a><a href="#openapi">OpenAPI</a><a href="#sqlite">SQLite</a><a href="#sse">Server-sent events</a><a href="#jobs">Jobs and scheduler</a>
+  <a href="#templates">Templates</a><a href="#sessions">Sessions</a><a href="#csrf">CSRF</a><a href="#auth">Authentication</a><a href="#openapi">OpenAPI</a><a href="#sqlite">SQLite</a><a href="#sse">Server-sent events</a>
 </div>
 
 <h2 id="templates">Templates</h2>
@@ -144,6 +145,19 @@ c.post("/form") { csrf(c, CSRF_SECRET, true) { c.text("saved"); }; };</code></pr
 <p>With <code>check_origin</code> set, an <code>Origin</code> (or, without one, a <code>Referer</code>) must name the same host as the
 request's <code>Host</code>. The CSRF cookie has no <code>Secure</code> attribute in this version, so serve forms over HTTPS.
 Multipart forms are not parsed; send the token in the header from script in that case.</p>
+
+<h2 id="auth">Authentication</h2>
+<p>PBKDF2-HMAC-SHA256 password hashes (600000 iterations by default, constant-time verification), HTTP Basic and Bearer
+middleware that store the verified user for <code>c.auth_subject()</code>, and HMAC-signed tokens with expiry. The token
+format has no algorithm field, so it is not JWT: nothing in it can be used to pick a weaker check.</p>
+<pre><code>fn check_login(user: const u8[:], password: const u8[:]) -> bool {
+    return user == "alice" &amp;&amp; web::verify_password(password, ALICE_HASH);
+}
+c.get("/admin") {
+    c.basic_auth("Admin", check_login) { c.text(c.auth_subject()); };
+};</code></pre>
+<p>Redirects to request-supplied targets go through <code>c.redirect_local</code>, which accepts only local paths. The
+full design and the threat model are in <code>docs/security.md</code> in the repository.</p>
 
 <h2 id="openapi">OpenAPI</h2>
 <p><code>web::openapi(c, info) { c.routes() { ... } }</code> serves an OpenAPI 3.1 document at <code>/openapi.json</code> and a

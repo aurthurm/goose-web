@@ -8,6 +8,16 @@
 
 static gw_bytes text_of(const char *s) { return (gw_bytes){(uint8_t *)s, (int64_t)strlen(s)}; }
 
+/* out = base + "/" + name, refusing a result that does not fit. */
+static void join_path(char *out, size_t capacity, const char *base, const char *name) {
+    size_t base_length = strlen(base);
+    size_t name_length = strlen(name);
+    assert(base_length + 1 + name_length < capacity);
+    memcpy(out, base, base_length);
+    out[base_length] = '/';
+    memcpy(out + base_length + 1, name, name_length + 1);
+}
+
 int main(void) {
     char dir[] = "/tmp/gw-system-XXXXXX";
     assert(mkdtemp(dir) != NULL);
@@ -67,6 +77,46 @@ int main(void) {
     /* Wall clock: after 2020-01-01 and not behind the previous reading. */
     int64_t unix_first = gw_unix_seconds();
     assert(unix_first > 1577836800 && gw_unix_seconds() >= unix_first);
+
+    /* Containment: a path is inside a root when its real location (links resolved) is the root or
+       below it. A link inside the root to a file inside it stays inside; a link to a file outside is
+       refused; a sibling whose name starts with the root's name is outside. */
+    enum { CONTAIN_PATH = 2 * GW_PATH_MAX_BYTES };
+    char inside[CONTAIN_PATH], outside[CONTAIN_PATH], sibling[CONTAIN_PATH], inner_file[CONTAIN_PATH];
+    char link_in[CONTAIN_PATH], link_out[CONTAIN_PATH], target_out[CONTAIN_PATH], sibling_file[CONTAIN_PATH];
+    char absent_file[CONTAIN_PATH];
+    join_path(inside, sizeof(inside), dir, "inside");
+    join_path(outside, sizeof(outside), dir, "outside");
+    join_path(sibling, sizeof(sibling), dir, "inside-sibling");
+    join_path(inner_file, sizeof(inner_file), inside, "file.txt");
+    join_path(link_in, sizeof(link_in), inside, "link_in");
+    join_path(link_out, sizeof(link_out), inside, "link_out");
+    join_path(target_out, sizeof(target_out), outside, "secret.txt");
+    join_path(sibling_file, sizeof(sibling_file), sibling, "f");
+    join_path(absent_file, sizeof(absent_file), inside, "absent");
+    assert(mkdir(inside, 0700) == 0 && mkdir(outside, 0700) == 0 && mkdir(sibling, 0700) == 0);
+    FILE *inner = fopen(inner_file, "wb");
+    FILE *secret = fopen(target_out, "wb");
+    FILE *other = fopen(sibling_file, "wb");
+    assert(inner != NULL && secret != NULL && other != NULL);
+    fputs("in", inner);
+    fputs("secret", secret);
+    fputs("sibling", other);
+    fclose(inner);
+    fclose(secret);
+    fclose(other);
+    assert(symlink(inner_file, link_in) == 0 && symlink(target_out, link_out) == 0);
+    assert(gw_file_within(text_of(inside), text_of(inner_file)) == 1);
+    assert(gw_file_within(text_of(inside), text_of(inside)) == 1);
+    assert(gw_file_within(text_of(inside), text_of(link_in)) == 1);
+    assert(gw_file_within(text_of(inside), text_of(link_out)) == 0);
+    assert(gw_file_within(text_of(inside), text_of(target_out)) == 0);
+    assert(gw_file_within(text_of(inside), text_of(sibling_file)) == 0);
+    assert(gw_file_within(text_of(inside), text_of(absent_file)) == GW_FILE_ERROR);
+    assert(gw_file_within(text_of("/"), text_of(inner_file)) == 1);
+    assert(gw_file_within(text_of(inside), (gw_bytes){NULL, 0}) == GW_FILE_ERROR);
+    assert(unlink(link_out) == 0 && unlink(link_in) == 0 && unlink(sibling_file) == 0 && unlink(target_out) == 0);
+    assert(unlink(inner_file) == 0 && rmdir(sibling) == 0 && rmdir(outside) == 0 && rmdir(inside) == 0);
 
     assert(unlink(fifo) == 0 && unlink(file) == 0 && rmdir(dir) == 0);
     puts("System tests passed: file kinds and sizes, bounded reads, FIFO refusal, environment, clocks");

@@ -99,5 +99,75 @@ fn main() {
     assert(header_value(no_csp, "Content-Security-Policy").len == 0);
     assert(header_value(no_csp, "X-Frame-Options") == "DENY");
 
-    print("App security tests passed: OpenAPI wildcards and host routes, rate_limit fixed window, Retry-After, per-client and per-policy buckets, bounded table, secure headers");
+    test_redirects_and_cors();
+    print("App security tests passed: OpenAPI wildcards and host routes, rate_limit fixed window, Retry-After, per-client and per-policy buckets, bounded table, secure headers, local redirects, header injection refusals, CORS without credentials");
+}
+
+// One request through redirect_local to a target; the response is returned for inspection.
+fn redirected(target: const u8[:]) -> web::Response {
+    var out = web::response();
+    var scratch = web::AppScratch { .. };
+    var c = web::new_ctx(web::Request { method: "GET", target: "/login", body: "", raw_headers: "Host: x\r\n" }, out, scratch);
+    c.redirect_local(target);
+    return copy(out);
+}
+
+fn test_redirects_and_cors() {
+    // Local absolute paths redirect with the given status; anything else is refused with 400.
+    let home = redirected("/home?next=1");
+    assert(home.status == 302 && header_value(home, "Location") == "/home?next=1");
+    assert(redirected("/").status == 302);
+    assert(redirected("/a%20b/c").status == 302);
+    let refused = [
+        "https://evil.example/", "http://evil.example/", "//evil.example/", "/\\evil.example",
+        "javascript:alert(1)", "relative/path", "", "/ok\r\nSet-Cookie: x=1", "/tab\there",
+    ];
+    for i in refused.len {
+        let answer = redirected(refused[i][..]);
+        assert(answer.status == 400 && header_value(answer, "Location").len == 0);
+        assert(find(web::body_of(answer), "\"code\":\"invalid_redirect\"") >= 0);
+    }
+
+    // A raw redirect with a CR/LF target is a 500, never a split header.
+    var raw_out = web::response();
+    var raw_scratch = web::AppScratch { .. };
+    var raw_c = web::new_ctx(web::Request { method: "GET", target: "/x", body: "", raw_headers: "Host: x\r\n" }, raw_out, raw_scratch);
+    web::redirect(raw_c, "/a\r\nSet-Cookie: x=1");
+    assert(raw_c.response.status == 500 && header_value(raw_c.response, "Set-Cookie").len == 0);
+
+    // set_cookie refuses CR/LF in the value and in the path, and writes nothing.
+    var cookie_out = web::response();
+    var cookie_scratch = web::AppScratch { .. };
+    var cookie_c = web::new_ctx(web::Request { method: "GET", target: "/x", body: "", raw_headers: "Host: x\r\n" }, cookie_out, cookie_scratch);
+    assert(!web::set_cookie(cookie_c, "sid", "a\r\nSet-Cookie: evil=1"));
+    assert(!web::set_cookie(cookie_c, "sid", "abc", web::CookieOptions { path: "/\r\nX: y" }));
+    assert(header_value(cookie_out, "Set-Cookie").len == 0);
+    assert(web::set_cookie(cookie_c, "sid", "abc"));
+    assert(header_value(cookie_out, "Set-Cookie") == "sid=abc; Path=/; HttpOnly; SameSite=Lax");
+
+    // CORS: the wildcard answers with "*" and never with credentials, and an explicit origin adds Vary.
+    var wild_out = web::response();
+    var wild_scratch = web::AppScratch { .. };
+    var wild = web::new_ctx(web::Request { method: "GET", target: "/api", body: "", raw_headers: "Host: x\r\nOrigin: https://app.example\r\n" }, wild_out, wild_scratch);
+    web::cors(wild) { wild.text("cors"); };
+    assert(header_value(wild_out, "Access-Control-Allow-Origin") == "*");
+    assert(header_value(wild_out, "Vary").len == 0);
+    assert(header_value(wild_out, "Access-Control-Allow-Credentials").len == 0);
+
+    var pinned_out = web::response();
+    var pinned_scratch = web::AppScratch { .. };
+    var pinned = web::new_ctx(web::Request { method: "GET", target: "/api", body: "", raw_headers: "Host: x\r\n" }, pinned_out, pinned_scratch);
+    web::cors(pinned, "https://app.example") { pinned.text("cors"); };
+    assert(header_value(pinned_out, "Access-Control-Allow-Origin") == "https://app.example");
+    assert(header_value(pinned_out, "Vary") == "Origin");
+    assert(header_value(pinned_out, "Access-Control-Allow-Credentials").len == 0);
+
+    // A preflight from any origin answers 204 with no credentials header.
+    var pre_out = web::response();
+    var pre_scratch = web::AppScratch { .. };
+    var pre = web::new_ctx(web::Request { method: "OPTIONS", target: "/api", body: "", raw_headers: "Host: x\r\nAccess-Control-Request-Method: PUT\r\n" }, pre_out, pre_scratch);
+    web::cors(pre) { pre.text("never"); };
+    assert(pre.response.status == 204);
+    assert(header_value(pre_out, "Access-Control-Allow-Credentials").len == 0);
+    assert(header_value(pre_out, "Access-Control-Allow-Origin") == "*");
 }

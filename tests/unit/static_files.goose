@@ -65,10 +65,29 @@ fn test_middleware_errors(directory: const u8[:]) {
     assert(missing.response.status == web::HTTP_NOT_FOUND);
 }
 
+// Symbolic links are made by tests/run.py before this program starts: inside-link.txt points at a
+// file in the directory and is served; escape.txt points at a file outside it and is refused as
+// missing, without its bytes ever being read.
+fn test_symlinks(directory: const u8[:]) {
+    var inside_out = web::response();
+    var inside_scratch = web::AppScratch { .. };
+    var inside = web::new_ctx(web::Request { method: "GET", target: "/static/inside-link.txt", body: "", raw_headers: "Host: x\r\n" }, inside_out, inside_scratch);
+    web::static_files(inside, "/static", directory) { next_called(); };
+    assert(inside.response.status == web::HTTP_OK && web::body_of(inside.response) == "linked inside");
+
+    var escaped_out = web::response();
+    var escaped_scratch = web::AppScratch { .. };
+    var escaped = web::new_ctx(web::Request { method: "GET", target: "/static/escape.txt", body: "", raw_headers: "Host: x\r\n" }, escaped_out, escaped_scratch);
+    web::static_files(escaped, "/static", directory) { next_called(); };
+    assert(escaped.response.status == web::HTTP_NOT_FOUND);
+    assert(find(web::body_of(escaped.response), "secret") < 0);
+}
+
 fn main() {
     assert(args().len == 2);
     let directory = args()[1];
     test_read_bounded(directory);
     test_middleware_errors(directory);
-    print("Static file tests passed: stat-first size limit at the response cap, bounded reads, middleware error codes");
+    test_symlinks(directory);
+    print("Static file tests passed: stat-first size limit at the response cap, bounded reads, middleware error codes, symbolic links kept inside the root");
 }

@@ -56,6 +56,7 @@ fn main() {
 - Development loop: `python3 scripts/dev.py server.goose` rebuilds and restarts on save, and the page reloads (or shows the compiler error). `web::live_reload` is the browser side. See [development server](docs/api.md#development-server-and-live-reload).
 - Edge middleware: `secure_headers` (CSP, nosniff, frame DENY, referrer policy, optional HSTS) and a bounded per-client `rate_limit` that answers 429 with `Retry-After`. `c.peer()` gives the TCP peer address.
 - Signed cookie sessions (`session`, 16 entries, HMAC-SHA256) and double-submit CSRF protection (`csrf`) with a CSPRNG-backed token. See [Sessions](docs/api.md#sessions) and [CSRF](docs/api.md#csrf); the security notes there say what these do not protect.
+- Authentication: PBKDF2-HMAC-SHA256 password hashes (`web::hash_password`, `web::verify_password`), HTTP Basic and Bearer middleware that store the verified user for `c.auth_subject()`, and HMAC-signed tokens with expiry (not JWT). See [Authentication](docs/api.md#authentication).
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
 - Nonblocking reactor: epoll readiness on Linux (poll elsewhere) with one registration per connection, bounded client slots, partial writes, read and write deadlines.
 - Multi-core serving with pre-forked worker processes (`--workers N`, `0` for one per CPU): shared listener, supervised restarts, graceful drain, aggregated stats. Per-worker state is documented in [worker processes](docs/api.md#worker-processes).
@@ -227,6 +228,12 @@ Applications use `import goose_web from "../..";` from `examples/basic/`, or a
 relative package path appropriate to their own location. Internal files share
 `namespace web`; importing the package entry exposes the public functions.
 
+## Security
+
+[docs/security.md](docs/security.md) is the security review: the threat model, what the framework
+implements and where, what it leaves to a TLS proxy or to the application, and the findings with
+their severity and status. Read it before exposing an application to the internet.
+
 ## Verify
 
 ```sh
@@ -239,7 +246,10 @@ prints a SKIP line and runs everything else.
 The suite builds with Goose runtime checks, checks event and application contracts,
 forces partial writes, and verifies concurrent clients, routing, middleware, request
 limits, deadlines, metrics, and graceful shutdown on real loopback sockets. It also
-runs 33,119 deterministic parser fuzz/property checks using four recorded seeds.
+runs deterministic fuzz/property checks for the parser, JSON, query, cookie, form, template and
+static-path code, each with four recorded seeds. Where clang is installed, it also runs bounded
+libFuzzer and AddressSanitizer passes over the C byte-slice and SQLite shims (`GOOSE_FUZZ_SECONDS`
+sets the time, 10 by default); the commands are in [Security](docs/security.md#running-the-native-fuzzers-without-make).
 Todo tests also exercise CRUD, validation, persisted restarts, capacity, and failed-save rollback.
 
 See [Architecture](docs/architecture.md), [API contracts](docs/api.md),

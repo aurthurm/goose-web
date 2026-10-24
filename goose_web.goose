@@ -29,6 +29,7 @@ import .src.app.session_state;
 import .src.app.session;
 import .src.app.shared;
 import .src.app.csrf;
+import .src.app.auth;
 import .src.app.dsl;
 import .src.app.config;
 import .src.sys.files;
