@@ -10,12 +10,25 @@ import std;
 namespace web;
 
 struct Issue { loc: u8[..96], kind: u8[..24], msg: u8[..160] }
-struct Issues { root: u8[..16], items: Issue[..16], truncated: bool }
+// Decode metadata lets nested validation distinguish omitted and rejected fields from defaults.
+struct ObjectFields { loc: u8[..96], present: u64, failed: u64 }
+struct Issues { root: u8[..16], items: Issue[..16], truncated: bool, objects: ObjectFields[..64] }
+
+fn object_index(out: Issues&, path: const u8[:]) -> i64 {
+    for i in out.objects.len {
+        if out.objects[i].loc[..] == path { return i; }
+    }
+    return -1;
+}
 
 // Copies text into a bounded string, cut to its capacity.
 fn issue_put<T>(dst: T&, text: const u8[:]) {
     dst.clear();
-    let n = if text.len > dst.cap { dst.cap } else { text.len };
+    var n = if text.len > dst.cap { dst.cap } else { text.len };
+    // Do not cut a UTF-8 code point in half when bounding an error location or message.
+    if n < text.len {
+        while n > 0 && (text[n] & 192) == 128 { n -= 1; }
+    }
     dst.append(text[..n]);
 }
 

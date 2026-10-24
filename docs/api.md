@@ -784,10 +784,15 @@ Field names are emitted as declared, in declaration order, with no whitespace.
   types, out-of-range integers, overlong strings, full arrays, invalid UTF-8 and trailing
   input are errors. Escapes are decoded before the check, so `\uD800` (an unpaired surrogate) decodes to bytes
   that are not UTF-8 and is refused as `invalid UTF-8 in string`. Missing keys keep the declared defaults (`T { .. }`).
-- `DecodeResult { ok, syntax, error: u8[..128], field: u8[..64], present: u64 }`. `syntax`
+- `DecodeResult { ok, syntax, error: u8[..128], field: u8[..64], present: u64, failed: u64, issues: Issues }`. `syntax`
   is true when the text is not JSON at all (map to 400); other errors are schema problems
   (map to 422). `field` is the key where the first error occurred. `present` bit i is set
-  for top-level field i in declaration order; nested objects do not set bits.
+  for top-level field i in declaration order; nested objects do not set those bits. `failed`
+  marks fields rejected by decoding. `issues` collects schema errors while retaining the first
+  raw message in `error` for existing callers. At most 16 issues are returned (`truncated`
+  reports additional errors). Body helpers retain field-presence metadata for up to 64 nested
+  objects; larger bodies get a schema error. Plain `json_decode` does not collect this metadata
+  by default and has no object-count limit.
 - `has<T>(result, name) -> bool` reports whether top-level field `name` was present.
 
 | Type | Encodes as | Decodes from |
@@ -1033,9 +1038,10 @@ handler runs. The whole body is already buffered, so this is a route policy. It 
   `response_too_large`; invalid UTF-8 → 500 `encode_error`.
 - `c.json_list(items)` encodes an array or slice as a JSON array. Use it for arrays and slices;
   `c.json` on an array does not compile. A `u8` slice is text.
-- `body<T>(c) -> T, bool` decodes the body strictly. `body_result<T>(c) -> T, DecodeResult`
-  also returns the decoder result (`has<T>(result, "field")` for PATCH). On failure the error
-  response is already written:
+- `body<T>(c) -> T, bool` decodes, normalizes and validates the body. On failure the error
+  response is already written. `body_result<T>(c) -> T, DecodeResult` keeps its decode-only
+  behavior (`has<T>(result, "field")` for PATCH); it does not run field rules. For validated
+  PATCH input use `body_decode<T>` followed by `validate_result` as shown below:
 
 | Failure | Status | Code |
 | --- | --- | --- |
@@ -1051,6 +1057,104 @@ for decoding (`body<T>`):
 fn web::json_put_value(out: u8[>..]&, v: Item&) -> bool { return web::json_put_fields(out, v); }
 fn web::json_read_value(d: web::JsonDecoder&, out: Item&) { web::json_read_fields(d, out); }
 ```
+
+### Validation
+
+Declare field rules once in namespace `web`. Rules use declared field names; error locations
+and schemas use JSON names (`json_key`). Missing optional keys retain their defaults and skip
+field rules, which lets a PATCH omit a constrained field.
+
+```goose
+struct NoteInput { title: u8[..200] = "", priority: i64 = 0 }
+fn web::rules(v: NoteInput&, r: web::Rules&) {
+    r.field("title").required().min_len(1).max_len(200);
+    r.field("priority").ge(0).le(5);
+}
+
+// Inside a route:
+let input, ok = web::body<NoteInput>(c);
+guard ok else { return; }
+```
+
+- `required()` requires a supplied key. It allows empty text; add `min_len(1)` to reject that.
+- `min_len` / `max_len` count Unicode code points; the string's storage capacity still limits
+  UTF-8 **bytes**. `min_items` / `max_items` constrain lists.
+- `ge`, `gt`, `le`, `lt`, and positive integer `multiple_of` constrain numeric values. Bounds
+  are whole numbers, including when applied to floats.
+- `pattern` accepts `PATTERN_SLUG`, `PATTERN_UUID`, `PATTERN_ASCII_ALNUM`, `PATTERN_DIGITS`, or
+  `PATTERN_HEX`. `format` accepts `FORMAT_EMAIL` (a pragmatic ASCII email subset) or `FORMAT_URI`
+  (an HTTP/HTTPS URL check). Empty text skips pattern and format checks.
+- `lax()` additionally accepts `yes`/`on` and `no`/`off` for query/form booleans. JSON stays strict.
+- `check_rules<T>() -> bool, u8[>..]` checks a table at startup: unknown/duplicate fields,
+  contradictory bounds, negative lengths, invalid pattern/format ids, and nonpositive multiples.
+  Capacity probes for `max_len` cover values up to 4096. Call it before serving requests.
+  A table holds at most 32 field rules.
+
+`body<T>`, `query<T>`, and `form<T>` run rules automatically after successful decoding. JSON
+schema errors and field errors are reported together; malformed JSON stays 400 and wrong media
+types stay 415. Query/form binding errors retain their 400 response and first-error behavior;
+validly bound inputs that violate rules get 422. A 422 preserves `error.code` and
+`error.message`, and adds structured details, for example:
+
+```json
+{"error":{"code":"invalid_payload","message":"title: Field required"},"detail":[{"loc":["body","title"],"msg":"Field required","type":"missing"}],"truncated":false}
+```
+
+`detail` holds up to 16 errors; `truncated: true` means more were found. Nested object locations
+are separate segments (`["body", "home", "code"]`); array positions use `"items[0]"` segments.
+No input values are included. Overload `normalize(v: T&)` for transformations before validation,
+and `validate_model(v: T&, out: web::Issues&)` for cross-field checks after field checks pass.
+Add a model issue with `web::issue_add(out, "field", "value_error", "message")`.
+
+Nested structs need a validation registration alongside their decoder registration:
+
+```goose
+fn web::check_value(v: Inner&, rule: web::FieldRule&, path: const u8[:], out: web::Issues&) {
+    web::validate_nested(v, path, out);
+}
+```
+
+For manual validation, `validate(value, "body", issues)` treats every field as present.
+For validated PATCH input with presence information:
+
+```goose
+var input, result = web::body_decode<NotePatch>(c);
+guard web::validate_result(c, "body", input, result) else { return; }
+if web::has<NotePatch>(result, "title") { /* apply the title */ }
+```
+
+`body_decode` writes syntax/media errors immediately and leaves schema issues in `result` for
+`validate_result` to combine with rules. `query_result` remains a binding-only helper.
+OpenAPI emits the same rule constraints, including required query parameters. For body schemas,
+a field with a rule uses that rule's `required` flag; unruled fields retain the existing
+`optional_fields` convention.
+
+### Settings
+
+`settings<T>(prefix) -> T, Issues` loads scalar/text struct fields from the environment:
+
+```goose
+struct AppSettings { port: i64 = 8080, debug: bool = false, token: u8[..128] = "" }
+fn web::rules(v: AppSettings&, r: web::Rules&) {
+    r.field("port").ge(1).le(65535);
+    r.field("token").required().min_len(16).secret();
+}
+// At startup, after check_rules<AppSettings>():
+let settings, problems = web::settings<AppSettings>("APP_");
+if problems.items.len > 0 { abort("invalid application settings"); }
+```
+
+Names are the prefix plus the uppercase declared field name (`APP_PORT`). `APP_TOKEN_FILE`
+reads the value from a file, stripping one trailing LF or CRLF; files are limited to 4096 bytes.
+Supplying both a nonempty direct value and its `_FILE` path is an error. Empty/unset variables
+retain defaults; a `required()` field still needs an explicit source. Defaults are validated too.
+Supported types match query binding; booleans also accept `yes`/`on` and `no`/`off`.
+
+All problems are collected under root `settings`, with the same 16-error bound. `.secret()`
+replaces that field's diagnostic messages with `invalid value (redacted)`. Always inspect
+problems before using the value: parse failures keep defaults, while constraint failures keep
+the parsed value. Settings use declared names (no `json_key`); `json_skip` excludes a field.
+Load once at startup, as demonstrated in the generated starter.
 
 ### Typed query strings
 

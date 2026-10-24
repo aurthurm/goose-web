@@ -27,6 +27,7 @@ struct JsonDecoder {
     first: u8[..128],
     first_field: u8[..64],
     count: i64,
+    track_objects: bool,
     issues: Issues,
 }
 
@@ -168,9 +169,7 @@ fn json_set_field(d: JsonDecoder&, key: const u8[:]) {
 
 // Copies text into a bounded string, cut to its capacity.
 fn json_store<T>(dst: T&, text: const u8[:]) {
-    dst.clear();
-    let n = if text.len > dst.cap { dst.cap } else { text.len };
-    dst.append(text[..n]);
+    issue_put(dst, text);
 }
 
 fn json_int_in(d: JsonDecoder&, lo: i64, hi: i64) -> i64 {
@@ -234,6 +233,7 @@ fn json_read_value<T>(d: JsonDecoder&, out: T&) {
 
 // Limited arrays only (they have a cap): a full one fails the read instead of aborting.
 fn json_read_list<T>(d: JsonDecoder&, out: T&) {
+    let parent_field = d.field;
     out.clear();
     json::each_element(d.r) {
         if out.len == out.cap {
@@ -241,8 +241,11 @@ fn json_read_list<T>(d: JsonDecoder&, out: T&) {
             return;
         }
         out.resize(out.len + 1, json_elem_default(out[..]));
+        json_store(d.field, str(parent_field[..], "[", out.len - 1, "]"));
         json_read_value(d, out[out.len - 1]);
+        d.field = parent_field;
     };
+    d.field = parent_field;
 }
 
 // Maps a reader error that no issue explains to its Pydantic type id.
@@ -285,6 +288,8 @@ fn json_read_fields_level<T>(d: JsonDecoder&, out: T&, failed: u64&) -> u64 {
         return 0;
     }
     let outer = d.scope;
+    let parent_field = d.field;
+    let object_path = str(outer[..], parent_field[..]);
     if d.field.len > 0 { json_store(d.scope, str(outer[..], d.field[..], ".")); }
     var seen: u64 = 0;
     json::each_member(d.r) { key =>
@@ -311,7 +316,17 @@ fn json_read_fields_level<T>(d: JsonDecoder&, out: T&, failed: u64&) -> u64 {
         }
     };
     if d.r.error.len > 0 { json_issue_raw(d, d.r.error); }
+    else if d.track_objects && object_path.len > 0 {
+        if d.issues.objects.len < d.issues.objects.cap {
+            var object = ObjectFields { present: seen, failed: failed, .. };
+            issue_put(object.loc, object_path[..]);
+            d.issues.objects.push(object);
+        } else {
+            json_issue(d, "too many nested objects", "value_error", "Too many nested objects to validate (maximum 64)");
+        }
+    }
     d.scope = outer;
+    d.field = parent_field;
     return seen;
 }
 
@@ -324,7 +339,7 @@ fn json_read_fields<T>(d: JsonDecoder&, out: T&) -> u64 {
 // Strict decode of text into a T: syntax is checked first, on the whole text, so a
 // later failure is a schema problem. Schema errors are collected (see DecodeResult). Missing
 // keys keep the declared defaults.
-fn json_decode<T>(text: const u8[:]) -> T, DecodeResult {
+fn json_decode<T>(text: const u8[:], track_objects: bool = false) -> T, DecodeResult {
     var result = DecodeResult { .. };
     var value: T = T { .. };
     if !valid_utf8(text) {
@@ -339,11 +354,12 @@ fn json_decode<T>(text: const u8[:]) -> T, DecodeResult {
         result.syntax = true;
         return value, result;
     }
-    var d = JsonDecoder { r: json::reader(text), .. };
+    var d = JsonDecoder { r: json::reader(text), track_objects: track_objects, .. };
     var failed: u64 = 0;
     let present = json_read_fields_level(d, value, failed);
     result.present = present;
     result.failed = failed;
+    result.issues = d.issues;
     if d.count > 0 {
         json_store(result.error, d.first[..]);
         json_store(result.field, d.first_field[..]);

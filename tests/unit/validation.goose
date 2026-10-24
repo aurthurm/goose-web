@@ -6,6 +6,13 @@ import goose_web from "../..";
 import std;
 
 struct Address { zip: u8[..8], code: i64 = 0 }
+struct RequiredChild { value: i64 = 2, sibling: i64 = 0 }
+struct Parent { child: RequiredChild }
+struct Batch { children: RequiredChild[..65] }
+struct Unsigned { value: u64 = 0 }
+struct FloatMultiple { value: f64 = 0.0 }
+struct Defaults { port: i64 = 0 }
+struct SecretBound { name: u8[..8] = "" }
 struct Sample {
     name: u8[..8], age: i64 = 0, ratio: f64 = 0.0, tags: u8[..4][..3], email: u8[..40],
     site: u8[..80], slug: u8[..24], id: u8[..36], digits: u8[..8], hex: u8[..8], alnum: u8[..8],
@@ -28,6 +35,19 @@ struct BadDuplicate { a: i64 = 0 }
 struct BadBounds { s: u8[..8] = "", n: i64 = 0 }
 struct BadCapacity { s: u8[..4] = "" }
 struct BadRange { n: i64 = 0 }
+
+fn web::rules(v: RequiredChild&, r: web::Rules&) {
+    r.field("value").required().ge(1);
+    r.field("sibling").ge(1);
+}
+fn web::json_read_value(d: web::JsonDecoder&, v: RequiredChild&) { web::json_read_fields(d, v); }
+fn web::check_value(v: RequiredChild&, rule: web::FieldRule&, path: const u8[:], out: web::Issues&) {
+    web::validate_nested(v, path, out);
+}
+fn web::rules(v: Unsigned&, r: web::Rules&) { r.field("value").multiple_of(2).le(9223372036854775807); }
+fn web::rules(v: FloatMultiple&, r: web::Rules&) { r.field("value").multiple_of(2); }
+fn web::rules(v: Defaults&, r: web::Rules&) { r.field("port").ge(1); }
+fn web::rules(v: SecretBound&, r: web::Rules&) { r.field("name").min_len(8).secret(); }
 
 fn web::rules(v: Address&, r: web::Rules&) {
     r.field("code").ge(0).le(99);
@@ -335,7 +355,7 @@ fn test_body_detail_envelope() {
     assert(find(text, "{\"loc\":[\"body\",\"extra\"],\"msg\":\"Extra inputs are not permitted\",\"type\":\"extra_forbidden\"}") >= 0);
     assert(find(text, "{\"loc\":[\"body\",\"name\"],\"msg\":\"String should have at least 2 characters\",\"type\":\"string_too_short\"}") >= 0);
     assert(find(text, "{\"loc\":[\"body\",\"age\"],\"msg\":\"Input should be greater than 17\",\"type\":\"greater_than\"}") >= 0);
-    assert(find(text, "{\"loc\":[\"body\",\"home.code\"],\"msg\":\"Input should be less than or equal to 99\",\"type\":\"less_than_equal\"}") >= 0);
+    assert(find(text, "{\"loc\":[\"body\",\"home\",\"code\"],\"msg\":\"Input should be less than or equal to 99\",\"type\":\"less_than_equal\"}") >= 0);
     assert(find(text, "\"truncated\":false}") >= 0);
 }
 
@@ -372,7 +392,74 @@ fn test_settings_redaction() {
     }
 }
 
+fn test_nested_presence_and_partial_errors() {
+    var missing = body_ctx("{\"child\":{\"sibling\":2}}");
+    let a, aok = web::body<Parent>(missing);
+    assert(!aok);
+    assert(find(web::body_of(missing.response), "\"loc\":[\"body\",\"child\",\"value\"],\"msg\":\"Field required\"") >= 0);
+    var partial = body_ctx("{\"child\":{\"value\":\"wrong\",\"sibling\":0}}");
+    let b, bok = web::body<Parent>(partial);
+    assert(!bok);
+    let text = web::body_of(partial.response);
+    assert(find(text, "\"type\":\"int_type\"") >= 0);
+    assert(find(text, "\"loc\":[\"body\",\"child\",\"sibling\"]") >= 0);
+    assert(find(text, "\"type\":\"greater_than_equal\"") >= 0);
+}
+
+fn test_nested_metadata_is_bounded_for_bodies_only() {
+    var text: u8[>..] = [];
+    text.append("{\"children\":[");
+    for i in 65 {
+        if i > 0 { text.push(','); }
+        text.append("{\"value\":2,\"sibling\":2}");
+    }
+    text.append("]}");
+    let decoded, result = web::json_decode<Batch>(text[..]);
+    assert(result.ok && decoded.children.len == 65);
+    var c = body_ctx(text[..]);
+    let value, ok = web::body<Batch>(c);
+    assert(!ok && c.response.status == web::HTTP_UNPROCESSABLE_CONTENT);
+    assert(find(web::body_of(c.response), "Too many nested objects to validate") >= 0);
+}
+
+fn test_unsigned_bounds_and_multiples() {
+    var huge = FloatMultiple { value: 1e300 };
+    var clean = web::Issues { .. };
+    web::validate(huge, "body", clean);
+    assert(clean.items.len == 0);
+    huge.value = 1.5;
+    web::validate(huge, "body", clean);
+    assert(has_issue(clean, "value", "multiple_of"));
+    var v = Unsigned { value: 9223372036854775808 };
+    var out = web::Issues { .. };
+    web::validate(v, "body", out);
+    assert(has_issue(out, "value", "less_than_equal"));
+    assert(!has_issue(out, "value", "multiple_of"));
+}
+
+fn test_settings_defaults_and_secret_bounds() {
+    let defaults, issues = web::settings<Defaults>("GW_VT_DEFAULT_");
+    assert(has_issue(issues, "port", "greater_than_equal"));
+    let secret, problems = web::settings<SecretBound>("GW_VT_");
+    assert(has_message(problems, "name", "invalid value (redacted)"));
+    assert(!has_message(problems, "name", "String should have at least 8 characters"));
+}
+
+fn test_bounded_issues_keep_utf8() {
+    var text: u8[>..] = [];
+    for i in 60 { text.append("é"); }
+    var out = web::Issues { .. };
+    web::issue_add(out, text[..], "value_error", text[..]);
+    assert(web::valid_utf8(out.items[0].loc[..]));
+    assert(out.items[0].loc.len == 96);
+}
+
 fn main() {
+    test_nested_presence_and_partial_errors();
+    test_unsigned_bounds_and_multiples();
+    test_nested_metadata_is_bounded_for_bodies_only();
+    test_settings_defaults_and_secret_bounds();
+    test_bounded_issues_keep_utf8();
     test_valid_sample();
     test_text_lengths_count_code_points();
     test_text_patterns_and_formats();

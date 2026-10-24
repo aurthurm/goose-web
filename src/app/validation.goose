@@ -10,7 +10,7 @@
 // The rules table is fixed (RULES_MAX entries) and builders only record what they are told, so
 // nothing grows at request time. Limits count code points for text. Bounds are whole numbers;
 // float fields compare against them. Text with an empty value skips pattern and format checks
-// (min_len(1) or required() reject it). check_rules<T>() validates the table at startup:
+// (min_len(1) rejects empty text; required() rejects an absent field). check_rules<T>() validates the table at startup:
 // unknown names, duplicates, min above max, and max_len above the field's capacity.
 //
 // validate_present<T>(value, root, present, failed, out) walks fields<T>: a missing required
@@ -395,8 +395,8 @@ fn check_float(x: f64, rule: FieldRule&, path: const u8[:], out: Issues&) {
         issue_add(out, path, "less_than", str("Input should be less than ", rule.lt));
     }
     if rule.has_multiple {
-        let q = x / rule.multiple_of;
-        if q != (q as i64) {
+        // Float remainder avoids converting an untrusted, potentially huge quotient to i64.
+        if x % (rule.multiple_of as f64) != 0 {
             issue_add(out, path, "multiple_of", str("Input should be a multiple of ", rule.multiple_of));
         }
     }
@@ -433,10 +433,23 @@ fn check_value(v: i8&, rule: FieldRule&, path: const u8[:], out: Issues&) { chec
 fn check_value(v: u32&, rule: FieldRule&, path: const u8[:], out: Issues&) { check_integer(v, rule, path, out); }
 fn check_value(v: u16&, rule: FieldRule&, path: const u8[:], out: Issues&) { check_integer(v, rule, path, out); }
 fn check_value(v: u8&, rule: FieldRule&, path: const u8[:], out: Issues&) { check_integer(v, rule, path, out); }
-// Values above i64 max are clamped: they stay above every bound an i64 rule can state.
+// Compare unsigned values without clamping: multiples must use the original value.
 fn check_value(v: u64&, rule: FieldRule&, path: const u8[:], out: Issues&) {
-    let clamped = if v > 9223372036854775807 { 9223372036854775807 } else { v as i64 };
-    check_integer(clamped, rule, path, out);
+    if rule.has_ge && rule.ge > 0 && v < (rule.ge as u64) {
+        issue_add(out, path, "greater_than_equal", str("Input should be greater than or equal to ", rule.ge));
+    }
+    if rule.has_gt && rule.gt >= 0 && v <= (rule.gt as u64) {
+        issue_add(out, path, "greater_than", str("Input should be greater than ", rule.gt));
+    }
+    if rule.has_le && (rule.le < 0 || v > (rule.le as u64)) {
+        issue_add(out, path, "less_than_equal", str("Input should be less than or equal to ", rule.le));
+    }
+    if rule.has_lt && (rule.lt <= 0 || v >= (rule.lt as u64)) {
+        issue_add(out, path, "less_than", str("Input should be less than ", rule.lt));
+    }
+    if rule.has_multiple && v % (rule.multiple_of as u64) != 0 {
+        issue_add(out, path, "multiple_of", str("Input should be a multiple of ", rule.multiple_of));
+    }
 }
 fn check_value(v: bool&, rule: FieldRule&, path: const u8[:], out: Issues&) { }
 fn check_value(v: f64&, rule: FieldRule&, path: const u8[:], out: Issues&) { check_float(v, rule, path, out); }
@@ -447,12 +460,14 @@ fn validate_fields<T>(v: T&, rs: Rules&, present: u64, failed: u64, scope: const
     var bit: u64 = 1;
     const for <N, A> in fields<T> {
         if !json_skip(v, N) {
-            let path = join_path(scope, N);
+            let name = if out.root[..] == "settings" { N } else { json_key(v, N) };
+            let path = join_path(scope, name);
             var rule = FieldRule { .. };
             let at = rule_index(rs, N);
             if at >= 0 { rule = rs.items[at]; }
             if (failed & bit) != 0 {
-                // The decoder already reported this field.
+                // A partially decoded object still has valid siblings whose rules must run.
+                if object_index(out, path[..]) >= 0 { check_value(v.A, rule, path[..], out); }
             } else if (present & bit) == 0 {
                 if rule.required { issue_add(out, path[..], "missing", "Field required"); }
             } else {
@@ -466,7 +481,10 @@ fn validate_fields<T>(v: T&, rs: Rules&, present: u64, failed: u64, scope: const
 // Validates a nested struct at path (the registration for a struct field calls this).
 fn validate_nested<T>(v: T&, path: const u8[:], out: Issues&) {
     let rs = rules_for(v);
-    validate_fields(v, rs, 18446744073709551615, 0, path, out);
+    let at = object_index(out, path);
+    let present: u64 = if at >= 0 { out.objects[at].present } else { 18446744073709551615 };
+    let failed: u64 = if at >= 0 { out.objects[at].failed } else { 0 };
+    validate_fields(v, rs, present, failed, path, out);
     if out.items.len == 0 { validate_model(v, out); }
 }
 
@@ -526,6 +544,12 @@ fn check_rules<T>() -> bool, u8[>..] {
         if rule.has_min_len && rule.has_max_len && rule.min_len > rule.max_len {
             return false, str("min_len is above max_len: ", name);
         }
+        if rule.has_min_items && rule.min_items < 0 { return false, str("min_items must not be negative: ", name); }
+        if rule.has_max_items && rule.max_items < 0 { return false, str("max_items must not be negative: ", name); }
+        if rule.pattern_kind < PATTERN_NONE || rule.pattern_kind > PATTERN_HEX { return false, str("unknown pattern: ", name); }
+        if rule.format_kind < FORMAT_NONE || rule.format_kind > FORMAT_URI { return false, str("unknown format: ", name); }
+        if rule.has_ge && rule.has_lt && rule.ge >= rule.lt { return false, str("ge is not below lt: ", name); }
+        if rule.has_gt && rule.has_le && rule.gt >= rule.le { return false, str("gt is not below le: ", name); }
         if rule.has_min_items && rule.has_max_items && rule.min_items > rule.max_items {
             return false, str("min_items is above max_items: ", name);
         }

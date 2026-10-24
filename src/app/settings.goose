@@ -19,13 +19,14 @@
 // messages are replaced by a redacted one. Field names are used as the issue locations.
 //
 // Settings use the field names only (no json_key), so the names are fixed by the struct.
-// Only scalar and text fields are supported; load settings once at startup, then call
+// Only scalar and text fields are supported; load settings once at startup, and call
 // check_rules<T>() to catch a broken rules table before the values are read.
 import src.constants.limits;
 import src.sys.process;
 import src.sys.files;
 import src.json.issues;
 import src.app.validation;
+import src.app.params;
 import std;
 namespace web;
 
@@ -107,8 +108,8 @@ fn settings_value<T>(prefix: const u8[:], field: const u8[:], secret: bool, out:
 }
 
 // Settings from the environment, with the rules of T applied. Returns the value and every
-// issue (root "settings"). Check the issues before using the value: a field with an issue keeps
-// its default.
+// issue (root "settings"). Check the issues before using the value. Parse failures keep their
+// defaults; constraint failures retain the parsed value for diagnosis.
 fn settings<T>(prefix: const u8[:]) -> T, Issues {
     var value: T = T { .. };
     var issues = Issues { .. };
@@ -129,6 +130,21 @@ fn settings<T>(prefix: const u8[:]) -> T, Issues {
         bit <<= 1;
     }
     if issues.items.len == 0 { normalize(value); }
-    validate_present(value, "settings", present, failed, issues);
+    // Defaults are real settings too: validate them even when the environment omitted a key.
+    // Required fields still need an explicit source, independent of the declared default.
+    var checked = present;
+    bit = 1;
+    const for <N, A> in fields<T> {
+        let at = rule_index(rs, N);
+        if at < 0 || !rs.items[at].required { checked |= bit; }
+        bit <<= 1;
+    }
+    validate_present(value, "settings", checked, failed, issues);
+    for i in issues.items.len {
+        let at = rule_index(rs, issues.items[i].loc[..]);
+        if at >= 0 && rs.items[at].secret {
+            issue_put(issues.items[i].msg, "invalid value (redacted)");
+        }
+    }
     return value, issues;
 }

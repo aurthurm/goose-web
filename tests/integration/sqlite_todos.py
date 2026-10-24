@@ -98,6 +98,7 @@ def check_openapi(spec):
     assert create_input["required"] == ["title"], create_input
     assert set(create_input["properties"]) == {"title", "done"}, create_input
     assert create_input["properties"]["title"]["maxLength"] == 200
+    assert create_input["properties"]["title"]["minLength"] == 1
     patch_input = item["patch"]["requestBody"]["content"]["application/json"]["schema"]
     assert "required" not in patch_input, patch_input
     assert set(patch_input["properties"]) == {"title", "done"}, patch_input
@@ -147,6 +148,12 @@ def test_crud_and_persistence(executable):
 
             status, error = client.call("POST", "/todos", {"title": ""})
             assert status == 422 and error["error"]["code"] == "invalid_payload", error
+            status, error = client.call("POST", "/todos", {"title": "", "done": "wrong", "extra": 1})
+            assert status == 422 and error["truncated"] is False, error
+            details = {(tuple(issue["loc"]), issue["type"]) for issue in error["detail"]}
+            assert details == {(("body", "done"), "bool_type"),
+                               (("body", "extra"), "extra_forbidden"),
+                               (("body", "title"), "string_too_short")}, error
             status, error = client.call("POST", "/todos", {"title": "x" * 201})
             assert status == 422 and error["error"]["code"] == "invalid_payload", error
             status, error = client.call("POST", "/todos", raw=b"{not json")

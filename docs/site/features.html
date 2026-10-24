@@ -56,9 +56,20 @@ li{margin:.25em 0}
 application API; nothing here needs a separate server or a code generator.</p>
 
 <div class="toc">
+  <a href="#validation">Validation and settings</a>
   <a href="#templates">Templates</a><a href="#sessions">Sessions</a><a href="#csrf">CSRF</a><a href="#openapi">OpenAPI</a><a href="#sqlite">SQLite</a><a href="#sse">Server-sent events</a><a href="#jobs">Jobs and scheduler</a>
   <a href="#templates">Templates</a><a href="#sessions">Sessions</a><a href="#csrf">CSRF</a><a href="#auth">Authentication</a><a href="#openapi">OpenAPI</a><a href="#sqlite">SQLite</a><a href="#sse">Server-sent events</a>
 </div>
+
+<h2 id="validation">Validation and settings</h2>
+<p>Declare <code>web::rules</code> for a struct to share field constraints between request
+validation and OpenAPI. Typed bodies collect schema and constraint errors into a 422 response
+with a <code>detail</code> list. Typed queries and forms apply the same rules after binding.</p>
+<p><code>web::settings&lt;T&gt;("APP_")</code> loads typed environment settings with defaults,
+<code>_FILE</code> sources and redacted secret diagnostics. The generated starter demonstrates
+application settings and validated note bodies. See the
+<a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#validation">validation</a> and
+<a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#settings">settings</a> API reference.</p>
 
 <h2 id="templates">Templates</h2>
 <p>Templates are bytes embedded into the program at compile time. <code>embed_file("views/list.html")</code> reads the file

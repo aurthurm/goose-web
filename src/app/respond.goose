@@ -67,7 +67,7 @@ fn body_decode<T>(c: Ctx&) -> T, DecodeResult {
         fail(c, HTTP_BAD_REQUEST, "invalid_json", "Request body is empty");
         return value, result;
     }
-    let decoded, result = json_decode<T>(c.request.body);
+    let decoded, result = json_decode<T>(c.request.body, true);
     if result.ok || result.issues.items.len > 0 { return decoded, result; }
     let message = str("Malformed JSON: ", result.error[..]);
     fail(c, HTTP_BAD_REQUEST, "invalid_json", message[..]);

@@ -12,6 +12,14 @@ because the repository has no tag history for them.
 
 ### Added
 
+- Field rules (`web::rules`) for typed bodies, queries, forms and settings, normalization and
+  model hooks, startup rule checks, and matching OpenAPI constraints. Validation 422 responses
+  now include a bounded `detail` list and `truncated` while retaining the `error` object.
+- Typed `web::settings<T>(prefix)` with defaults, environment and `_FILE` sources, accumulated
+  errors and secret diagnostics. The generated starter and SQLite example demonstrate the APIs.
+- Deterministic HTTP reader checks for TCP fragmentation and coalesced pipelined responses.
+  The malformed-request socket test now retains and verifies both pipelined responses.
+
 - `ServerConfig.worker_restart_budget` (default 30, the largest accepted value): the number of
   unexpected worker restarts tolerated within 60 seconds. Spending it stops the server, writes a
   message to stderr and makes `serve_config` return false. The default is unchanged.
@@ -70,6 +78,12 @@ because the repository has no tag history for them.
 - The parent drops a stats frame that does not match its build instead of adding it.
 - A response may have an empty `content_type` only when its status is 304; that response is serialized without
   `Content-Type` (RFC 9110 15.4.5). Every other response still needs one.
+
+### Breaking
+
+- Schema-error 422 bodies add `detail` and `truncated`; their human-readable messages use the
+  structured validation wording. `DecodeResult` adds `failed` and `issues`. Nested structs used
+  by `body<T>` need a `check_value` registration for validation (see docs/api.md).
 
 ### Security notes
 

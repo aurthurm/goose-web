@@ -48,7 +48,12 @@ def application(port, method, target, expected, value=None, **kwargs):
         assert headers["content-type"].split(";", 1)[0] == "application/json"
         parsed = json.loads(payload)
         if status >= 400:
-            assert set(parsed) == {"error"}
+            assert set(parsed) in ({"error"}, {"error", "detail", "truncated"})
+            if "detail" in parsed:
+                assert status == 422 and parsed["detail"]
+                assert isinstance(parsed["truncated"], bool)
+                for issue in parsed["detail"]:
+                    assert set(issue) == {"loc", "msg", "type"}
             assert set(parsed["error"]) == {"code", "message"}
             assert isinstance(parsed["error"]["code"], str)
             assert isinstance(parsed["error"]["message"], str)

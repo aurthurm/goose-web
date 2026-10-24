@@ -28,6 +28,18 @@ curl 'http://127.0.0.1:8080/notes?limit=5'
 
 Ctrl+C stops the server; it drains open connections for a few seconds first.
 
+## Application settings
+
+`APP_TITLE` sets the page title (default `Notes`, 1 to 32 characters within 32 UTF-8 bytes).
+`APP_MAX_NOTES` sets the storage limit (default 32, range 1 to 32). The same settings can come
+from `APP_TITLE_FILE` or `APP_MAX_NOTES_FILE`; use either the direct value or the file source.
+Invalid settings stop startup. Note bodies require nonempty `text`; failures return a 422
+with structured field details.
+
+```sh
+APP_TITLE="Team notes" APP_MAX_NOTES=16 ./build/server --port 8080
+```
+
 ## Develop with reload
 
 ```sh

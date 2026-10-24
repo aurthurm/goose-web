@@ -27,7 +27,7 @@ struct OpenApiInfo {
     docs_path: const u8[:] = "/docs",
 }
 
-const OAS_ERROR_SCHEMA = "{\"type\":\"object\",\"required\":[\"error\"],\"properties\":{\"error\":{\"type\":\"object\",\"required\":[\"code\",\"message\"],\"properties\":{\"code\":{\"type\":\"string\"},\"message\":{\"type\":\"string\"}}}}}";
+const OAS_ERROR_SCHEMA = "{\"type\":\"object\",\"required\":[\"error\"],\"properties\":{\"error\":{\"type\":\"object\",\"required\":[\"code\",\"message\"],\"properties\":{\"code\":{\"type\":\"string\"},\"message\":{\"type\":\"string\"}}},\"detail\":{\"type\":\"array\",\"maxItems\":16,\"items\":{\"type\":\"object\",\"required\":[\"loc\",\"msg\",\"type\"],\"properties\":{\"loc\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"msg\":{\"type\":\"string\"},\"type\":{\"type\":\"string\"}}}},\"truncated\":{\"type\":\"boolean\"}}}";
 const OAS_DOCS_PAGE_START = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>API reference</title><link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css\"></head><body><div id=\"swagger-ui\"></div><script src=\"https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js\"></script><script>window.onload = function () { SwaggerUIBundle({ url: ";
 const OAS_DOCS_PAGE_END = ", dom_id: \"#swagger-ui\" }); };</script></body></html>\n";
 
@@ -138,22 +138,24 @@ fn csv_has(list: const u8[:], name: const u8[:]) -> bool {
     }
 }
 
-// Removes the `,"key":value` member from a schema object (our schemas always put a member
-// with a comma before it), copying the rest to out.
+// Copies an object schema without one top-level keyword. Parsing the value boundaries avoids
+// accidentally removing a keyword from the item schema of an array or a nested object.
 fn schema_drop(out: u8[>..]&, part: const u8[:], key: const u8[:]) {
-    var needle: u8[>..] = [];
-    needle.push('"');
-    needle.append(key);
-    needle.append("\":");
-    let at = find(part, needle[..]);
-    if at <= 0 {
-        out.append(part);
-        return;
-    }
-    var stop = at + needle.len;
-    while stop < part.len && part[stop] != ',' && part[stop] != '}' { stop += 1; }
-    out.append(part[..at - 1]);
-    out.append(part[stop..]);
+    var reader = json::reader(part);
+    var first = true;
+    out.push('{');
+    json::each_member(reader) { name =>
+        json::peek(reader);
+        let start = reader.pos;
+        json::skip(reader);
+        if name != key {
+            if !first { out.push(','); }
+            first = false;
+            json::format_key(out, name);
+            out.append(part[start..reader.pos]);
+        }
+    };
+    out.push('}');
 }
 
 // The constraint keywords of a rule, each with its leading comma (JSON Schema, from the same
@@ -181,8 +183,20 @@ fn schema_keywords(out: u8[>..]&, rule: FieldRule&) {
 fn json_schema_rule<T>(out: u8[>..]&, v: T&, rule: FieldRule&) {
     var part: u8[>..] = [];
     json_schema_value(part, v);
+    // A rule may tighten a type bound, but cannot widen the range its decoder accepts.
+    var effective = rule;
+    var reader = json::reader(part[..]);
+    json::each_member(reader) { key =>
+        if key == "minimum" && effective.has_ge {
+            let bound = json::read_int(reader);
+            if effective.ge < bound { effective.ge = bound; }
+        } else if key == "maximum" && effective.has_le {
+            let bound = json::read_int(reader);
+            if effective.le > bound { effective.le = bound; }
+        } else { json::skip(reader); }
+    };
     var constraints: u8[>..] = [];
-    schema_keywords(constraints, rule);
+    schema_keywords(constraints, effective);
     if constraints.len == 0 {
         out.append(part[..]);
         return;
@@ -191,7 +205,11 @@ fn json_schema_rule<T>(out: u8[>..]&, v: T&, rule: FieldRule&) {
     if rule.has_max_len { schema_drop(step, part[..], "maxLength"); } else { step.append(part[..]); }
     var base: u8[>..] = [];
     if rule.has_max_items { schema_drop(base, step[..], "maxItems"); } else { base.append(step[..]); }
-    out.append(base[..base.len - 1]);
+    var lower: u8[>..] = [];
+    if rule.has_ge { schema_drop(lower, base[..], "minimum"); } else { lower.append(base[..]); }
+    var bounds: u8[>..] = [];
+    if rule.has_le { schema_drop(bounds, lower[..], "maximum"); } else { bounds.append(lower[..]); }
+    out.append(bounds[..bounds.len - 1]);
     out.append(constraints[..]);
     out.push('}');
 }

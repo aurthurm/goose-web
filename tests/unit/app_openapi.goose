@@ -264,7 +264,52 @@ fn check_wire(body: const u8[:]) {
     assert(has_key(req_props, "done") && !has_key(req_props, "completed") && !has_key(req_props, "secret"));
 }
 
+// Constraints must replace top-level capacity/type keywords, preserving nested item schemas.
+struct Constrained { name: u8[..16], score: u8 = 0, tags: u8[..8][..4], email: u8[..40] }
+fn web::rules(v: Constrained&, r: web::Rules&) {
+    r.field("name").required().min_len(2).max_len(8).pattern(web::PATTERN_SLUG);
+    r.field("score").ge(2).le(10).multiple_of(2);
+    r.field("tags").min_items(1).max_items(2);
+    r.field("email").format(web::FORMAT_EMAIL);
+}
+
+fn test_rule_schemas() {
+    var value = Constrained { .. };
+    var text: u8[>..] = [];
+    web::json_schema_fields(text, value);
+    var doc: json::Node[>..] = [];
+    var decoded: u8[>..] = [];
+    let root, err = json::parse(text[..], doc, decoded);
+    guard root else { abort(err); }
+    let props = json::member(root, "properties");
+    let name = json::member(props, "name");
+    assert(int_of(json::member(name, "minLength")) == 2);
+    assert(int_of(json::member(name, "maxLength")) == 8);
+    assert(is_text(name, "pattern", web::pattern_regex(web::PATTERN_SLUG)));
+    let score = json::member(props, "score");
+    assert(count_of(score) == 4); // type, minimum, maximum, multipleOf: no duplicate keys
+    assert(int_of(json::member(score, "minimum")) == 2);
+    assert(int_of(json::member(score, "maximum")) == 10);
+    assert(int_of(json::member(score, "multipleOf")) == 2);
+    let tags = json::member(props, "tags");
+    assert(int_of(json::member(tags, "maxItems")) == 2);
+    assert(int_of(json::member(json::member(tags, "items"), "maxLength")) == 8);
+    assert(is_text(json::member(props, "email"), "format", "email"));
+    assert(has_text(json::member(root, "required"), "name"));
+    assert(!has_text(json::member(root, "required"), "score"));
+    var small: u8 = 0;
+    var loose = web::FieldRule { has_ge: true, ge: -10, has_le: true, le: 1000, .. };
+    var range: u8[>..] = [];
+    web::json_schema_rule(range, small, loose);
+    assert(range == "{\"type\":\"integer\",\"minimum\":0,\"maximum\":255}");
+    // Removing an outer maxLength must never edit a nested string's maxLength.
+    var untouched: u8[>..] = [];
+    web::schema_drop(untouched, "{\"type\":\"array\",\"items\":{\"type\":\"string\",\"maxLength\":8}}", "maxLength");
+    assert(untouched == "{\"type\":\"array\",\"items\":{\"type\":\"string\",\"maxLength\":8}}");
+}
+
 fn main() {
+    test_rule_schemas();
     // Describe pass: the document is served and no route body runs.
     let spec_status, spec = exchange("/openapi.json", described_app);
     assert(spec_status == 200 && body_hits == 0);
