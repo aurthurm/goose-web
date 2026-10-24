@@ -8,6 +8,30 @@ The entries before 0.6.0 were design milestones, not published releases. They ar
 from [ROADMAP.md](ROADMAP.md) and the design notes in [docs/design/app-api.md](docs/design/app-api.md),
 because the repository has no tag history for them.
 
+## Unreleased
+
+### Added
+
+- `ServerConfig.worker_restart_budget` (default 30, the largest accepted value): the number of
+  unexpected worker restarts tolerated within 60 seconds. Spending it stops the server, writes a
+  message to stderr and makes `serve_config` return false. The default is unchanged.
+- Worker supervisor tests over real processes (`tests/integration/workers.py`): the restart budget
+  stops the server with a nonzero exit, a worker held past the shutdown grace is SIGKILLed 500 ms
+  after it and no worker survives, and the stats of a crashed worker are lost while the others are
+  summed. The fixture takes an optional restart budget and a `/block` route.
+- Stats record unit test (`tests/unit/stats_record.goose`): every `ServerStats` field round-trips,
+  and a frame with a wrong field count, magic or length is rejected.
+
+### Changed
+
+- The worker stats record is a fixed-size frame (`STATS_RECORD_BYTES`, 272 bytes): a magic word
+  `GWSTATS1`, the field count, then each `i64` field as little-endian bytes. It is encoded and
+  decoded with `const for` over `fields<ServerStats>`, and the parent sums with the same walk, so a
+  new field is carried without other edits. The hand-counted `96`-byte record is gone. The pipe
+  moves opaque bytes, and the record format is internal to the build (parent and workers are one
+  binary).
+- The parent drops a stats frame that does not match its build instead of adding it.
+
 ## 0.6.0
 
 First release that can be consumed as a fetched package (`import goose_web from "aurthurm/goose-web@v0.6.0";`).

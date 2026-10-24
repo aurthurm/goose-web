@@ -41,19 +41,21 @@ int main(void) {
     /* A pid that is not our child is reaped at once with status -1 (ECHILD). */
     assert(gw_wait_child(999999, &status) == GW_CHILD_REAPED && status == -1);
 
-    /* Records cross the pipe whole. An empty pipe reads WOULD_BLOCK; after the writer closes, EOF. */
+    /* Frames cross the pipe whole. An empty pipe reads WOULD_BLOCK; after the writer closes, EOF. */
     int32_t read_end = -1, write_end = -1;
     assert(gw_pipe(&read_end, &write_end) == 0);
-    int64_t out[12], in[12];
-    for (int i = 0; i < 12; ++i) out[i] = 1000 + i;
+    uint8_t out[96], in[96];
+    for (int i = 0; i < 96; ++i) out[i] = (uint8_t)(i * 7);
+    gw_bytes out_frame = {out, sizeof(out)};
+    gw_bytes in_frame = {in, sizeof(in)};
     assert(gw_wait_readable(read_end, 0) == 0);      /* empty pipe: timeout */
-    assert(gw_pipe_write_record(write_end, out, sizeof(out)) == (int64_t)sizeof(out));
-    assert(gw_wait_readable(read_end, 1000) == 1);   /* a record is waiting */
-    assert(gw_pipe_read_record(read_end, in, sizeof(in)) == (int64_t)sizeof(in));
+    assert(gw_pipe_write_record(write_end, out_frame) == (int64_t)sizeof(out));
+    assert(gw_wait_readable(read_end, 1000) == 1);   /* a frame is waiting */
+    assert(gw_pipe_read_record(read_end, in_frame) == (int64_t)sizeof(in));
     assert(memcmp(out, in, sizeof(out)) == 0);
-    assert(gw_pipe_read_record(read_end, in, sizeof(in)) == GW_IO_WOULD_BLOCK);
+    assert(gw_pipe_read_record(read_end, in_frame) == GW_IO_WOULD_BLOCK);
     close(write_end);
-    assert(gw_pipe_read_record(read_end, in, sizeof(in)) == 0);
+    assert(gw_pipe_read_record(read_end, in_frame) == 0);
     close(read_end);
 
     puts("Process tests passed: fork and exit status, signals, nonblocking reap, record pipe, readable wait, CPU count");

@@ -136,6 +136,7 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | sse_heartbeat_ms | 15000 | 1..86400000, interval of the `: ping` comment on each stream |
 | sse_max_queued_bytes | 262144 | 256..4194304, unsent bytes one stream may hold before it is dropped |
 | workers | 1 | 0..256; 1 is the single-process reactor; 0 is one worker process per CPU; more than 1 pre-forks that many workers (see [Worker processes](#worker-processes)) |
+| worker_restart_budget | 30 | 0..30; unexpected worker exits tolerated within 60 seconds before the server stops (see [Worker processes](#worker-processes)) |
 
 Memory is bounded by these limits and is charged on demand. Each of the `max_clients` slots costs a
 small record. A connection holds an input block only while it has request bytes to parse (1 KiB, doubling
@@ -238,24 +239,37 @@ the path and create the table), then each process opens its own connection on th
 close it first or open it lazily in the handler. A worker that inherits an open handle and uses
 it corrupts the database.
 
-**Stats.** When a worker stops, it sends its `ServerStats` to the parent as one fixed-size record
-on a pipe. The parent sums the records into `control.stats`, so `SERVER_STOPPED` receives the
+**Stats.** When a worker stops, it sends its `ServerStats` to the parent as one fixed-size frame
+on a pipe, `STATS_RECORD_BYTES` (272) long and written whole. The frame is a magic word
+(`STATS_RECORD_MAGIC`, the ASCII `GWSTATS1`), the field count, then each `i64` field as eight
+little-endian bytes in declaration order, zero-padded to `STATS_FIELD_CAPACITY` (32) fields. The
+encoder and decoder walk `fields<ServerStats>` with `const for`, and the parent sums with the same
+walk, so a field added to `ServerStats` is carried and summed without other edits. The parent drops a
+frame whose length, magic or field count does not match its own build, and the pipe stays aligned on
+the next frame. The parent sums the frames into `control.stats`, so `SERVER_STOPPED` receives the
 totals of every worker that stopped cleanly. `active` and `sse_active` are zero at that point. The
 parent's stats are zero until the first worker stops. A worker that crashes or is killed after the
-grace period sends no record, so its counts are lost; the `accepted` count of a crashed worker is
-also lost.
+grace period sends no frame, so its counts are lost, including the `accepted` count; the other
+workers' counts are still summed, so `completed` is the total answered by the workers that stopped
+cleanly and leaves out what a crashed worker answered.
 
 **Supervision.** A worker that exits without being asked (a crash, a signal other than the
 parent's shutdown, or its own `max_requests` or `request_shutdown` from its tick) is restarted.
 Restarts back off from 50 ms, doubling to 2 s; a worker that lived for ten seconds resets its
-backoff. When more than 30 restarts happen within 60 seconds the server stops and
-`serve_config` returns false, since a crash loop is a fault to fix rather than to mask.
-A failed `fork` stops the server the same way.
+backoff. Restarts are budgeted by `worker_restart_budget` (default 30, the largest accepted value):
+when more restarts than that happen within 60 seconds, the parent writes
+`goose-web: workers kept exiting and the restart budget is spent; the server stops` to stderr, stops
+the other workers, and `serve_config` returns false. The application then decides its exit status;
+the fixture in `tests/fixtures/workers.goose` exits 1. A budget of 0 stops the server at the first
+unexpected exit. A crash loop is a fault to fix rather than to mask. A failed `fork` stops the
+server the same way.
 
 **Shutdown.** The parent closes the listener and sends SIGTERM to every worker. A worker drains
 as in the single-process case: idle connections close at once, in-flight requests finish with
 `Connection: close`, and the listener is already closed. The parent waits for every worker to
-exit. Workers still running `shutdown_grace_ms + 500 ms` after the stop began are sent SIGKILL.
+exit. Workers still running `shutdown_grace_ms + 500 ms` after the stop began are sent SIGKILL and
+reaped, so the parent exits within that bound even when a handler blocks the reactor. The requests
+such a worker was serving are cut off, and its stats are lost.
 
 **Linux and portability.** Workers are created with `fork` and, on Linux, `PR_SET_PDEATHSIG`
 so that a worker whose parent dies receives SIGTERM and drains. The mechanism is POSIX; the
