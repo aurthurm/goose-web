@@ -50,6 +50,13 @@
 - Next: token-bucket limits and shared counters across instances.
 
 
+## Milestone 2.7: development loop
+
+- [x] `scripts/dev.py`: rebuild and restart on save (inotify on Linux, polling elsewhere), debounced, with the old server kept on a failed build.
+- [x] Browser live reload: `web::live_reload` injects the reload script only when `GOOSE_WEB_LIVE_RELOAD` is set; `reload` and `error` (overlay with the compiler output) events over SSE.
+- [x] The starter and the pages example use it; `new_project.py` copies `scripts/dev.py` into a new project.
+- Next: watch the imported package when it is fetched from GitHub; a file-change debounce tuned by measurement; reload of only the changed template.
+
 ## Milestone 3: protocol and platform coverage
 
 - [x] Strict request profile, malformed-input/prefix regressions, and deterministic parser fuzz/property checks.

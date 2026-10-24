@@ -481,6 +481,8 @@ so behind a proxy every client shares the proxy's address.
 | `session(c, config) { }` | loads the signed session cookie, exposes `session_get`/`session_set`/`session_clear`, and re-issues the cookie after the block only when the store changed. See [Sessions](#sessions) |
 | `csrf(c, secret, check_origin = false) { }` | safe methods pass and receive a token cookie; unsafe methods need the token echoed in `X-CSRF-Token` or `csrf_token`, else 403 `csrf_failed`. See [CSRF](#csrf) |
 
+| `live_reload(c, script_url = "") { }` | development only: after the block, a `text/html` response gets `<script src="URL"></script>` before its last `</body>` (appended when there is none). The URL is `script_url`, or else `GOOSE_WEB_LIVE_RELOAD`, read once per process. Unset, empty or unsafe means no change. See [Development server and live reload](#development-server-and-live-reload) |
+
 ### JSON responses and request bodies
 
 - `c.json(value)` encodes a struct or scalar, passed by value, and keeps the status already set
@@ -943,6 +945,78 @@ Limits, stated so they are not a surprise:
   aborts while `/openapi.json` is generated, which is a programmer error; the document itself must
   fit the response cap (`MAX_RESPONSE_BODY_BYTES`, 64 KiB today).
 - The document is compact JSON with no whitespace and is regenerated per request.
+
+## Development server and live reload
+
+`scripts/dev.py` rebuilds a program when its files change and restarts it, and reloads the browser
+page. It is a development tool, not part of the served application (standard library only).
+
+```sh
+python3 scripts/dev.py examples/pages/server.goose             # serve on 8080, reload endpoint on 8081
+python3 scripts/dev.py server.goose --port 9000 --reload-port 9001 --watch ../shared
+python3 scripts/dev.py server.goose -- --workers 2             # arguments after -- go to the program
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--port N` | the port the program listens on (default 8080); it is passed as `--port N` before the program arguments |
+| `--reload-port N` | the live reload endpoint (default `--port` + 1), bound to 127.0.0.1 |
+| `--watch DIR` | another directory to watch (repeatable) |
+| `--release` | build with `-O2` instead of `--debug` |
+| `--goose PATH` | the compiler (default `$GOOSE`, then `goose`) |
+| `--build-command CMD` | build with `CMD` instead of goose; `{source}` and `{output}` are replaced |
+| `--polling` | poll the file tree instead of using inotify |
+
+The program must read its arguments with `web::config_from_args(args())`, so the `--port` that dev.py
+passes is understood. The page gets the reload script only from `web::live_reload`, so add it inside
+the application's middleware (the starter and the pages example do).
+
+**Watching.** The root file's directory tree, the goose_web package root (a local path in its
+`import goose_web from "...";` line, such as `../..` in `examples/`) and each `--watch` directory are
+watched. Files ending in `.goose`, `.html`, `.css`, `.js`, `.build`, `.json`, `.txt`, `.svg`, the image
+types, `.yaml`, `.yml`, `.sql` and `.csv` count, so embedded assets (`embed_file`) are covered. The
+directories `build/`, `__pycache__`, `node_modules` and hidden directories are skipped. On Linux the
+watch uses inotify through ctypes; elsewhere, or when inotify is unavailable, the tree is polled every
+0.25 s.
+
+**Rebuilding.** A change starts a build after 150 ms without further changes (at most one second of
+changes is batched). The build is `goose build SERVER -o build/dev/NAME-N --debug`, so each rebuild writes a
+new binary and never overwrites a running one. A successful build stops the old server (SIGTERM, then
+SIGKILL after five seconds), starts the new one, waits until it accepts connections (15 seconds at most),
+and sends `reload`. A failed build prints the compiler output, keeps the running server answering, and sends
+`error`. Ctrl+C stops the server and exits.
+
+**Reload endpoint.** It listens on `127.0.0.1:RELOAD_PORT` with three paths: `/live.js` (the browser
+script, with CORS allowed), `/events` (a `text/event-stream`) and `/` (a one-line status). The events are:
+
+- `reload` with `{}`: the new server is listening; the browser calls `location.reload()`.
+- `error` with `{"message": "..."}`: the build or the server start failed; the browser shows the message
+  as an overlay. A browser that connects during a failure receives the last message at once.
+
+The script uses `EventSource`, which reconnects by itself, so a browser keeps listening across a
+restart of dev.py's reload endpoint without a manual refresh.
+
+**The environment variable.** While dev.py runs the program, it sets `GOOSE_WEB_LIVE_RELOAD` to the
+script URL (`http://127.0.0.1:RELOAD_PORT/live.js`). `web::live_reload` reads it once, on the first
+request. Each text/html response the middleware sees gets the tag `<script src="URL"></script>` before its
+last `</body>`; responses that are not `text/html`, server-sent event streams, and responses where the
+insertion would exceed `max_response_bytes` are left as they are. A URL with spaces, quotes, angle brackets
+or backslashes is ignored. Without the variable (a production start) the middleware only calls `Next()`.
+
+```goose
+fn app(c: web::Ctx&) {
+    web::live_reload(c) {
+        c.routes() {
+            c.get("/") { render_home(c); };
+        };
+    };
+}
+```
+
+**Limits.** The rebuild is a full `goose build`, so a change costs the compile time of the program
+(a few seconds for the examples). Only one server runs at a time, and a process that exits by itself
+is reported as `error` until a file changes. The reload endpoint has no authentication and listens on
+loopback only; do not expose it or set `GOOSE_WEB_LIVE_RELOAD` in deployed environments.
 
 ## SQLite (web::db)
 

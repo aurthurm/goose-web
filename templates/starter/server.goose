@@ -28,7 +28,7 @@ fn render_home(c: web::Ctx&) {
 // The policy allows the Swagger UI assets that /docs loads from the jsDelivr CDN.
 fn app(c: web::Ctx&) {
     secure_headers(c, "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net") {
-    request_id(c) { c.logger() {
+    request_id(c) { c.logger() { web::live_reload(c) {
         web::openapi(c, web::OpenApiInfo { title: "Starter API", version: "0.1.0",
             description: "A small notes API built with Goose Web." }) {
             c.routes() {
@@ -80,7 +80,7 @@ fn app(c: web::Ctx&) {
                 };
             };
         };
-    }}};
+    }}}};
 }
 
 fn main() {

@@ -53,6 +53,7 @@ fn main() {
 - Typed forms and query strings: `form<T>(c)` binds urlencoded bodies and `query<T>(c)` binds the query, both strict.
 - Compile-time HTML templates: `embed_file("views/page.html")` with `{{escaped}}`, `{{{raw}}}`, sections, `each` over struct arrays and comments; `check_template` validates them at startup. See [Templates](docs/api.md#templates).
 - Composable middleware: built-in `request_id`, `logger`, `cors` and `require_json`, or your own `fn name<Next>(c)`.
+- Development loop: `python3 scripts/dev.py server.goose` rebuilds and restarts on save, and the page reloads (or shows the compiler error). `web::live_reload` is the browser side. See [development server](docs/api.md#development-server-and-live-reload).
 - Edge middleware: `secure_headers` (CSP, nosniff, frame DENY, referrer policy, optional HSTS) and a bounded per-client `rate_limit` that answers 429 with `Retry-After`. `c.peer()` gives the TCP peer address.
 - Signed cookie sessions (`session`, 16 entries, HMAC-SHA256) and double-submit CSRF protection (`csrf`) with a CSPRNG-backed token. See [Sessions](docs/api.md#sessions) and [CSRF](docs/api.md#csrf); the security notes there say what these do not protect.
 - Opt-in SQLite layer (`db/`, `web::db`): reflective tables and CRUD from `fields<T>`, bound parameters only, a query builder, transactions, migrations. See [SQLite](docs/api.md#sqlite-webdb).
@@ -141,6 +142,10 @@ goose build examples/basic/server.goose -o build/server
 
 The example listens on `127.0.0.1`. Ctrl+C or SIGTERM stops accepting clients and
 drains existing connections within a five-second grace period.
+
+While you develop, `python3 scripts/dev.py examples/hello/server.goose --port 8080` rebuilds and restarts
+the program on each save. Pages that use `web::live_reload` also reload in the browser; see
+[the development server](docs/api.md#development-server-and-live-reload).
 
 To use every core, pre-fork worker processes. Apps whose `main` calls `web::config_from_args`
 accept `--workers N` (`0` for one per CPU) and read `GOOSE_WEB_WORKERS`:

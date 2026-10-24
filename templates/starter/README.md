@@ -28,6 +28,21 @@ curl 'http://127.0.0.1:8080/notes?limit=5'
 
 Ctrl+C stops the server; it drains open connections for a few seconds first.
 
+## Develop with reload
+
+```sh
+python3 scripts/dev.py server.goose                  # serves on 8080, reload endpoint on 8081
+python3 scripts/dev.py server.goose --port 9000      # other ports; --reload-port sets the second
+```
+
+The script builds the server, runs it, and watches the project for changes. Saving a file rebuilds
+and restarts the server, and the open page reloads. A build error is shown in the browser over the
+page, and the previous server keeps running until the next successful build. `--release` builds
+optimized code instead, and arguments after `--` go to the program. The page gets its reload script
+only while `scripts/dev.py` runs: `web::live_reload(c)` in `server.goose` injects it, and does nothing
+when `GOOSE_WEB_LIVE_RELOAD` is unset. Linux uses inotify; the script polls elsewhere.
+Details are in [development server](https://github.com/aurthurm/goose-web/blob/main/docs/api.md#development-server-and-live-reload).
+
 ## Test it
 
 ```sh
