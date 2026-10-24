@@ -22,6 +22,13 @@ because the repository has no tag history for them.
 - Stats record unit test (`tests/unit/stats_record.goose`): every `ServerStats` field round-trips,
   and a frame with a wrong field count, magic or length is rejected.
 
+- Reactor scheduler (`web::scheduler`, `every`, `after`, `cancel`, `due`, `hint_wakeup`): bounded periodic and
+  one-shot tasks run from the tick, monotonic times, documented catch-up rule. `ServerControl.wake_at_ns` shortens
+  the poll wait to the next due task. See [Scheduler](docs/api.md#scheduler).
+- Background job pool (`web::job_pool`, `job_start`, `job_submit`, `job_drain`, `job_stop`, `job_worker`): pure-Goose
+  work on contained worker threads over typed queues, with a bounded queue (503 when full), correlation ids, lost-job
+  reports and worker restarts. See [Background jobs](docs/api.md#background-jobs) and [examples/jobs](examples/jobs/README.md).
+
 ### Changed
 
 - The worker stats record is a fixed-size frame (`STATS_RECORD_BYTES`, 272 bytes): a magic word

@@ -34,6 +34,8 @@ struct SseSlot { active: bool, channel: i32 }
 // struct stays fixed-size, so default<ServerControl>() works and costs no outbox memory.
 struct ServerControl {
     shutdown_requested: bool, running: bool, stopping: bool, stats: ServerStats,
+    // Monotonic time (clock_ns) of the next scheduled task, set by web::hint_wakeup; 0 means none.
+    wake_at_ns: i64,
     sse_limit: i64, sse_slots: SseSlot[MAX_CLIENTS], sse_msg_count: i64,
     sse_msg_channel: i32[MAX_SSE_OUTBOX_MESSAGES], sse_msg_end: i64[MAX_SSE_OUTBOX_MESSAGES]
 }
@@ -516,6 +518,11 @@ fn serve_loop<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&,
         for i in config.max_clients {
             if clients[i].fd < 0 { continue; }
             let remaining_ms = (clients[i].deadline - poll_now) / NANOSECONDS_PER_MILLISECOND;
+            if remaining_ms < wait_ms { wait_ms = if remaining_ms > 0 { remaining_ms as i32 } else { 0 }; }
+        }
+        // A scheduled task due before the poll interval ends wakes the reactor on time (web::hint_wakeup).
+        if control.wake_at_ns > 0 {
+            let remaining_ms = (control.wake_at_ns - poll_now) / NANOSECONDS_PER_MILLISECOND;
             if remaining_ms < wait_ms { wait_ms = if remaining_ms > 0 { remaining_ms as i32 } else { 0 }; }
         }
         // Never let polling extend beyond the shutdown grace deadline.

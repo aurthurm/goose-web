@@ -24,6 +24,8 @@ own globals (a Goose import adds no namespace). Use `src/sys/` instead.
 | `src/sys/` | Files (stat, bounded read), environment, monotonic clock | Native shim only; never imports the `os` stdlib |
 | `src/app/config.goose` | `config_from_args` / `config_from_env` for application mains | Runtime config, `src/sys` |
 | `src/runtime/server.goose` | Connections, deadlines, shutdown, lifecycle, counters; worker processes (`serve_workers`) | HTTP parsing/framing, native transport, `src/sys` |
+| `src/runtime/scheduler.goose` | Periodic and one-shot tasks run from the tick, monotonic times, reactor wake hint | Runtime server, `src/sys` (clock) |
+| `src/jobs/pool.goose` | Background job pool: pure-Goose workers on threads, typed queues, correlation ids, restart of aborted workers | Goose `thread_fn` and typed queues only; no package C |
 | `native/posix/transport.c` | Nonblocking socket calls, the readiness reactor (epoll on Linux, poll elsewhere), optional signals | POSIX |
 | `native/posix/system.c` | stat, bounded file read, getenv, clock | POSIX |
 | `native/posix/process.c` | fork, nonblocking reap, kill, CPU count, stats record pipe | POSIX (fork and prctl on Linux) |
@@ -125,6 +127,21 @@ framework uses every core without threads: Goose threads share no memory and may
 - Worker state is copied at fork and is private afterwards; SQLite connections are opened after fork
   (see [docs/api.md](api.md#worker-processes)). Only the stats record crosses back, over one pipe.
 - The shim functions for this live in `native/posix/process.c`; `tests/native/process.c` covers them.
+
+## Background work
+
+Two mechanisms keep slow work off the reactor, and both are documented in
+[docs/api.md](api.md#scheduler) and [docs/api.md](api.md#background-jobs):
+
+- **Scheduler** (`src/runtime/scheduler.goose`): a bounded table of tasks that the tick runs on the reactor
+  thread. It reads the monotonic clock and never blocks. `hint_wakeup` writes `ServerControl.wake_at_ns`, the one
+  field the reactor reads, to shorten its poll wait to the next due task.
+- **Job pool** (`src/jobs/pool.goose`): pure Goose work on `thread_fn` workers. Jobs and results cross through
+  typed queues, so the reactor only ever touches flat messages. `goose_web.build` keeps `main_thread_only`,
+  so a worker that reaches the package's C (sockets, the clock, SQLite, crypto) fails to compile; a worker
+  running pure framework Goose is allowed. Each slot is a contained worker with a watcher thread, so an aborted
+  job is reported as lost and the slot restarts. The queue limit bounds the jobs in flight, which bounds
+  memory and the reply queue.
 
 ## Composition
 

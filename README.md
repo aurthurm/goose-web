@@ -60,6 +60,7 @@ fn main() {
 - Nonblocking reactor: epoll readiness on Linux (poll elsewhere) with one registration per connection, bounded client slots, partial writes, read and write deadlines.
 - Multi-core serving with pre-forked worker processes (`--workers N`, `0` for one per CPU): shared listener, supervised restarts, graceful drain, aggregated stats. Per-worker state is documented in [worker processes](docs/api.md#worker-processes).
 - Server-sent events: `c.sse(channel)` upgrades a route to a chunked event stream, `web::sse_publish` fans events out per channel, with heartbeats, bounded per-stream queues that drop slow readers, and a close event at shutdown. See [SSE](docs/api.md#server-sent-events) and the [sse-clock example](examples/sse-clock/README.md).
+- Scheduler and background jobs: `web::every`, `web::after` and `web::due` run tasks from the tick on the reactor with a documented catch-up rule. `web::job_pool` runs pure-Goose work on threads over bounded queues, with a 503 when full, lost-job reporting and worker restarts. See [scheduler](docs/api.md#scheduler), [background jobs](docs/api.md#background-jobs) and the [jobs example](examples/jobs/README.md).
 - Bounded memory: fixed capacities for headers, routes, queues and clients; request input and response bodies grow on demand (input up to `max_request_bytes`, responses up to `max_response_bytes`, 1 MiB default, 16 MiB ceiling), in-flight responses share a pool capped by `max_pool_bytes`, and idle connections hold no input memory. `examples/hello` starts at about 3.2 MB resident.
 - Typed event bus: subscriptions, one-shot listeners, FIFO queue with visible backpressure.
 - Graceful shutdown: SIGINT and SIGTERM stop accepting, drain within a grace period, and report lifecycle stages.
@@ -196,7 +197,8 @@ src/
   app/                    Application API: Ctx, c.routes/c.group, middleware, responses, forms, templates, run, config
   sys/                    File, environment, clock and crypto (SHA-256, HMAC, CSPRNG, base64url) access over the native shim (no os import)
   events/                 Typed bounded event bus
-  runtime/                Readiness loop, configuration, lifecycle, metrics, worker processes
+  jobs/                   Background job pool: pure-Goose worker threads over typed queues
+  runtime/                Readiness loop, scheduler, configuration, lifecycle, metrics, worker processes
 native/posix/             Socket, signal, file, environment and process shim
 db/                       Opt-in SQLite package (goose_web_db): query builder, typed records, C shim
 bench/load.c              Keep-alive HTTP load generator for benchmarks
@@ -204,6 +206,7 @@ examples/hello/           Smallest app: health, path parameter, typed POST
 examples/basic/           Todo API, OpenAPI contract, and application modules
 examples/sqlite-todos/    Todo API persisted in a SQLite file through web::db
 examples/pages/           Server-rendered todo list: embedded templates and a form POST
+examples/jobs/            Background prime counts on worker threads, SSE completion, scheduled cleanup
 tests/
   unit/                   Goose contract tests (including the SQLite layer on :memory:)
   native/                 C socket, system, crypto and process tests

@@ -335,6 +335,153 @@ fn main() {
 A complete example that sends the time every second, with a browser page using `EventSource`, is in
 [examples/sse-clock](../examples/sse-clock/README.md).
 
+## Scheduler
+
+`web::scheduler()` is a bounded table of periodic and one-shot tasks that the tick runs on the reactor
+thread. It starts no thread and never waits. Work that takes longer than a tick belongs in a
+[background job](#background-jobs) instead.
+
+```goose
+var sched = web::scheduler();              // 64 tasks, fixed
+var control = default<web::ServerControl>();
+
+fn tick() {
+    web::due(sched) { id => run_task(id) };   // each due task runs once; returns how many ran
+    web::hint_wakeup(sched, control);         // optional: wake for the next due task
+}
+
+fn main() {
+    assert(web::every(sched, 1, 30000));      // id 1 every 30 s (first run after 30 s)
+    assert(web::after(sched, 2, 500));        // id 2 once, after 500 ms
+    // ... web::run_with(settings, control, app, tick, lifecycle)
+}
+```
+
+| Function | Meaning |
+| --- | --- |
+| `scheduler() -> Scheduler` | An empty table |
+| `every(sched, id, interval_ms) -> bool` | Runs `id` every interval, first after one interval |
+| `after(sched, id, delay_ms) -> bool` | Runs `id` once, after the delay (0 means at the next tick) |
+| `cancel(sched, id) -> bool` | Removes `id`; false when it is not scheduled |
+| `due(sched) { id => ... } -> i64` | Runs each due task once with its id; returns how many ran |
+| `next_due_ns(sched) -> i64` | Monotonic time of the earliest due task, 0 when none |
+| `hint_wakeup(sched, control)` | Sets `control.wake_at_ns` so the reactor wakes for the next task |
+| `every_at`, `after_at`, `due_at` | The same with an explicit monotonic time in nanoseconds, for tests with a fake clock |
+
+- Ids are chosen by the application (any `i64`). Scheduling an id that is already scheduled replaces its
+  timing; there is never a second task with the same id.
+- Durations are whole milliseconds: `every` needs 1 to 86400000, `after` 0 to 86400000.
+- Times come from the monotonic clock (`clock_ns`), so wall-clock changes do not move tasks.
+- **Catch-up:** a periodic task that is late runs once when the tick sees it due. Its next run is the
+  first point of its phase after now. Missed intervals are skipped, never replayed. A one-shot task runs
+  once and is removed.
+- Within one `due` call, tasks run in table order, and only tasks scheduled before the call are
+  considered. A task added or cancelled by a block takes effect in the next call; a task cancelled
+  by an earlier block in the same call does not run.
+- **Timing:** without a hint the reactor wakes at its `poll_timeout_ms` (10 ms by default) at most, so a
+  task runs at most that late. `hint_wakeup` in the tick makes the reactor wake on time for the next
+  task, and it is replaced on each call. A task scheduled from a handler is seen at the next tick, so it
+  can wait up to one poll interval.
+- Tasks run on the reactor, one after another, so each must return quickly. A task that waits, for
+  a socket or a long computation, blocks every connection; send that work to a job instead.
+
+## Background jobs
+
+Work that is CPU-heavy or blocks for long runs on Goose threads, so the reactor keeps serving. A job
+is submitted from a handler, runs on a worker thread, and its result returns to the reactor in the
+tick. The implementation is `src/jobs/pool.goose`; the example is [examples/jobs](../examples/jobs/README.md).
+
+### What may run in a thread
+
+A worker is a `thread_fn`, compiled as a separate program with copies of the globals it uses. `goose_web.build`
+declares `main_thread_only = true`, which the compiler checks per call path:
+
+- Pure Goose runs in a worker. A `thread_fn` that calls framework Goose which does not reach the package's C
+  (for example `web::validate_server_config`) compiles and runs (checked with a scratch program while building the pool).
+- A `thread_fn` that reaches any package C function is a compile error:
+  `process runs on the main thread only: web::clock_ns is reached from thread_fn c_worker`. That covers
+  sockets and the transport, the clock, SQLite (`web::db`), crypto (`web::sha256`, HMAC, random bytes),
+  files and the process shim. Such calls stay on the reactor thread.
+- Jobs and results must be flat (no slices, no `u8[>..]` builders, no references). A `thread_fn`'s
+  parameters have no defaults.
+- Thread programs do not share state: the job body reads its arguments and returns a value.
+
+Generic code works through function values: `web::job_worker<Job, Result>(slot, render)` runs the
+application's `render` in the worker. A `thread_fn` cannot itself be generic or be named with type
+arguments (`thread_spawn(gen<Job>)` is a parse error), so each job type gets its own `thread_fn`.
+
+### The pool
+
+```goose
+struct PrimeJob { limit: i64 }
+struct PrimeResult { count: i64, largest: i64 }
+
+thread_fn prime_worker(slot: i64) {
+    web::job_worker<PrimeJob, PrimeResult>(slot, count_primes);   // count_primes is pure Goose
+}
+
+var jobs: web::JobPool;
+
+fn main() {
+    jobs = web::job_pool(2, 4);                                  // 2 workers, 4 jobs in flight
+    web::job_start<PrimeJob, PrimeResult>(jobs, prime_worker);
+    // ...
+}
+
+fn post_primes(c: web::Ctx&, limit: i64) {                       // handler
+    let id = web::job_submit(jobs, PrimeJob { limit: limit });  // 0 means refused
+    guard id > 0 else { c.fail(web::HTTP_SERVICE_UNAVAILABLE, "queue_full", "retry later"); return; }
+    c.status(web::HTTP_ACCEPTED).json(JobAccepted { id: id, status: "queued" });
+}
+
+fn tick() {                                                      // reactor thread
+    web::job_drain<PrimeResult>(jobs, prime_worker) { r => finish(r) };
+}
+
+fn lifecycle(stage: i32, stats: web::ServerStats) {
+    if stage == web::SERVER_STOPPING { web::job_stop<PrimeJob>(jobs); }
+}
+```
+
+| Function | Meaning |
+| --- | --- |
+| `job_pool(workers, queue_limit) -> JobPool` | `workers` in 1 to 16, `queue_limit` at least 1 (asserted). Nothing starts yet |
+| `job_start<J, R>(pool, worker)` | Starts the workers, each a contained `thread_fn` with a watcher, and sets the queue limits |
+| `job_submit(pool, body) -> i64` | Queues a job and returns its correlation id (at least 1), or 0 when refused |
+| `job_drain<R>(pool, worker) { r => ... } -> i64` | Calls the block for each DONE and LOST reply; returns how many. Call it from the tick |
+| `job_stop<J>(pool) -> bool` | Sends stop messages after the queued jobs, joins every thread, and returns |
+| `job_worker<J, R, F>(slot)` | The body of the worker `thread_fn`; `F` is the job function, passed as a trailing argument |
+| `job_in_flight(pool)`, `job_restarts(pool)` | Jobs queued or running and not yet drained; worker restarts since start |
+
+`JobReply<R>` carries `id` (the correlation id from `job_submit`), `slot`, `kind` and `value`. The block
+sees `kind == JOB_DONE` with the result, or `kind == JOB_LOST` with a zero value when the worker
+aborted during that job. `JOB_STARTED` replies are consumed by the drain and never reach the block.
+
+**Bounds and failure:**
+
+- At most `queue_limit` jobs are in flight: queued or running, until the tick drains their reply. A submit
+  beyond that returns 0, so the handler answers 503 and nothing is queued. The queue holds only what is in
+  flight, so memory is bounded by `queue_limit` times the job size.
+- A job that aborts (`abort`, a failed check) ends only its worker, which is contained. The job is
+  reported as `JOB_LOST`, the abort message is printed (`web: job worker N aborted: ...`), and the slot is
+  started again on the next tick. `job_restarts` counts the restarts. Each slot has one watcher thread
+  that waits for its worker and reports the abort through a queue. That is the only way the reactor
+  learns of an abort without polling.
+- Results are never dropped: a worker's replies fit in the reply queue because `queue_limit` bounds the
+  jobs in flight. A result the app does not drain stays in flight, so it applies backpressure.
+
+**Correlation:** `job_submit` returns the id; the handler records it with the request state (the example
+keeps a bounded table of tracked jobs), and `finish` looks the id up when the reply arrives. A reply for an
+unknown id is ignored by the application.
+
+**Shutdown:** on `SERVER_STOPPING`, `job_stop` queues stop messages behind the queued jobs and joins
+every worker and watcher. So queued jobs finish first, and a long job delays the shutdown, so bound job
+work. Replies still queued stay there, and a `job_drain` after the stop announces them. Thread waits on a
+worker that already aborted return at once.
+
+**One pool per program at a time:** queues are per job type, so two pools with the same types would share
+a job queue. `job_start` asserts that no other pool is running; `job_stop` releases the slot.
+
 ## JSON codec
 
 `src/json/codec.goose` maps structs to compact JSON objects and back, from `fields<T>`.
