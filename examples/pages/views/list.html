@@ -1,27 +1,21 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{{title}}</title>
-</head>
-<body>
-<h1>{{title}}</h1>
-{{! Empty and non-empty states are sections over the same bool field. }}
-{{#empty}}
-<p>No todos yet.</p>
-{{/empty}}
-{{^empty}}
-<p>{{count}} todo(s)</p>
-<ul>
-{{#each todos}}
-  <li{{#done}} class="done"{{/done}}>{{title}}</li>
-{{/each}}
-</ul>
-{{/empty}}
-<form method="post" action="/todos">
-  <label>Title <input name="title" maxlength="64" required></label>
-  <button type="submit">Add</button>
-</form>
-</body>
-</html>
+<section class="panel">
+  <h1>Todos</h1>
+  <nav class="tabs" aria-label="Filter">
+    <a href="/?filter=all"{{#filter_all}} class="active"{{/filter_all}}>All</a>
+    <a href="/?filter=open"{{#filter_open}} class="active"{{/filter_open}}>Open</a>
+    <a href="/?filter=done"{{#filter_done}} class="active"{{/filter_done}}>Done</a>
+  </nav>
+  <p class="muted">{{open}} open, {{done}} done</p>
+  <ul class="todos">
+    {{#each todos}}{{> todo_row}}{{else}}<li class="empty">Nothing here for this filter.</li>{{/each}}
+  </ul>
+</section>
+
+<section class="panel">
+  <h2>Add a todo</h2>
+  <form method="post" action="/todos" class="stack">
+    <input type="hidden" name="csrf_token" value="{{meta.csrf_token}}">
+    <label>Title <input name="title" maxlength="64" required></label>
+    <div><button type="submit">Add</button></div>
+  </form>
+</section>

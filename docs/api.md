@@ -778,54 +778,153 @@ for every application that imported `goose_web`. Applications may use `os` freel
 
 HTML templates are compiled into the program. A template is bytes, normally
 `embed_file("views/page.html")`, which is read at compile time relative to the source file that
-makes the call, so a missing file is a compile error. `examples/pages` shows the full pattern.
+makes the call, so a missing file is a compile error. `examples/pages` shows the full pattern: a
+shared layout, partials, flash messages, forms with CSRF tokens and validation.
 
 ```goose
 struct Todo { id: i64, title: u8[..64], done: bool }
-struct ListPage { title: u8[..32], empty: bool, todos: Todo[..32] }
+struct ListPage { meta: web::PageMeta, todos: Todo[..32] }
 
-// main: fail fast on template mistakes, before the server starts.
-let valid, problem = check_template<ListPage>(embed_file("views/list.html"));
-if !valid { print(problem[..]); abort("views/list.html is not a valid template"); }
+// main: partials are registered once, then the layout and page are checked together.
+var views = web::templates();
+web::add_template(views, "nav", embed_file("views/_nav.html"));
+let valid, problem = check_template<ListPage>(embed_file("views/layout.html"), embed_file("views/list.html"), views);
+if !valid { print(problem[..]); abort("views are not valid templates"); }
 
-// route: writes text/html; a render failure writes 500 template_error with the reason.
+// route: a page inside the layout; a render failure writes 500 template_error with the reason.
 c.get("/") {
-    c.html_template(embed_file("views/list.html"), ListPage { title: "Todos", .. });
+    c.html_page(views, embed_file("views/layout.html"), embed_file("views/list.html"),
+        ListPage { meta: web::page_meta(c, "Todos"), .. });
 };
 ```
 
-Grammar (tags are `{{` ... `}}`; whitespace around a name is ignored):
+### Grammar
+
+Tags are `{{` ... `}}`; whitespace around a name is ignored.
 
 | Tag | Output |
 | --- | --- |
 | `{{name}}` | the field's value; strings are HTML-escaped |
 | `{{{name}}}` | the field's value, unescaped |
-| `{{#name}}...{{/name}}` | the body when the bool field `name` is true |
+| `{{meta.title}}` | a field of a struct-typed field (dotted; see [Struct fields](#struct-fields)) |
+| `{{#name}}...{{/name}}` | the body when the bool field `name` is true (dotted names work) |
 | `{{^name}}...{{/name}}` | the body when the bool field `name` is false |
 | `{{#each name}}...{{/each}}` | the body once per element of the array field `name`; names inside resolve against the element |
+| `{{#each name}}...{{else}}...{{/each}}` | the `{{else}}` part when the array is empty |
+| `{{@index}}`, `{{@count}}` | the element's position (from 0) and the array's length, inside `each` |
+| `{{@first}}`, `{{@last}}` | `true` or `false`; `{{#@first}}...{{/@first}}` and `{{^@last}}` are sections |
+| `{{$name}}...{{/name}}` | a named block: in a page it defines the block; in a layout it is a slot (see [Layouts](#layouts)) |
+| `{{> name}}` | a partial from the registry, rendered with the current data (inside `each`, the element) |
+| `{{> content}}` | in a layout only: the rendered page body |
 | `{{! text }}` | a comment, dropped from the output |
 
 - Scalars print as text: integers in decimal, `bool` as `true` or `false`, floats in JSON number
-  form. `u8[..N]` fields print their bytes. Struct-typed fields are not renderable; arrays of
-  structs belong under `each`, and their elements' own fields may be scalars or strings.
-- Names are resolved at run time against the struct's fields. An unknown name, a section on a
-  non-bool field, an `each` on a non-array, an unclosed or mismatched section, a stray closing
-  tag, an empty tag, invalid UTF-8, or nesting deeper than 8 levels is an error.
+  form. `u8[..N]` fields print their bytes. Arrays of structs belong under `each`.
+- Names are resolved at run time against the struct's fields. Errors: an unknown name, a section on
+  a non-bool field, an `each` on a non-array, an unclosed or mismatched section, a stray closing
+  tag, an empty tag, `@index` outside `each`, `{{else}}` outside `each`, `{{> content}}` outside a
+  layout, an unknown partial, a partial that includes itself, a block defined twice on one page,
+  invalid UTF-8, or nesting deeper than 8 levels (sections, `each` bodies and partials all count).
 - Output past 1 MiB, the default response cap, is an error, and a body over the response's
   `max_response_bytes` becomes the usual 500 `response_too_large`.
-- No registration is needed for `each`: elements are rendered by the same generic code as the
-  top-level struct, so the codec's nested-struct hooks are not used here.
 
-Functions, in namespace `web` (also reachable from the DSL as `c.html_template` and `html_template`):
+### Layouts
 
-- `render<T>(out: u8[>..]&, template: const u8[:], data: T&) -> bool` appends the rendered page
-  to `out`. On false, `out` is unchanged. `render_result<T>(...) -> bool, TemplateResult` also
-  returns the reason in `result.error` (up to 128 bytes).
-- `html_template<T>(c, template, data)` renders into the response with `text/html; charset=utf-8`.
-- `check_template<T>(template: const u8[:]) -> bool, u8[>..]` validates every tag and section
-  against `T`, including the body of each `each` block even when the array is empty. It returns the
-  reason as the second result. Call it in `main` for each embedded template.
-- `html_escape(out: u8[>..]&, text: const u8[:])` escapes `&`, `<`, `>`, `"` and `'` (as `&#39;`).
+`render_layout<T>(out, layout, page, data, partials)` and `c.html_page(partials, layout, page, data)`
+render a page into a layout. The page's text outside its blocks is the body; the layout places it
+with `{{> content}}`. A page defines blocks with `{{$name}}...{{/name}}`, which are not shown in the
+page's own body. The layout has a slot `{{$name}}default{{/name}}` for each block: the page's block
+of that name when it defines one, else the default. Page blocks are rendered with the same data as
+the layout, outside any `each` loop.
+
+```html
+<title>{{$title}}Todo Pages{{/title}}</title>
+<!-- page.html -->
+{{$title}}Todo 1 - Todo Pages{{/title}}
+Body text, placed at {{> content}} in the layout.
+```
+
+The layout can be used without the registry (`c.html_page(layout, page, data)`), which is the
+same with no partials available.
+
+### Partials
+
+`web::templates()` makes an empty registry; `web::add_template(views, name, body)` adds a partial
+(at most 32, each at most 64 KiB, names of 1 to 32 bytes without whitespace or tag markers, and
+not `content`). It returns false, leaving the registry unchanged, when it is full, the name is
+taken, or the body is invalid. Build the registry once, in `main`, before the server starts, and
+pass it to `render`, `html_template`, `html_page`, and `check_template`. A global registry must
+not hold borrowed slices of values the runtime clears; the example keeps `views` in `main` and
+passes it to its handlers.
+
+`{{> name}}` renders the partial with the data in scope, so one partial can serve the page and
+each row of a list. A partial that includes itself, directly or through others, fails with
+`partial includes itself: name`; a chain nested too deeply fails with `partials are nested too deeply`.
+
+### Loops
+
+Inside `{{#each name}}`, `{{@index}}` is the element's position, `{{@count}}` the array's length,
+and `{{@first}}` / `{{@last}}` say whether it is the first or last one. The else part of an empty
+`each` shows when there are no elements. Names inside the body resolve against the element, so a
+row that needs an outer value (a CSRF token, say) copies it into the element.
+
+### Struct fields
+
+Goose cannot tell a struct from a fixed string inside one generic body, so a struct used as a field
+of a template struct needs its own overloads in namespace `web`, the same way the JSON codec needs
+its hooks (see [JSON codec](#json-codec)). Four overloads per struct type `S`:
+
+```goose
+fn web::tpl_show(out: u8[>..]&, v: S&, escape: bool) -> bool { return false; }        // not printable
+fn web::tpl_each_value(out: u8[>..]&, body: const u8[:], v: S&, checking: bool, depth: i64,
+    env: web::TplEnv&, count: i64&, result: web::TemplateResult&) -> bool {
+    return web::tpl_fail(result, "each needs an array of structs");                  // not a list
+}
+fn web::tpl_show_sub(out: u8[>..]&, v: S&, tail: const u8[:], escape: bool,
+    result: web::TemplateResult&) -> bool { return web::tpl_field(out, v, tail, escape, result); }
+fn web::tpl_flag_sub(v: S&, tail: const u8[:], flag: bool&, result: web::TemplateResult&) -> bool {
+    return web::tpl_flag(v, tail, flag, result);
+}
+```
+
+The last two make dotted names work: `{{meta.title}}` reaches `S`'s `title` field through
+`tpl_show_sub`, and `{{#meta.has_flash}}` through `tpl_flag_sub`. Without them, a dotted name fails
+with `no registered struct for: name`. `web::PageMeta` is registered in `src/app/page.goose`. A
+dotted name reaches fields one level at a time and works for values and sections, not for `each`.
+
+### Page state
+
+`web::PageMeta` is the state a layout needs: `title`, `csrf_token`, the flash message
+(`flash_kind`, `flash_message`, `has_flash`), `path` and `user`. Put a `meta: web::PageMeta` field
+in a page's data struct and fill it with `web::page_meta(c, title)`. The layout reads it as
+`{{meta.title}}` and so on, and a form adds `<input type="hidden" name="csrf_token" value="{{meta.csrf_token}}">`.
+`user` is the session value under the key `user`.
+
+Flash messages live in the session (the session middleware must run). `c.flash(kind, message)`
+stores one for the next page the client loads: `kind` names the style (no `|`, at most 16 bytes),
+`message` is at most 200 bytes. `web::take_flash(c)` returns a `Flash { kind, message, present }`
+and clears it, so it shows once. `page_meta` takes it for the page it builds, which is why a
+redirect after a write carries its result to the next page.
+
+### Functions
+
+In namespace `web` (also reachable from the DSL as `c.html_template`, `c.html_page`, `check_template`):
+
+- `render<T>(out, template, data) -> bool` and `render<T>(out, template, data, partials) -> bool`
+  append the rendered text to `out`. On false, `out` is unchanged. `render_result` returns the
+  reason in `result.error` (up to 128 bytes) as well.
+- `render_layout<T>(out, layout, page, data, partials) -> bool` renders a page into a layout;
+  `render_layout_result` also returns the reason.
+- `html_template<T>(c, template, data)` and `html_template<T>(c, partials, template, data)` write
+  `text/html; charset=utf-8`.
+- `html_page<T>(c, layout, page, data)` and `html_page<T>(c, partials, layout, page, data)` write a
+  page in a layout. A render failure writes 500 `template_error` with the reason.
+- `check_template<T>(template) -> bool, u8[>..]` validates every tag and section against `T`,
+  including the body of each `each` even when the array is empty. `check_template<T>(template,
+  partials)` also checks the partials the template uses. `check_template<T>(layout, page, partials)`
+  checks a page and its layout together, and each partial where it is used. A partial no template
+  uses is not checked. Call one per page in `main`.
+- `html_escape(out, text)` escapes `&`, `<`, `>`, `"` and `'` (as `&#39;`).
 
 A template must be valid UTF-8; the output is served as `text/html; charset=utf-8`, so the
 template and the escaped values decide what the browser sees. Escaping covers element content and

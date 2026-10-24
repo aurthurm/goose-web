@@ -1,0 +1,9 @@
+<li class="todo{{#done}} done{{/done}}">
+  <span class="num">{{@index}}</span>
+  <a class="title" href="/todos/{{id}}">{{title}}</a>
+  <span class="state">{{#done}}done{{/done}}{{^done}}open{{/done}}</span>
+  <form method="post" action="/todos/{{id}}/toggle" class="inline">
+    <input type="hidden" name="csrf_token" value="{{csrf}}">
+    <button type="submit">{{#done}}Reopen{{/done}}{{^done}}Done{{/done}}</button>
+  </form>
+</li>

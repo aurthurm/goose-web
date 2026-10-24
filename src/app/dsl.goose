@@ -63,7 +63,13 @@ fn ::form<T>(c: web::Ctx&) -> T, bool { return web::form<T>(c); }
 
 // Templates (see docs/api.md#templates). c.html_template(embed_file("views/x.html"), data) writes text/html.
 fn ::html_template<T>(c: web::Ctx&, template: const u8[:], data: T) { web::html_template(c, template, data); }
+fn ::html_template<T>(c: web::Ctx&, partials: web::Templates&, template: const u8[:], data: T) { web::html_template(c, partials, template, data); }
+// Layouts: c.html_page(layout, page, data), or with a partial registry first. See api.md#templates.
+fn ::html_page<T>(c: web::Ctx&, layout: const u8[:], page: const u8[:], data: T) { web::html_page(c, layout, page, data); }
+fn ::html_page<T>(c: web::Ctx&, partials: web::Templates&, layout: const u8[:], page: const u8[:], data: T) { web::html_page(c, partials, layout, page, data); }
 fn ::check_template<T>(template: const u8[:]) -> bool, u8[>..] { return web::check_template<T>(template); }
+fn ::check_template<T>(template: const u8[:], partials: web::Templates&) -> bool, u8[>..] { return web::check_template<T>(template, partials); }
+fn ::check_template<T>(layout: const u8[:], page: const u8[:], partials: web::Templates&) -> bool, u8[>..] { return web::check_template<T>(layout, page, partials); }
 fn ::html_escape(out: u8[>..]&, text: const u8[:]) { web::html_escape(out, text); }
 
 // Middleware. Each takes the block as Next; c.name() { ... } and web::name(c) { ... } agree.
@@ -91,6 +97,12 @@ fn ::session<F>(c: web::Ctx&, config: web::SessionConfig) { web::session(c, conf
 fn ::session_get(c: web::Ctx&, key: const u8[:]) -> const u8[:] { return web::session_get(c, key); }
 fn ::session_set(c: web::Ctx&, key: const u8[:], value: const u8[:]) -> bool { return web::session_set(c, key, value); }
 fn ::session_clear(c: web::Ctx&) { web::session_clear(c); }
+
+// Flash messages and page state (page.goose). c.flash(kind, message) stores a message for the
+// next page; c.page_meta(title) builds the PageMeta a layout reads; c.take_flash() takes one now.
+fn ::flash(c: web::Ctx&, kind: const u8[:], message: const u8[:]) -> bool { return web::flash(c, kind, message); }
+fn ::take_flash(c: web::Ctx&) -> web::Flash { return web::take_flash(c); }
+fn ::page_meta(c: web::Ctx&, title: const u8[:]) -> web::PageMeta { return web::page_meta(c, title); }
 
 // CSRF. csrf(c, secret) { ... } guards the block; csrf_token(c) gives the token for forms.
 fn ::csrf<F>(c: web::Ctx&, secret: const u8[:], check_origin: bool = false) { web::csrf(c, secret, check_origin, F); }

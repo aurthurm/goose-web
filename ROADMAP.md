@@ -38,6 +38,7 @@
 - [x] Reflective SQLite layer (`db/`, `web::db`): CRUD from `fields<T>` with bound parameters, a query builder, transactions, migrations with `schema_version`, WAL file databases, example `examples/sqlite-todos`. Blocking calls on the reactor thread; worker offload is future work.
 - [x] SQLite example documented and renamed (`done` on the wire for `completed`) with its OpenAPI document checked end to end.
 - [x] Compile-time HTML templates (`embed_file`, `html_template`, `render`, `check_template`): escaped and raw values, bool sections, `each` over struct arrays, comments, and `form<T>` for urlencoded bodies; example `examples/pages`.
+- [x] Template composition: shared layouts with named blocks (`{{$name}}`, `{{> content}}`), a partials registry (`add_template`, `{{> name}}`) with cycle and depth checks, `check_template` over page, layout and partials, `each` `else` and `@index`/`@first`/`@last`, dotted names into registered struct fields, and flash messages (`c.flash`, `web::take_flash`, `web::page_meta`); `examples/pages` rebuilt as a multi-page app with sessions and CSRF.
 - Next: typed configuration from environment variables.
 
 ## Milestone 2.6: routing and edge middleware
