@@ -138,6 +138,7 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | workers | 1 | 0..256; 1 is the single-process reactor; 0 is one worker process per CPU; more than 1 pre-forks that many workers (see [Worker processes](#worker-processes)) |
 | worker_restart_budget | 30 | 0..30; unexpected worker exits tolerated within 60 seconds before the server stops (see [Worker processes](#worker-processes)) |
 | shared_store_bytes | 1048576 | 0 or 262144..268435456; the [shared store](#shared-store) that workers and streams use across processes; 0 turns it off |
+| shared_lock_timeout_ms | 50 | 1..10000; how long a shared-store call waits for a lock before it fails (see [Shared store](#shared-store)) |
 
 Memory is bounded by these limits and is charged on demand. Each of the `max_clients` slots costs a
 small record. A connection holds an input block only while it has request bytes to parse (1 KiB, doubling
@@ -519,6 +520,7 @@ fn app(c: web::Ctx&) {
 | `web::shared_incr(key, delta, ttl_ms) -> i64, bool` | Adds `delta` to a counter and returns the new value. A missing or expired counter starts at 0 and takes `ttl_ms`. An existing counter keeps its expiry, so `ttl_ms` opens a fixed window that later increments do not extend. |
 | `web::shared_incr_window(key, delta, ttl_ms) -> i64, i64, bool` | As `shared_incr`, and also the milliseconds left before expiry (0 when it never expires). |
 | `web::shared_enabled() -> bool` | Whether this server has a store. |
+| `web::shared_stats() -> SharedStats` | Counters of the store: `entries`, `capacity`, `stripes`, `timeouts`, `recoveries`, `ring_lost`. See [Stats](#shared-store-stats). |
 
 **Bounds.** Keys are 1 to 128 bytes and values are at most 1024 bytes. A key or value outside those
 bounds is refused, never truncated. `ttl_ms` is at most 365 days. A counter is an 8-byte integer, so
@@ -528,21 +530,59 @@ bounds is refused, never truncated. `ttl_ms` is at most 365 days. A counter is a
 room. Deleting an entry frees its slot, and so does expiry: an expired entry's slot goes to the next new
 key that probes over it. Check the return value of `shared_set` when the table can fill up.
 
-**Crash safety.** The table, the ring and the stream registry sit behind one process-shared robust mutex.
-A worker that dies while holding it does not block the others: the next locker takes the mutex over
-(`EOWNERDEAD`, then `pthread_mutex_consistent`) and drops any entry whose write was in progress, so an
-interrupted entry is absent afterwards and its old value is not restored. A ring message becomes visible
-only after it is complete, so no reader sees a partial event. Streams registered by a dead worker are
-removed the next time another process counts or adds streams. The lock has no timeout, so a worker that
-is stopped (SIGSTOP) while holding it stalls the others until it resumes. `tests/native/shared.c` kills
-a child while it holds the lock and checks that the next locker recovers.
+**Stripes.** The entry table is split into up to 16 stripes (a power of two; a small store uses fewer, and
+each stripe keeps at least 16 slots). A key belongs to one stripe, chosen by its hash, and only that stripe's
+lock is taken for it, so calls on different keys mostly do not wait for each other. The SSE ring and the
+stream registry each have a lock of their own. A new key is refused when its own stripe has no free slot,
+even if other stripes have room. At the default size, with keys spread by the hash, the first refusal comes
+after about 98% of the slots are in use. A stripe is probed only within its own slots, so a full stripe
+never blocks a key in another stripe.
+
+**Lock timeouts.** Every lock is taken with a deadline of `shared_lock_timeout_ms` (50 ms by default).
+A holder that does not release its lock in time (for example one stopped with SIGSTOP) makes the waiting
+call fail after that wait, instead of stalling every worker. What the caller sees:
+
+| Call | On a lock timeout |
+| --- | --- |
+| `shared_set`, `shared_get`, `shared_delete` | `false`, nothing stored or read |
+| `shared_incr`, `shared_incr_window` | `false` (and `0` for the value) |
+| `rate_limit` | falls back to the per-process table for that request, so the limit holds per worker for that request instead of across workers. The request is not refused for the timeout itself; watch `timeouts` in `shared_stats()` |
+| server-side sessions (`store = true`) | the session is treated as absent or not saved |
+| `sse_publish` | `-1`, the event is refused and nothing is delivered |
+| opening an event stream | `503` |
+| an event stream's reads | nothing is read this pass; the next pass retries from the same position |
+
+Each timed-out wait increments `timeouts`. Locks are not fair: waiters do not queue in arrival order, so a
+burst of callers on one stripe can see a timeout even when the holder is only slow. Keep the timeout well above
+a normal critical section (microseconds) and well below what a request can afford to wait.
+
+**Critical sections.** Nothing under a lock makes a system call, and each loop under a lock is bounded: one
+stripe's probe, the ring records a message needs to make room, and the stream registry. A value is copied
+under its stripe lock (at most 1 KiB), and an SSE message is copied under the ring lock (at most 64 KiB). The
+liveness checks of the stream registry (`kill` on each stream's process) run with the lock released; a dead
+process's entries are cleared only if they still hold that pid.
+
+**Crash safety.** A worker that dies while holding a lock does not block the others: the next locker takes
+the mutex over (`EOWNERDEAD`, then `pthread_mutex_consistent`). For a stripe it drops any entry whose write was
+in progress, so an interrupted entry is absent afterwards and its old value is not restored. The ring and the
+registry need no repair. A ring message becomes visible only after it is complete, so no reader sees a partial
+event. Streams registered by a dead worker are removed the next time another process adds a stream to a full
+registry. Each takeover is counted in `recoveries`. `tests/native/shared.c` kills a child while it holds a
+stripe lock and checks that the next locker recovers, and stops a child while it holds one to check the timeouts.
+
+<a id="shared-store-stats"></a>
+**Stats.** `web::shared_stats()` returns a `SharedStats` record: `entries` (live entries, all stripes),
+`capacity` (entry slots), `stripes`, `timeouts` (lock waits that gave up), `recoveries` (locks taken over
+from a dead worker) and `ring_lost` (events overwritten before a stream read them). `entries` and `ring_lost`
+are `-1` when their lock could not be had in time, and every field is `0` when the store is off. The
+counters are summed across workers because they live in the shared region.
 
 **Events.** With the store on, `sse_publish` appends the framed message to the ring, and each worker copies
 the messages it has not yet seen to its own streams, in publish order, at the start of its next loop pass.
 A worker starts reading at the current end of the ring, so it never replays older events. A worker that
 falls more than a ring behind loses the messages that were overwritten; the store counts them in its `lost`
-total, which native code and tests can read but the Goose API does not expose yet. The count that
-`sse_publish` returns covers every worker's streams. A stream opened when the registry is full gets 503.
+total, which `shared_stats()` reports as `ring_lost`. The count that `sse_publish` returns covers every
+worker's streams. A stream opened when the registry is full, or when its lock timed out, gets 503.
 
 **What is shared.** With the store on (the default):
 
@@ -555,6 +595,12 @@ total, which native code and tests can read but the Goose API does not expose ye
 
 Still per worker: global variables, route tables, any cache you keep in memory, the `request_id` counter,
 `max_requests`, and each worker's sockets, buffers and stream queues. Stats are still summed by the parent.
+
+Per-worker application state is a typed global variable (`var config: AppConfig = ...;`), which a handler reads
+and writes directly. A generic `web::state<T>()` accessor was considered and not added. The generic functions in
+the library return values (`event_bus<T>()`), and a generic function does not declare a global of its own, so
+such an accessor would need a hand-written global for each `T`, which is the declaration it was meant to save.
+Shared state across workers goes through the shared store, not through globals.
 
 **Which store to use.**
 

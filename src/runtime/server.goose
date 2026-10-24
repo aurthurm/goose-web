@@ -21,7 +21,8 @@ struct ServerConfig {
     read_timeout_ms: i64, write_timeout_ms: i64, idle_timeout_ms: i64, poll_timeout_ms: i32,
     shutdown_grace_ms: i64, max_requests: i64, max_requests_per_connection: i64, keep_alive: bool,
     handle_signals: bool, max_pool_bytes: i64, max_sse_clients: i64, sse_heartbeat_ms: i64,
-    sse_max_queued_bytes: i64, workers: i32, worker_restart_budget: i64, shared_store_bytes: i64
+    sse_max_queued_bytes: i64, workers: i32, worker_restart_budget: i64, shared_store_bytes: i64,
+    shared_lock_timeout_ms: i64
 }
 struct ServerStats {
     accepted: i64, active: i64, completed: i64, rejected: i64,
@@ -58,7 +59,8 @@ fn server_config() -> ServerConfig {
         handle_signals: DEFAULT_HANDLE_SIGNALS, max_pool_bytes: DEFAULT_MAX_POOL_BYTES,
         max_sse_clients: DEFAULT_MAX_SSE_CLIENTS, sse_heartbeat_ms: DEFAULT_SSE_HEARTBEAT_MS,
         sse_max_queued_bytes: DEFAULT_SSE_MAX_QUEUED_BYTES, workers: DEFAULT_WORKERS,
-        worker_restart_budget: WORKER_RESTART_BUDGET, shared_store_bytes: DEFAULT_SHARED_STORE_BYTES };
+        worker_restart_budget: WORKER_RESTART_BUDGET, shared_store_bytes: DEFAULT_SHARED_STORE_BYTES,
+        shared_lock_timeout_ms: DEFAULT_SHARED_LOCK_TIMEOUT_MS };
 }
 // Millisecond durations are capped at one day to keep nanosecond arithmetic safe.
 // The pool must hold one maximal response, so a single response never needs more than the pool.
@@ -79,7 +81,8 @@ fn validate_server_config(c: ServerConfig) -> bool {
         c.sse_max_queued_bytes >= MIN_SSE_QUEUED_BYTES && c.sse_max_queued_bytes <= MAX_SSE_QUEUED_BYTES &&
         c.workers >= 0 && c.workers <= MAX_WORKERS &&
         c.worker_restart_budget >= 0 && c.worker_restart_budget <= WORKER_RESTART_BUDGET &&
-        (c.shared_store_bytes == 0 || (c.shared_store_bytes >= MIN_SHARED_STORE_BYTES && c.shared_store_bytes <= MAX_SHARED_STORE_BYTES));
+        (c.shared_store_bytes == 0 || (c.shared_store_bytes >= MIN_SHARED_STORE_BYTES && c.shared_store_bytes <= MAX_SHARED_STORE_BYTES)) &&
+        c.shared_lock_timeout_ms >= MIN_SHARED_LOCK_TIMEOUT_MS && c.shared_lock_timeout_ms <= MAX_SHARED_LOCK_TIMEOUT_MS;
 }
 fn request_shutdown(control: ServerControl&) { control.shutdown_requested = true; }
 extern fn gw_accept(listener: i32) -> i32;
@@ -482,6 +485,7 @@ fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
     if !validate_server_config(config) || control.running { return false; }
     // The shared store is made before any fork, so the single process and every worker share one layout.
     if !shared_store_open(config.shared_store_bytes) { return false; }
+    shared_lock_timeout_set(config.shared_lock_timeout_ms);
     if config.workers != 1 { return serve_workers(config, control, H, Tick, Lifecycle); }
     var listener = gw_listen_config(config.port, if config.public_bind { 1 } else { 0 });
     if listener < 0 { return false; }
@@ -989,6 +993,7 @@ fn sse_publish(control: ServerControl&, channel: i32, event: const u8[:], data: 
     var subscribers: i64 = 0;
     if shared {
         subscribers = gw_shared_stream_count(channel);
+        if subscribers < 0 { return -1; }
     } else {
         for s in control.sse_slots {
             if s.active && s.channel == channel { subscribers += 1; }

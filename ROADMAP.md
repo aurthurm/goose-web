@@ -70,7 +70,8 @@
 - [x] Linux epoll readiness behind one reactor API (level-triggered, registration per connection), poll kept as the portable fallback.
 - [x] Pre-forked worker processes (`workers`): shared listener, one reactor per worker, supervised restarts with backoff, graceful drain, aggregated stats; per-worker state and SQLite connections opened after fork are documented.
 - [x] Shared state across workers: a bounded shared store (entries, counters, `rate_limit`, server-side sessions, server-sent events across workers) with a robust lock; see [docs/api.md](docs/api.md#shared-store).
-- Shared store follow-ups: expose the lost-event count to Goose, and a per-entry lock-free read path if profiling shows the mutex matters.
+- [x] Shared store locking: the key/value table is striped (up to 16 robust mutexes, a key's hash picks one), the ring and the stream registry have their own locks, every lock wait is timed (`shared_lock_timeout_ms`, default 50 ms) so a stopped holder fails calls instead of stalling workers, and `web::shared_stats()` exposes the entry count, lock timeouts, recoveries and the lost-event count.
+- Shared store follow-ups: a lock-free read path for entries, if profiling shows the stripe locks matter; and a stripe-spill rule so a full stripe can borrow a slot from a neighbour (today a key is refused when its own stripe is full).
 - kqueue for BSD and macOS, and a Windows transport, measured under load.
 - TLS integration and deployment guidance.
 - [x] Custom TCP protocols (`web::tcp_serve`, `web::tcp_connect`): own readiness instance for up to 1024 connections, bounded write queues with pause/resume, lingering graceful close, line and length-prefixed framing, echo/chat/proxy examples, and socket tests (`tests/integration/tcp.py`).
