@@ -942,7 +942,8 @@ fn serve_workers<H, Tick, Lifecycle>(config: ServerConfig, control: ServerContro
             }
             restart_count = kept;
             if restart_count >= config.worker_restart_budget {
-                write_stderr("goose-web: workers kept exiting and the restart budget is spent; the server stops\n");
+                // Use our native writer: applications need not import the os stdlib.
+                write_record(2, "goose-web: workers kept exiting and the restart budget is spent; the server stops\n");
                 success = false;
                 control.shutdown_requested = true;
                 continue;
