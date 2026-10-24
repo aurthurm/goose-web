@@ -52,14 +52,22 @@ const SERVER_STOPPED = 3;
 
 // Worker processes (workers != 1). 1 keeps the single-process reactor; 0 means one per CPU.
 const DEFAULT_WORKERS = 1;
-// One ServerStats record on the worker pipe: twelve i64 fields, written whole (writes below PIPE_BUF are atomic).
-const STATS_RECORD_BYTES = 96;
+// One ServerStats record on the worker pipe, always STATS_RECORD_BYTES long and written whole (writes
+// below PIPE_BUF are atomic): a magic word, the field count, then one little-endian i64 word per field
+// in declaration order, zero-padded to STATS_FIELD_CAPACITY fields. server.goose encodes and decodes
+// it with const for over fields<ServerStats>, so the layout follows the struct.
+const STATS_RECORD_MAGIC = 0x4757535441545331; // "GWSTATS1"
+const STATS_HEADER_BYTES = 16;
+const STATS_FIELD_BYTES = 8;
+const STATS_FIELD_CAPACITY = 32;
+const STATS_RECORD_BYTES = STATS_HEADER_BYTES + STATS_FIELD_BYTES * STATS_FIELD_CAPACITY;
 // A worker that exits without being asked is restarted after a backoff that doubles from the
 // minimum to the maximum. A worker that lived this long resets its backoff.
 const WORKER_BACKOFF_MIN_MS = 50;
 const WORKER_BACKOFF_MAX_MS = 2000;
 const WORKER_STABLE_MS = 10000;
-// More restarts than this within WORKER_RESTART_WINDOW_MS stop the whole server with an error.
+// More restarts than ServerConfig.worker_restart_budget within WORKER_RESTART_WINDOW_MS stop the
+// whole server with an error. WORKER_RESTART_BUDGET is the default and the largest accepted budget.
 const WORKER_RESTART_BUDGET = 30;
 const WORKER_RESTART_WINDOW_MS = 60000;
 // Children have the full shutdown grace period; the parent then sends SIGKILL this much later.

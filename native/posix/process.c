@@ -83,9 +83,11 @@ int32_t gw_pipe(int32_t *read_end, int32_t *write_end) {
     return 0;
 }
 
-/* Writes exactly size bytes of record (a flat struct) or fails. Returns size, or GW_IO_ERROR. */
-int64_t gw_pipe_write_record(int32_t fd, void *record, int64_t size) {
-    const uint8_t *at = record;
+/* Writes the whole frame or fails. The frame is opaque bytes; server.goose owns its layout.
+   Returns the frame length, or GW_IO_ERROR. */
+int64_t gw_pipe_write_record(int32_t fd, gw_bytes frame) {
+    const uint8_t *at = frame.data;
+    int64_t size = frame.len;
     int64_t done = 0;
     while (done < size) {
         ssize_t n = write(fd, at + done, (size_t)(size - done));
@@ -98,11 +100,12 @@ int64_t gw_pipe_write_record(int32_t fd, void *record, int64_t size) {
     return done;
 }
 
-/* Reads one record if it is complete. Returns size, GW_IO_WOULD_BLOCK when nothing is
-   available yet, 0 at end of file, or GW_IO_ERROR. A partial record is never returned as
-   complete: the caller reads with the record size, and the writes are atomic. */
-int64_t gw_pipe_read_record(int32_t fd, void *record, int64_t size) {
-    uint8_t *at = record;
+/* Reads one whole frame into frame. Returns the frame length, GW_IO_WOULD_BLOCK when nothing is
+   available yet, 0 at end of file, or GW_IO_ERROR. A partial frame is never returned as
+   complete: the caller reads with the frame length, and the writes are atomic. */
+int64_t gw_pipe_read_record(int32_t fd, gw_bytes frame) {
+    uint8_t *at = frame.data;
+    int64_t size = frame.len;
     int64_t done = 0;
     while (done < size) {
         ssize_t n = read(fd, at + done, (size_t)(size - done));

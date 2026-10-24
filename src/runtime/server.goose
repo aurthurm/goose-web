@@ -20,7 +20,7 @@ struct ServerConfig {
     read_timeout_ms: i64, write_timeout_ms: i64, idle_timeout_ms: i64, poll_timeout_ms: i32,
     shutdown_grace_ms: i64, max_requests: i64, max_requests_per_connection: i64, keep_alive: bool,
     handle_signals: bool, max_pool_bytes: i64, max_sse_clients: i64, sse_heartbeat_ms: i64,
-    sse_max_queued_bytes: i64, workers: i32
+    sse_max_queued_bytes: i64, workers: i32, worker_restart_budget: i64
 }
 struct ServerStats {
     accepted: i64, active: i64, completed: i64, rejected: i64,
@@ -49,7 +49,8 @@ fn server_config() -> ServerConfig {
         max_requests_per_connection: DEFAULT_MAX_REQUESTS_PER_CONNECTION, keep_alive: DEFAULT_KEEP_ALIVE,
         handle_signals: DEFAULT_HANDLE_SIGNALS, max_pool_bytes: DEFAULT_MAX_POOL_BYTES,
         max_sse_clients: DEFAULT_MAX_SSE_CLIENTS, sse_heartbeat_ms: DEFAULT_SSE_HEARTBEAT_MS,
-        sse_max_queued_bytes: DEFAULT_SSE_MAX_QUEUED_BYTES, workers: DEFAULT_WORKERS };
+        sse_max_queued_bytes: DEFAULT_SSE_MAX_QUEUED_BYTES, workers: DEFAULT_WORKERS,
+        worker_restart_budget: WORKER_RESTART_BUDGET };
 }
 // Millisecond durations are capped at one day to keep nanosecond arithmetic safe.
 // The pool must hold one maximal response, so a single response never needs more than the pool.
@@ -68,7 +69,8 @@ fn validate_server_config(c: ServerConfig) -> bool {
         c.max_sse_clients >= 0 && c.max_sse_clients <= MAX_SSE_CLIENTS &&
         c.sse_heartbeat_ms >= 1 && c.sse_heartbeat_ms <= MAX_TIMEOUT_MS &&
         c.sse_max_queued_bytes >= MIN_SSE_QUEUED_BYTES && c.sse_max_queued_bytes <= MAX_SSE_QUEUED_BYTES &&
-        c.workers >= 0 && c.workers <= MAX_WORKERS;
+        c.workers >= 0 && c.workers <= MAX_WORKERS &&
+        c.worker_restart_budget >= 0 && c.worker_restart_budget <= WORKER_RESTART_BUDGET;
 }
 fn request_shutdown(control: ServerControl&) { control.shutdown_requested = true; }
 extern fn gw_accept(listener: i32) -> i32;
@@ -709,32 +711,79 @@ fn serve_loop<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&,
 // ignore_lifecycle callback. A worker writes its ServerStats to a pipe when it stops; the parent
 // sums those records into control.stats, which SERVER_STOPPED reports. See docs/api.md.
 // Worker callbacks (H, Tick) run in the workers; the parent runs Tick and the lifecycle stages.
-extern "gw_pipe_write_record" fn write_record(fd: i32, record: ServerStats&, size: i64) -> i64;
-extern "gw_pipe_read_record" fn read_record(fd: i32, record: ServerStats&, size: i64) -> i64;
+// The pipe moves opaque frames of STATS_RECORD_BYTES; the layout lives in encode_stats/decode_stats.
+extern "gw_pipe_write_record" fn write_record(fd: i32, frame: const u8[:]) -> i64;
+extern "gw_pipe_read_record" fn read_record(fd: i32, frame: u8[:]) -> i64;
 
 struct WorkerSlot { pid: i32, started: i64, spawn_at: i64, backoff_ms: i64 }
 
-fn add_stats(total: ServerStats&, s: ServerStats) {
-    total.accepted += s.accepted;
-    total.active += s.active;
-    total.completed += s.completed;
-    total.rejected += s.rejected;
-    total.timeouts += s.timeouts;
-    total.forced_closes += s.forced_closes;
-    total.bytes_read += s.bytes_read;
-    total.bytes_written += s.bytes_written;
-    total.reused += s.reused;
-    total.sse_active += s.sse_active;
-    total.sse_sent += s.sse_sent;
-    total.sse_dropped += s.sse_dropped;
+// The number of fields in T, counted by a const for over fields<T>.
+fn stats_field_count<T>() -> i64 {
+    var count: i64 = 0;
+    const for <N, A> in fields<T> { count += 1; }
+    return count;
 }
 
-// Reads every complete stats record waiting on the pipe into control.stats.
+// One i64 as eight little-endian bytes at frame[at..at+8].
+fn stats_put_word(frame: u8[:], at: i64, value: i64) {
+    let bits = value as! u64; // a bit pattern: negative values are not a range error here
+    for k in 8 { frame[at + k] = ((bits >> (k * 8)) & 0xff) as u8; }
+}
+
+fn stats_get_word(frame: const u8[:], at: i64) -> i64 {
+    var bits: u64 = 0;
+    for k in 8 {
+        let byte: u64 = frame[at + k];
+        bits |= byte << (k * 8);
+    }
+    return bits as! i64;
+}
+
+// Writes stats as one frame: the magic, the field count, then every field in declaration order.
+// False when the frame is not STATS_RECORD_BYTES long or the struct has more fields than fit.
+fn encode_stats(stats: ServerStats, frame: u8[:]) -> bool {
+    let count = stats_field_count<ServerStats>();
+    if count > STATS_FIELD_CAPACITY || frame.len != STATS_RECORD_BYTES { return false; }
+    for i in STATS_RECORD_BYTES { frame[i] = 0; }
+    stats_put_word(frame, 0, STATS_RECORD_MAGIC);
+    stats_put_word(frame, 8, count);
+    var at: i64 = STATS_HEADER_BYTES;
+    const for <N, A> in fields<ServerStats> {
+        stats_put_word(frame, at, stats.A);
+        at += STATS_FIELD_BYTES;
+    }
+    return true;
+}
+
+// Reads a frame back into stats. False, with stats unchanged, when the frame is not a ServerStats
+// record of this layout: wrong length, wrong magic, or a field count other than this build's.
+fn decode_stats(frame: const u8[:], stats: ServerStats&) -> bool {
+    if frame.len != STATS_RECORD_BYTES { return false; }
+    if stats_get_word(frame, 0) != STATS_RECORD_MAGIC { return false; }
+    if stats_get_word(frame, 8) != stats_field_count<ServerStats>() { return false; }
+    var decoded = default<ServerStats>();
+    var at: i64 = STATS_HEADER_BYTES;
+    const for <N, A> in fields<ServerStats> {
+        decoded.A = stats_get_word(frame, at);
+        at += STATS_FIELD_BYTES;
+    }
+    stats = decoded;
+    return true;
+}
+
+// Every field is summed, so a field added to ServerStats is aggregated without edits here.
+fn add_stats(total: ServerStats&, s: ServerStats) {
+    const for <N, A> in fields<ServerStats> { total.A += s.A; }
+}
+
+// Reads every complete stats frame waiting on the pipe into control.stats. A frame that does not
+// decode is dropped; frames are fixed-size, so the pipe stays aligned on the next one.
 fn collect_worker_stats(read_end: i32, control: ServerControl&) {
+    var frame: u8[STATS_RECORD_BYTES] = [0; STATS_RECORD_BYTES];
     var record = default<ServerStats>();
     loop {
-        if read_record(read_end, record, STATS_RECORD_BYTES) != STATS_RECORD_BYTES { break; }
-        add_stats(control.stats, record);
+        if read_record(read_end, frame[..]) != STATS_RECORD_BYTES { break; }
+        if decode_stats(frame[..], record) { add_stats(control.stats, record); }
     }
 }
 
@@ -752,7 +801,8 @@ fn spawn_worker<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
     worker.workers = 1;
     worker.handle_signals = true;
     let ok = serve_loop(worker, control, listener, H, Tick, ignore_lifecycle);
-    write_record(write_end, control.stats, STATS_RECORD_BYTES);
+    var frame: u8[STATS_RECORD_BYTES] = [0; STATS_RECORD_BYTES];
+    if encode_stats(control.stats, frame[..]) { write_record(write_end, frame[..]); }
     gw_close(write_end);
     if ok { exit(0); }
     exit(1);
@@ -817,7 +867,8 @@ fn serve_workers<H, Tick, Lifecycle>(config: ServerConfig, control: ServerContro
                 if restarts[k] >= window_start { restarts[kept] = restarts[k]; kept += 1; }
             }
             restart_count = kept;
-            if restart_count >= WORKER_RESTART_BUDGET {
+            if restart_count >= config.worker_restart_budget {
+                write_stderr("goose-web: workers kept exiting and the restart budget is spent; the server stops\n");
                 success = false;
                 control.shutdown_requested = true;
                 continue;

@@ -111,8 +111,10 @@ import goose_web from "../goose-web";                          // a local checko
 import goose_web from "github.com/aurthurm/goose-web@3f2c1a9";  // a commit, per packages.md (not yet checked here)
 ```
 
-The GitHub tag form was checked too: until `v0.6.0` is pushed, `goose fetch` stops with
-`Remote branch v0.6.0 not found`. Fetching it needs network access and the tag.
+The GitHub tag form was checked against the published `v0.6.0` tag: a consumer program with the
+import above ran `goose fetch` and `goose build` cleanly, and its `/health` route answered `200 ok`.
+Fetching it needs network access and the tag; before the tag exists, `goose fetch` stops with
+`Remote branch v0.6.0 not found`.
 
 The SQLite layer is a second package in `db/`, with its own sidecar. A program that uses it declares
 both packages from the same version:
