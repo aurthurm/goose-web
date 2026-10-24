@@ -27,6 +27,9 @@ own globals (a Goose import adds no namespace). Use `src/sys/` instead.
 | `native/posix/transport.c` | Nonblocking socket calls, the readiness reactor (epoll on Linux, poll elsewhere), optional signals | POSIX |
 | `native/posix/system.c` | stat, bounded file read, getenv, clock | POSIX |
 | `native/posix/process.c` | fork, nonblocking reap, kill, CPU count, stats record pipe | POSIX (fork and prctl on Linux) |
+| `src/net/tcp.goose` | TCP server and client loop for custom protocols, write queues, events | Native TCP and transport shims, `src/sys` |
+| `src/net/framing.goose` | Line and length-prefixed framing over per-connection `TcpFrame` buffers | `src/constants/tcp` |
+| `native/posix/net.c` | TCP readiness instance (up to 1025 tokens), nonblocking connect, half-close | POSIX |
 
 Keep protocol policy in Goose. The C shim owns no application buffers and retains
 no Goose pointers. Its only process-wide state is optional signal ownership; the process calls
@@ -125,6 +128,43 @@ framework uses every core without threads: Goose threads share no memory and may
 - Worker state is copied at fork and is private afterwards; SQLite connections are opened after fork
   (see [docs/api.md](api.md#worker-processes)). Only the stats record crosses back, over one pipe.
 - The shim functions for this live in `native/posix/process.c`; `tests/native/process.c` covers them.
+
+## TCP layer
+
+`src/net/tcp.goose` is a second loop for custom protocols, with its own readiness instance in
+`native/posix/net.c`. It does not reuse the HTTP reactor because that reactor's token table is fixed at
+its 64 connection slots, and the TCP layer needs up to 1024. The listener, accept, recv and send calls are
+the HTTP transport's own; only the readiness calls are new. The two instances are independent, so a
+process could hold both, but the server loops are not designed to run together yet (see the follow-up
+below).
+
+| Structure | Storage | Lifetime |
+| --- | --- | --- |
+| Connection slot (`TcpSlot`) | Inline in `TcpControl.slots`: state, generation, descriptor, queue chain, peer text | The whole run, like the HTTP connection records |
+| Write queue | 4 KiB chunks from `tcp_chunks`, linked per slot, freed as each chunk is sent | Chunks return to `tcp_free` on send or close |
+| Receive buffer | One `tcp_read` buffer shared by all connections; Data views point into it | The run; a view is valid only during its event |
+| Framing buffer | `TcpFrame` (8 KiB inline), declared by the application per slot | The application's table |
+
+The pool holds at most `max_conns * (ceil(max_write_queue_bytes / 4096) + 1)` chunks, enough for every
+slot at its queue limit, so a send that passes the per-connection check always finds chunks. Reads stop at
+half the queue limit, so a slow peer is bounded by the queue, not by how fast the application produces.
+
+Each pass of the loop does, in order: the tick, signals, the shutdown transition, interest sync (only
+changed interest reaches the kernel), one wait with a deadline-aware timeout, accepts (up to 16), then
+for each slot: connect completion, deadlines, errors, one receive, the queue flush, and the close of
+a drained closing slot. Event handlers run in that order on the loop thread; a handler's `tcp_send` is
+flushed in the same pass.
+
+Closing is graceful and two-step. An app or shutdown close marks the slot CLOSING; once its queue is
+sent, the loop half-closes (FIN) and the slot LINGERS, reading and discarding input until the peer closes
+or the grace ends. Closing a socket with unread input would send a reset that discards bytes still in
+flight to the peer, so the lingering step is what makes shutdown lossless for well-behaved peers.
+
+The follow-up for hosting HTTP and TCP in one loop is a single readiness instance with two token
+ranges: the HTTP listener and connections keep their `Connection` records, and TCP slots join the same
+table. That needs the HTTP reactor's `gw_reactor_open` to become shareable, and the HTTP token space to
+grow beyond 65. Until then, run the two in separate processes. Keep a TCP server and an HTTP server in one
+process only after that change.
 
 ## Composition
 

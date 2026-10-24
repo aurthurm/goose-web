@@ -8,6 +8,12 @@ The entries before 0.6.0 were design milestones, not published releases. They ar
 from [ROADMAP.md](ROADMAP.md) and the design notes in [docs/design/app-api.md](docs/design/app-api.md),
 because the repository has no tag history for them.
 
+## Unreleased
+
+### Added
+
+- Custom TCP protocols: `web::tcp_config`, `web::tcp_serve`, `web::tcp_connect` and the connection functions in `src/net/tcp.goose`, with framing helpers in `src/net/framing.goose`. Own readiness instance in `native/posix/net.c`. Examples `examples/tcp-echo`, `examples/tcp-chat`, `examples/tcp-proxy`. See the TCP section of `docs/api.md`.
+
 ## 0.6.0
 
 First release that can be consumed as a fetched package (`import goose_web from "aurthurm/goose-web@v0.6.0";`).

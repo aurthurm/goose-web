@@ -66,7 +66,10 @@ def main():
                 ("hello", "examples/hello/server.goose"),
                 ("pages", "examples/pages/server.goose"), ("server", "examples/basic/server.goose"),
                 ("sse_fixture", "tests/fixtures/sse.goose"), ("sse_clock", "examples/sse-clock/server.goose"),
-                ("workers", "tests/fixtures/workers.goose")]
+                ("workers", "tests/fixtures/workers.goose"),
+                ("tcp_framing", "tests/unit/tcp_framing.goose"), ("tcp", "tests/fixtures/tcp.goose"),
+                ("tcp-echo", "examples/tcp-echo/server.goose"), ("tcp-chat", "examples/tcp-chat/server.goose"),
+                ("tcp-proxy", "examples/tcp-proxy/server.goose")]
     if with_sqlite:
         programs += [("db", "tests/unit/db.goose"), ("sqlite_todos", "examples/sqlite-todos/server.goose")]
     for name, source in programs:
@@ -74,7 +77,7 @@ def main():
                        env=env, check=True, cwd=ROOT)
     for name in ("core", "router", "application", "app_routes", "app_security", "app_middleware", "app_params", "constants",
                  "http_parser", "json_codec", "todo_query", "todo_api", "app_openapi", "app_templates", "parser_fuzz",
-                 "app_config", "global_names", "sse", "sessions", "csrf") + (("db",) if with_sqlite else ()):
+                 "app_config", "global_names", "sse", "sessions", "csrf", "tcp_framing") + (("db",) if with_sqlite else ()):
         # Run from the repository root: the static file checks use tests/fixtures/static.
         subprocess.run([str(BUILD / name)], check=True, timeout=60, cwd=ROOT)
     with tempfile.TemporaryDirectory(prefix="goose-todo-unit-") as directory:
@@ -84,6 +87,11 @@ def main():
     # The reactor has two backends (epoll on Linux, poll elsewhere); both run the same native checks.
     for name, flags in (("transport", []), ("transport_poll", ["-DGW_REACTOR_POLL"])):
         subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", *flags, str(ROOT / "tests/native/transport.c"),
+                        "-o", str(BUILD / name)], check=True)
+        subprocess.run([str(BUILD / name)], check=True)
+    # The TCP readiness instance has its own two backends, checked the same way as the HTTP reactor.
+    for name, flags in (("net", []), ("net_poll", ["-DGW_REACTOR_POLL"])):
+        subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", *flags, str(ROOT / "tests/native/net.c"),
                         "-o", str(BUILD / name)], check=True)
         subprocess.run([str(BUILD / name)], check=True)
     subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/system.c"),
@@ -106,6 +114,7 @@ def main():
                    env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/sse.py"), str(BUILD / "sse_fixture")],
                    env=env, check=True)
+    subprocess.run([sys.executable, str(ROOT / "tests/integration/tcp.py"), str(BUILD)], env=env, check=True)
     if with_sqlite:
         subprocess.run([sys.executable, str(ROOT / "tests/integration/sqlite_todos.py"), str(BUILD / "sqlite_todos")],
                        env=env, check=True)

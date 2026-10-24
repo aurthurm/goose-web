@@ -321,6 +321,162 @@ fn main() {
 A complete example that sends the time every second, with a browser page using `EventSource`, is in
 [examples/sse-clock](../examples/sse-clock/README.md).
 
+## TCP servers and clients
+
+`web::tcp_serve` runs a nonblocking TCP loop for custom protocols, next to the HTTP server. It reuses
+the listener, accept, recv and send calls of the HTTP transport but has its own readiness instance
+(`native/posix/net.c`), so it holds up to 1024 connections where the HTTP reactor holds 64. The code is
+in `src/net/tcp.goose` (server and client), `src/net/framing.goose` (line and frame helpers) and
+`src/constants/tcp.goose`; `web::TcpConfig`, `web::TcpControl`, `web::TcpEvent` and the functions below
+are all in the `web` namespace.
+
+```goose
+import goose_web from "goose_web";   // or the path to this checkout
+import std;
+import os;
+
+var control = default<web::TcpControl>();
+
+fn tick() {}
+
+fn on_event(net: web::TcpControl&, ev: web::TcpEvent) {
+    match ev {
+        Data d => { if !web::tcp_send(net, d.conn, d.bytes) { web::tcp_close(net, d.conn); } },
+        _ => {},
+    }
+}
+
+fn main() {
+    var config = web::tcp_config();          // port 9000, loopback, 256 connections
+    config.port = 7000;
+    config.handle_signals = true;             // SIGINT and SIGTERM drain, then the loop returns
+    let started = web::tcp_serve(config, control, on_event, tick);
+    if !started { abort("tcp server failed to start"); }
+}
+```
+
+`tcp_serve(config, control, handler, tick)` returns when the loop stops. It returns `false`, without
+serving, when `config` is invalid or the listener cannot start. `handler` is a named function
+`fn(net: web::TcpControl&, ev: web::TcpEvent)`; `tick` is a named function called once per loop pass. Both
+run synchronously on the loop thread, so neither may block. As with `run_with`, function values are
+compile-time: pass them by name.
+
+### Configuration
+
+| Field | Default | Range and meaning |
+| --- | --- | --- |
+| `port`, `public_bind` | 9000, loopback | `public_bind` listens on all IPv4 interfaces |
+| `max_conns` | 256 | 1 to 1024 connection slots; the rest are refused at accept |
+| `read_buffer_bytes` | 16384 | One receive buffer shared by all connections; at most 1 MiB |
+| `max_write_queue_bytes` | 262144 | Unsent bytes per connection, at least 4096 and at most 16 MiB |
+| `idle_timeout_ms` | 60000 | A connection with no read or progressing write for this long closes; 0 disables it. The timer keeps running while the handler has paused reads. |
+| `connect_timeout_ms` | 5000 | Deadline for `tcp_connect` to complete |
+| `shutdown_grace_ms` | 5000 | Time given to flush queues and to lingering peers after a stop |
+| `poll_timeout_ms` | 10 | Longest wait per loop pass, 1 to 1000 |
+| `handle_signals` | false | Opt in to SIGINT and SIGTERM as a graceful stop (one signal-enabled server per process) |
+
+`tcp_config()` returns the defaults. Only one TCP loop runs at a time per process, as with the reactor.
+There is no worker-process mode for TCP: a TCP loop runs in one process, so use one process per listener
+or put a process manager in front. `workers` is not a `TcpConfig` field.
+
+### Events
+
+| Event | When | Fields |
+| --- | --- | --- |
+| `Open { conn }` | A connection was accepted, or a `tcp_connect` completed | `conn` is the connection id |
+| `Data { conn, bytes }` | Input arrived | `bytes` is a view valid only during the event |
+| `Writable { conn }` | A queue that reached high water drained below it | Resume producing output for `conn` |
+| `Closed { conn, reason }` | The connection is gone | `reason` is one of the `TCP_CLOSE_*` constants |
+
+For one connection the order is `Open`, zero or more `Data` and `Writable`, then `Closed`. A connection id
+(`conn`) is the slot index plus the slot's generation times 1024, so an id held after its connection closed
+never names a newer connection; the functions below return 0 or false for it. Per-connection
+application state is kept in your own tables indexed by `web::tcp_slot_of(net, conn)`, which is stable for
+the life of the connection. `tcp_tag` / `tcp_set_tag` hold one `i64` per connection, reset to 0 on open.
+
+Close reasons: `TCP_CLOSE_PEER` (the peer closed), `TCP_CLOSE_ERROR` (socket error), `TCP_CLOSE_IDLE`,
+`TCP_CLOSE_APP` (`tcp_close`), `TCP_CLOSE_SHUTDOWN`, `TCP_CLOSE_CONNECT_FAILED` and
+`TCP_CLOSE_CONNECT_TIMEOUT`.
+
+### Functions
+
+| Function | Meaning |
+| --- | --- |
+| `tcp_send(net, conn, bytes) -> bool` | Queues bytes. False, taking nothing, when the connection is not open or the queue would exceed `max_write_queue_bytes`. The caller may then close it. |
+| `tcp_broadcast(net, bytes) -> i64` | Queues bytes on every open connection with room; returns how many accepted them |
+| `tcp_close(net, conn) -> bool` | Closes after the queue is sent (FIN, then the peer may still send until it closes or the grace ends) |
+| `tcp_pause_reads(net, conn, paused) -> bool` | Stops or resumes reading from a connection. Proxies use it for backpressure. |
+| `tcp_queued(net, conn) -> i64` | Unsent bytes on the connection |
+| `tcp_high_water(net) -> i64` | Queue size at which reads pause and `Writable` is owed |
+| `tcp_peer(net, conn) -> const u8[:]` | The peer's numeric address |
+| `tcp_connect(net, host, port) -> i64` | Starts a nonblocking connect to a numeric IPv4 or IPv6 address. Returns the connection id, or 0 when the loop is not running, no slot is free, or the address is refused at once. |
+| `tcp_slot_of(net, conn) -> i64` | Slot index for a live connection, or -1 |
+| `tcp_conn_at(net, slot) -> i64` | Connection id in a slot, or 0 when free; walk `0 .. max_conns-1` to reach every connection |
+| `tcp_request_shutdown(net)` | Stops the loop from inside a handler or from `tick` |
+| `control.stats` | `TcpStats`: accepted (includes refused), active, connects, closed, rejected, timeouts, bytes_read, bytes_written, refused_sends |
+
+Names are never resolved: `tcp_connect` takes a numeric address. A name needs `getaddrinfo`, which blocks
+the loop. Resolve it in advance (or at startup in `main`) and pass the address.
+
+### Backpressure
+
+Each connection has a write queue of 4 KiB chunks drawn from one shared pool. `tcp_send` appends to it,
+and the loop sends from its head as the socket accepts bytes. The queue never exceeds
+`max_write_queue_bytes`. At half of that (the high-water mark) the loop stops reading from the connection,
+so a peer that does not read stops sending too, and a `Writable` event tells the handler when the queue
+drained below high water. Memory is bounded by `max_conns * (max_write_queue_bytes + 8 KiB)` plus the
+receive buffer. `tests/integration/tcp.py` checks this: a client that sends 16 MiB and does not read
+makes the server read only the kernel buffers plus the queue.
+
+Application flow control works the same way: a proxy calls `tcp_pause_reads` on its client while the
+upstream queue is above `tcp_high_water`, and resumes on the upstream's `Writable`.
+
+### Framing
+
+`web::TcpFrame` is a per-connection accumulation buffer (`TCP_FRAME_CAPACITY`, 8 KiB, inline). Declare
+one per slot in your own table: `var frames: web::TcpFrame[64];` and index it with `tcp_slot_of`.
+
+- `tcp_feed_lines(frame, data, max_line) { line => ... } -> bool` splits data on `\n`, drops a trailing
+  `\r`, and calls the block once per complete line with a view of it. A line longer than `max_line` fails
+  the feed (`false`, buffer cleared): send an error and close.
+- `tcp_feed_frames(frame, data, header, max_frame) { payload => ... } -> bool` reads big-endian
+  `header`-byte lengths (2 or 4) and delivers each payload. A length above `max_frame` fails the feed
+  as soon as the header is complete. `header + max_frame` must fit `TCP_FRAME_CAPACITY`.
+- `tcp_encode_frame(out, payload, header)` appends one frame to a builder for `tcp_send`.
+
+Feeds keep partial lines and frames across calls, so a message split over any number of Data events is
+delivered whole.
+
+### Client connections
+
+`tcp_connect` shares the loop: the connection's `Open` or `Closed` arrives as an event like any accepted
+connection, so one loop can serve clients and upstreams together. A `Closed` with
+`TCP_CLOSE_CONNECT_FAILED` (refused, unreachable) or `TCP_CLOSE_CONNECT_TIMEOUT` follows a failed attempt
+that started; an immediate failure returns 0 instead. Tag the upstream connection with `tcp_set_tag` before
+its `Open` if the handler must tell it from a client, as `examples/tcp-proxy` does.
+
+### Shutdown
+
+`tcp_request_shutdown`, or SIGINT or SIGTERM with `handle_signals`, stops accepting and begins a graceful
+close of every connection: queued output is flushed, FIN is sent, and the connection lingers, reading and
+discarding input, until the peer closes or `shutdown_grace_ms` ends. Lingering avoids the reset that closing
+with unread input would cause, so the peer receives all the bytes sent before the stop. The loop returns
+after the last connection closes or the grace ends, and `web::tcp_serve` returns `true`.
+
+### Examples
+
+`examples/tcp-echo` echoes bytes. `examples/tcp-chat` is a line-based room with `/nick` and `/quit`.
+`examples/tcp-proxy` forwards each client to one numeric upstream address with backpressure on both
+sides. Each has a README with `nc` commands. The test fixture `tests/fixtures/tcp.goose` runs the echo,
+line, and frame modes plus a client mode used by `tests/integration/tcp.py`.
+
+### Limits
+
+- IPv4 and IPv6 literals only; no name resolution in the loop.
+- No UDP, no TLS (put a TLS proxy in front; see the ROADMAP).
+- One TCP loop and one HTTP reactor per process; hosting both in one loop is a follow-up (see
+  [architecture.md](architecture.md#tcp-layer)).
+
 ## JSON codec
 
 `src/json/codec.goose` maps structs to compact JSON objects and back, from `fields<T>`.
