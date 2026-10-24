@@ -97,6 +97,8 @@ def main():
                 ("sessions", "tests/unit/sessions.goose"), ("csrf", "tests/unit/csrf.goose"),
                 ("live_reload", "tests/unit/live_reload.goose"),
                 ("shared", "tests/unit/shared.goose"),
+                ("app_logging", "tests/unit/app_logging.goose"), ("app_proxy", "tests/unit/app_proxy.goose"),
+                ("app_etag", "tests/unit/app_etag.goose"), ("app_shedding", "tests/unit/app_shedding.goose"),
                 ("parser_fuzz", "tests/fuzz/parser.goose"), ("json_fuzz", "tests/fuzz/json.goose"),
                 ("input_fuzz", "tests/fuzz/input.goose"), ("template_fuzz", "tests/fuzz/template.goose"),
                 ("static_fuzz", "tests/fuzz/static.goose"), ("auth", "tests/unit/auth.goose"),
@@ -110,7 +112,8 @@ def main():
                 ("jobs_example", "examples/jobs/server.goose"),
                 ("tcp_framing", "tests/unit/tcp_framing.goose"), ("tcp", "tests/fixtures/tcp.goose"),
                 ("tcp-echo", "examples/tcp-echo/server.goose"), ("tcp-chat", "examples/tcp-chat/server.goose"),
-                ("tcp-proxy", "examples/tcp-proxy/server.goose")]
+                ("tcp-proxy", "examples/tcp-proxy/server.goose"),
+                ("observability", "tests/fixtures/observability.goose")]
     if with_sqlite:
         programs += [("db", "tests/unit/db.goose"), ("sqlite_todos", "examples/sqlite-todos/server.goose")]
     for name, source in programs:
@@ -120,7 +123,7 @@ def main():
                  "http_parser", "json_codec", "todo_query", "todo_api", "app_openapi", "app_templates", "app_page", "parser_fuzz",
                  "json_fuzz", "input_fuzz", "template_fuzz", "static_fuzz", "auth",
                  "app_config", "global_names", "sse", "sessions", "csrf", "live_reload", "stats_record", "scheduler", "jobs",
-                 "shared", "tcp_framing") + (("db",) if with_sqlite else ()):
+                 "shared", "tcp_framing", "app_logging", "app_proxy", "app_etag", "app_shedding") + (("db",) if with_sqlite else ()):
         # Run from the repository root: the static file checks use tests/fixtures/static.
         subprocess.run([str(BUILD / name)], check=True, timeout=60, cwd=ROOT)
     with tempfile.TemporaryDirectory(prefix="goose-todo-unit-") as directory:
@@ -177,6 +180,8 @@ def main():
     subprocess.run([sys.executable, str(ROOT / "tests/integration/sse.py"), str(BUILD / "sse_fixture")],
                    env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/tcp.py"), str(BUILD)], env=env, check=True)
+    subprocess.run([sys.executable, str(ROOT / "tests/integration/observability.py"), str(BUILD / "observability")],
+                   env=env, check=True)
     if with_sqlite:
         subprocess.run([sys.executable, str(ROOT / "tests/integration/sqlite_todos.py"), str(BUILD / "sqlite_todos")],
                        env=env, check=True)

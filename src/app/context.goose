@@ -49,6 +49,8 @@ struct Ctx {
     prefixes: const u8[:][MAX_GROUP_DEPTH],
     prefix_count: i64,
     host_scope: const u8[:],
+    // Client address set by trust_proxies (proxy.goose); empty when no trusted-proxy middleware ran.
+    client: const u8[:],
     // Borrowed from the AppScratch given to new_ctx.
     table: Router&,
     // Session and CSRF middleware state (session.goose, csrf.goose); empty until installed.
@@ -92,6 +94,8 @@ fn header(c: Ctx&, name: const u8[:]) -> const u8[:] { return request_header(c.r
 // Numeric address of the connected client, filled by the runtime from accept(). Empty when
 // unknown, as in unit tests that build a Request by hand.
 fn peer(c: Ctx&) -> const u8[:] { return c.request.peer; }
+// Pattern of the route that matched this request (e.g. /users/:id), or empty when none matched.
+fn route_pattern(c: Ctx&) -> const u8[:] { return c.matched.pattern[..]; }
 
 // Path parameters of the selected route. Empty when absent or before dispatch.
 fn param(c: Ctx&, name: const u8[:]) -> const u8[:] { return path_param(c.matched, name); }

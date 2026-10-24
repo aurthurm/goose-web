@@ -34,6 +34,10 @@ because the repository has no tag history for them.
   work on contained worker threads over typed queues, with a bounded queue (503 when full), correlation ids, lost-job
   reports and worker restarts. See [Background jobs](docs/api.md#background-jobs) and [examples/jobs](examples/jobs/README.md).
 
+- Structured request logs: `json_logger(c, include_query = false) { }` prints one JSON object per request (RFC 3339 UTC `ts`, `level`, `request_id`, `method`, `path` without the query by default, the matched `route` pattern, `status`, `bytes`, `duration_us`, `peer`, `client_ip`, a truncated `user_agent`, `pid` in worker processes). Values are JSON-escaped. `c.route_pattern()` gives the matched pattern. See [Structured logs](docs/api.md#structured-logs).
+- Trusted proxies: `trusted_proxies("10.0.0.0/8, ::1")` builds an allow-list of up to 16 IPv4, IPv6 or CIDR entries; `trust_proxies(c, cfg) { }` resolves the client from `X-Forwarded-For` (or RFC 7239 `Forwarded` with `cfg.forwarded = true`) only when the TCP peer is trusted; `client_ip(c)` returns the result. `rate_limit` counts the client address. See [Trusted proxies](docs/api.md#trusted-proxies).
+- ETag and conditional GET: `etag(c) { }` gives 200 GET and HEAD responses a strong tag (SHA-256 of the body, first 16 bytes, base64url), and answers `If-None-Match` (lists, `*`, weak comparison) with 304 and no body or Content-Type. `cache_control(c, value)` sets `Cache-Control`. See [ETag](docs/api.md#etag).
+- Load shedding: `shed_load(c, LoadPolicy { ... }) { }` answers 503 `overloaded` with `Retry-After` when the reactor reports connection or response-pool pressure above the policy. The reactor publishes `live_pressure` before each handler; `c.server_pressure()` exposes it. `body_limit(c, bytes) { }` answers 413 `payload_too_large` for a longer body. See [Load shedding](docs/api.md#load-shedding).
 - Custom TCP protocols: `web::tcp_config`, `web::tcp_serve`, `web::tcp_connect` and the connection functions in `src/net/tcp.goose`, with framing helpers in `src/net/framing.goose`. Own readiness instance in `native/posix/net.c`. Examples `examples/tcp-echo`, `examples/tcp-chat`, `examples/tcp-proxy`. See the TCP section of `docs/api.md`.
 
 - Authentication: `hash_password`, `hash_password_iterations` and `verify_password` (PBKDF2-HMAC-SHA256,
@@ -64,6 +68,8 @@ because the repository has no tag history for them.
   moves opaque bytes, and the record format is internal to the build (parent and workers are one
   binary).
 - The parent drops a stats frame that does not match its build instead of adding it.
+- A response may have an empty `content_type` only when its status is 304; that response is serialized without
+  `Content-Type` (RFC 9110 15.4.5). Every other response still needs one.
 
 ### Security notes
 

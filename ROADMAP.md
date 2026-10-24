@@ -94,6 +94,9 @@
 
 - [x] Typed worker jobs and completions: `web::job_pool` runs pure-Goose work on threads over bounded typed queues, with correlation ids, lost-job reports, worker restarts and shutdown joins; example `examples/jobs`.
 - [x] Timers integrated with readiness: `web::every`, `after`, `cancel` and `due` run from the tick, and `hint_wakeup` wakes the reactor for the next due task.
+- [x] HTTP operations (borrowables 5-8): structured JSON request logs, trusted-proxy client addresses, ETag with conditional GET, load shedding by reactor pressure and per-route body caps. See [Request logs, proxies, caching and load](docs/api.md#request-logs-proxies-caching-and-load).
+- Follow-up: gzip responses (zlib through the native shim), and a per-process concurrency limit if handlers ever run off the reactor.
+- Follow-up: second-resolution timestamps become millisecond ones once the native shim exposes `CLOCK_REALTIME` in nanoseconds.
 - Cancellation of a running job, and cooperative task states.- Benchmarks covering slow clients, queue saturation, latency, and memory bounds.
 
 Async network I/O is implemented now. Language-level async/await is not implied by

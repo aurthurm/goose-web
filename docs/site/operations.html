@@ -99,8 +99,12 @@ and put it behind something you trust.</p>
 <ul>
   <li><strong>TLS belongs to the proxy.</strong> Goose Web does not speak TLS yet. Serve HTTPS at the proxy, and set
     <code>secure = true</code> on session cookies and <code>Strict-Transport-Security</code> through <code>secure_headers</code>.</li>
-  <li><strong>The client address is the proxy's.</strong> <code>c.peer()</code> is the TCP peer, and forwarded headers are not
-    trusted. A <code>rate_limit</code> behind a proxy therefore limits the proxy, not each user.</li>
+  <li><strong>The client address is the proxy's until you say otherwise.</strong> <code>c.peer()</code> is the TCP peer, and forwarded
+    headers are ignored by default, so a <code>rate_limit</code> behind a proxy limits the proxy. Add
+    <code>trust_proxies(c, web::trusted_proxies("10.0.0.0/8"))</code> with the proxy's own addresses (IPv4, IPv6 or CIDR, up to 16)
+    and <code>client_ip(c)</code> returns the first untrusted address on <code>X-Forwarded-For</code> (or RFC 7239
+    <code>Forwarded</code> with <code>cfg.forwarded = true</code>). Trust only proxies you run: a trusted peer's headers are believed.
+    Requests from other peers never change the address, however they are sent.</li>
   <li><strong>Sessions are stateless.</strong> Every instance that should accept a session needs the same secret. Rotating the
     secret signs every user out.</li>
   <li><strong>Limits are per process.</strong> Rate limits, event streams and the response pool are not shared between instances.</li>
@@ -110,6 +114,21 @@ and put it behind something you trust.</p>
 <p>Set <code>handle_signals</code> so SIGTERM from a supervisor starts a drain: the listener closes, open requests finish, and
 streams receive their close event. Keep the grace period longer than your slowest handler. The <code>logger</code> middleware prints one line per
 response to standard output, so a supervisor or log shipper can collect it directly.</p>
+
+<h3>Request logs</h3>
+<p>For a log pipeline, use <code>json_logger</code> instead: one JSON object per line on standard output, with
+<code>ts</code> (RFC 3339 UTC), <code>level</code>, <code>request_id</code>, <code>method</code>, <code>path</code> (no query string
+unless you pass <code>include_query</code>), <code>route</code> (the pattern, such as <code>/users/:id</code>), <code>status</code>,
+<code>bytes</code>, <code>duration_us</code>, <code>peer</code>, <code>client_ip</code>, a truncated <code>user_agent</code>, and
+<code>pid</code> in worker processes. Values are escaped, so a crafted request cannot break a line. Keep the query string out of
+logs unless you need it: it can carry tokens.</p>
+<pre><code>{"ts":"2026-10-24T10:15:03Z","level":"info","request_id":12,"method":"GET","path":"/users/42","route":"/users/:id","status":200,"bytes":9,"duration_us":84,"peer":"127.0.0.1","client_ip":"127.0.0.1","user_agent":"curl/8.7.1"}</code></pre>
+
+<h3>Overload</h3>
+<p>Put <code>shed_load</code> on the routes that can be shed. Above the configured share of open connections or response-pool
+bytes, the server answers 503 <code>overloaded</code> with <code>Retry-After</code> and the handler does not run. Pressure is per
+worker process. Each route can also cap its body with <code>body_limit</code>, and <code>etag</code> lets clients skip
+unchanged responses with <code>If-None-Match</code>.</p>
 
 <h3>Several processes</h3>
 <p>Set <code>workers</code> (or pass <code>--workers N</code>, or <code>GOOSE_WEB_WORKERS</code>) to pre-fork that many reactor
