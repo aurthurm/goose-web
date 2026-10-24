@@ -91,7 +91,8 @@ fn test_window_restarts() {
 }
 
 // The table is bounded: a new key is refused when no slot is free, deleting frees one, and expired entries
-// free theirs for new keys.
+// free theirs for new keys. A key is refused when its own stripe is full, so the refused key is the one that is
+// retried: deleting entries frees slots until one is free in its stripe.
 fn test_full_table() {
     var key: u8[>..] = [];
     var stored: i64 = 0;
@@ -102,12 +103,23 @@ fn test_full_table() {
         stored += 1;
     }
     assert(stored > 0);
-    assert(!web::shared_set("one-more", "x"));
-    key.clear();
-    format(key, "fill-", 0);
-    assert(web::shared_delete(key[..]));
-    assert(web::shared_set("one-more", "x"));
-    assert(web::shared_delete("one-more"));
+    var refused: u8[>..] = [];
+    refused.append(key[..]);
+    assert(!web::shared_set(refused[..], "x"));
+    var index: i64 = 0;
+    var placed = false;
+    loop {
+        if index >= stored { break; }
+        key.clear();
+        format(key, "fill-", index);
+        if web::shared_delete(key[..]) && web::shared_set(refused[..], "x") {
+            placed = true;
+            break;
+        }
+        index += 1;
+    }
+    assert(placed);
+    assert(web::shared_delete(refused[..]));
     var shorts: i64 = 0;
     loop {
         key.clear();
@@ -116,9 +128,9 @@ fn test_full_table() {
         shorts += 1;
     }
     assert(shorts > 0);
-    assert(!web::shared_set("late", "x"));
+    assert(!web::shared_set(key[..], "x"));
     wait_ms(60);
-    assert(web::shared_set("late", "x"));
+    assert(web::shared_set(key[..], "x"));
     assert(web::shared_store_open(0));
 }
 
@@ -138,6 +150,39 @@ fn test_config_sizes() {
     assert(!web::validate_server_config(config));
 }
 
+// The lock wait limit is validated with the configuration: 1 to 10000 milliseconds.
+fn test_lock_timeout_config() {
+    var config = web::server_config();
+    assert(config.shared_lock_timeout_ms == web::DEFAULT_SHARED_LOCK_TIMEOUT_MS);
+    config.shared_lock_timeout_ms = 0;
+    assert(!web::validate_server_config(config));
+    config.shared_lock_timeout_ms = 10001;
+    assert(!web::validate_server_config(config));
+    config.shared_lock_timeout_ms = 1;
+    assert(web::validate_server_config(config));
+    config.shared_lock_timeout_ms = 10000;
+    assert(web::validate_server_config(config));
+    assert(web::shared_lock_timeout_set(web::DEFAULT_SHARED_LOCK_TIMEOUT_MS));
+    assert(!web::shared_lock_timeout_set(0));
+}
+
+// The stats describe the store: the live entry count moves with the table, the capacity is fixed, and a
+// store that is off reports zeros.
+fn test_stats() {
+    assert(web::shared_store_open(web::DEFAULT_SHARED_STORE_BYTES));
+    let before = web::shared_stats();
+    assert(before.capacity > 0 && before.stripes >= 1 && before.stripes <= 16);
+    assert(before.entries >= 0 && before.ring_lost >= 0);
+    assert(web::shared_set("stats-key", "v"));
+    let added = web::shared_stats();
+    assert(added.entries == before.entries + 1 && added.capacity == before.capacity);
+    assert(web::shared_delete("stats-key"));
+    assert(web::shared_stats().entries == before.entries);
+    assert(web::shared_store_open(0));
+    let off = web::shared_stats();
+    assert(off.capacity == 0 && off.entries == 0 && off.stripes == 0 && off.timeouts == 0);
+}
+
 fn main() {
     test_disabled_store();
     test_entries();
@@ -146,5 +191,7 @@ fn main() {
     test_window_restarts();
     test_full_table();
     test_config_sizes();
+    test_lock_timeout_config();
+    test_stats();
     print("shared store unit tests passed");
 }

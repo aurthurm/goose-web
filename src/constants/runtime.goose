@@ -80,5 +80,10 @@ const SIGNAL_KILL = 9;
 // key/value entries, the SSE ring and the stream registry; see docs/api.md#shared-store.
 const DEFAULT_SHARED_STORE_BYTES = 1048576;
 const MIN_SHARED_STORE_BYTES = 262144;
+// How long a shared-store call waits for a stripe, ring or registry lock before it fails
+// (ServerConfig.shared_lock_timeout_ms); the bounds are validated with the rest of the configuration.
+const DEFAULT_SHARED_LOCK_TIMEOUT_MS = 50;
+const MIN_SHARED_LOCK_TIMEOUT_MS = 1;
+const MAX_SHARED_LOCK_TIMEOUT_MS = 10000;
 // Longest time-to-live the store accepts: 365 days, so a server-side session can outlast a day.
 const SHARED_TTL_MAX_MS = 31536000000;

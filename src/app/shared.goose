@@ -47,6 +47,27 @@ fn shared_delete(key: const u8[:]) -> bool {
     return gw_shared_delete(key) == 1;
 }
 
+// Counters of the store, for monitoring. capacity is the number of entry slots (all stripes), stripes is how
+// many locks split them, timeouts counts lock waits that gave up (a timed-out call returns false, or the
+// rate limit falls back to its per-process table), recoveries counts locks taken over from a dead worker,
+// and ring_lost counts events overwritten before a stream read them. entries and ring_lost are -1 when their
+// lock could not be had in time. All are 0 when the store is off.
+struct SharedStats {
+    entries: i64, capacity: i64, stripes: i64, timeouts: i64, recoveries: i64, ring_lost: i64
+}
+
+fn shared_stats() -> SharedStats {
+    var entries: i64 = 0;
+    var capacity: i64 = 0;
+    var stripes: i64 = 0;
+    var timeouts: i64 = 0;
+    var recoveries: i64 = 0;
+    var ring_lost: i64 = 0;
+    gw_shared_stats(entries, capacity, stripes, timeouts, recoveries, ring_lost);
+    return SharedStats { entries: entries, capacity: capacity, stripes: stripes, timeouts: timeouts,
+        recoveries: recoveries, ring_lost: ring_lost };
+}
+
 // Adds delta to the counter under key and returns the new value and true. A missing or expired counter starts
 // from 0 and takes ttl_ms (0: no expiry). An existing counter keeps its expiry, so ttl_ms opens a fixed window
 // that later increments do not extend. Returns 0 and false when refused, when the table is full, or on overflow.

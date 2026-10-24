@@ -29,7 +29,7 @@ own globals (a Goose import adds no namespace). Use `src/sys/` instead.
 | `native/posix/transport.c` | Nonblocking socket calls, the readiness reactor (epoll on Linux, poll elsewhere), optional signals | POSIX |
 | `native/posix/system.c` | stat, bounded file read, getenv, clock | POSIX |
 | `native/posix/process.c` | fork, nonblocking reap, kill, CPU count, stats record pipe | POSIX (fork and prctl on Linux) |
-| `native/posix/shared.c` | The [shared store](api.md#shared-store): entries, counters, the SSE event ring and the stream registry in one `MAP_SHARED` mapping behind a process-shared robust mutex | POSIX (pthreads, `mmap`) |
+| `native/posix/shared.c` | The [shared store](api.md#shared-store): entries and counters in one `MAP_SHARED` mapping, split into up to 16 lock stripes, plus the SSE event ring and the stream registry, each behind its own process-shared robust mutex; every lock wait is timed | POSIX (pthreads, `mmap`) |
 | `src/net/tcp.goose` | TCP server and client loop for custom protocols, write queues, events | Native TCP and transport shims, `src/sys` |
 | `src/net/framing.goose` | Line and length-prefixed framing over per-connection `TcpFrame` buffers | `src/constants/tcp` |
 | `native/posix/net.c` | TCP readiness instance (up to 1025 tokens), nonblocking connect, half-close | POSIX |
@@ -131,10 +131,13 @@ framework uses every core without threads: Goose threads share no memory and may
 - Worker state is copied at fork and is private afterwards; SQLite connections are opened after fork
   (see [docs/api.md](api.md#worker-processes)). Only the stats record crosses back, over one pipe.
 - The shared store is the one region that workers do see in common. `serve_config` creates it before the
-  fork, so it is inherited, and every access takes its robust mutex. It carries the state that must agree
-  across workers: entries and counters, `rate_limit` counts, server-side sessions and the SSE event ring
-  (each worker copies new events to its own streams). Its layout and crash rules are in
-  [docs/api.md](api.md#shared-store).
+  fork, so it is inherited. Its key/value table is split into lock stripes (a key's hash picks one), so
+  workers using different keys do not serialize on one mutex; the SSE ring and the stream registry have
+  locks of their own. Every lock wait is bounded by `shared_lock_timeout_ms`, so a stopped holder makes calls
+  fail instead of stalling the workers. Critical sections make no syscalls, and the liveness checks of the
+  stream registry run with the lock released. It carries the state that must agree across workers: entries
+  and counters, `rate_limit` counts, server-side sessions and the SSE event ring (each worker copies new
+  events to its own streams). Its layout, timeouts and crash rules are in [docs/api.md](api.md#shared-store).
 - The shim functions for this live in `native/posix/process.c`; `tests/native/process.c` covers them.
 
 ## Background work

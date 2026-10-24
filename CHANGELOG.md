@@ -21,7 +21,12 @@ because the repository has no tag history for them.
   summed. The fixture takes an optional restart budget and a `/block` route.
 - Stats record unit test (`tests/unit/stats_record.goose`): every `ServerStats` field round-trips,
   and a frame with a wrong field count, magic or length is rejected.
-
+- `ServerConfig.shared_lock_timeout_ms` (default 50, 1..10000): how long a shared-store call waits for a
+  stripe, ring or registry lock before it fails. A stopped or stalled lock holder no longer blocks every worker.
+- `web::shared_stats()` returns a `SharedStats` record (`entries`, `capacity`, `stripes`, `timeouts`,
+  `recoveries`, `ring_lost`), so the lost-event count and the lock counters are visible to Goose.
+- Native shared-store tests for lock striping (8 processes on separate keys, with the timing printed),
+  timed lock waits against a stopped holder, recovery of a stripe after SIGKILL, and the stats.
 - Reactor scheduler (`web::scheduler`, `every`, `after`, `cancel`, `due`, `hint_wakeup`): bounded periodic and
   one-shot tasks run from the tick, monotonic times, documented catch-up rule. `ServerControl.wake_at_ns` shortens
   the poll wait to the next due task. See [Scheduler](docs/api.md#scheduler).
@@ -44,6 +49,14 @@ because the repository has no tag history for them.
   that stay inside are still followed.
 - JSON decoding refuses a string whose escapes decode to bytes that are not valid UTF-8 (for example a
   lone `\uD800`).
+- The shared store splits its key/value table into up to 16 lock stripes (`hash & (stripes - 1)`), each with
+  its own robust mutex and slot range. The SSE ring and the stream registry have separate locks. Eight processes
+  on separate keys ran the native contention test about 4 to 6 times faster than with one lock. A key is refused
+  when its own stripe is full, so the first refusal comes slightly earlier than before (about 98% of the slots
+  at the default size, against 100% with one lock).
+- A stream registry check that cannot take the lock now makes `sse_publish` return -1 (refused), not 0 (no
+  subscribers). Stream open and ring reads treat a lock timeout as a refusal or a retry.
+- No system call runs under a store lock any more: the stream liveness checks run with the lock released.
 - The worker stats record is a fixed-size frame (`STATS_RECORD_BYTES`, 272 bytes): a magic word
   `GWSTATS1`, the field count, then each `i64` field as little-endian bytes. It is encoded and
   decoded with `const for` over `fields<ServerStats>`, and the parent sums with the same walk, so a
