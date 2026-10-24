@@ -29,6 +29,8 @@ because the repository has no tag history for them.
   work on contained worker threads over typed queues, with a bounded queue (503 when full), correlation ids, lost-job
   reports and worker restarts. See [Background jobs](docs/api.md#background-jobs) and [examples/jobs](examples/jobs/README.md).
 
+- Custom TCP protocols: `web::tcp_config`, `web::tcp_serve`, `web::tcp_connect` and the connection functions in `src/net/tcp.goose`, with framing helpers in `src/net/framing.goose`. Own readiness instance in `native/posix/net.c`. Examples `examples/tcp-echo`, `examples/tcp-chat`, `examples/tcp-proxy`. See the TCP section of `docs/api.md`.
+
 ### Changed
 
 - The worker stats record is a fixed-size frame (`STATS_RECORD_BYTES`, 272 bytes): a magic word

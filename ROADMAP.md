@@ -72,6 +72,11 @@
 - Shared store follow-ups: expose the lost-event count to Goose, and a per-entry lock-free read path if profiling shows the mutex matters.
 - kqueue for BSD and macOS, and a Windows transport, measured under load.
 - TLS integration and deployment guidance.
+- [x] Custom TCP protocols (`web::tcp_serve`, `web::tcp_connect`): own readiness instance for up to 1024 connections, bounded write queues with pause/resume, lingering graceful close, line and length-prefixed framing, echo/chat/proxy examples, and socket tests (`tests/integration/tcp.py`).
+- Follow-up: one reactor hosting HTTP and TCP listeners together (a shared token space, so one process can serve both); today they run in separate processes.
+- Follow-up: TCP with worker processes (the pre-fork supervisor would need per-listener routing), and UDP (`udp_bind` with receive and send events).
+- Follow-up: TLS for TCP through a terminating proxy in front, or a native TLS layer when the upstream compiler's crypto surface allows it.
+- Follow-up: name resolution for `tcp_connect` without blocking the loop (a resolver thread or a worker job).
 
 ## Milestone 4: asynchronous application work
 

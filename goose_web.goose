@@ -34,3 +34,6 @@ import .src.sys.files;
 import .src.sys.process;
 import .src.sys.crypto;
 import .src.sys.shared;
+import .src.constants.tcp;
+import .src.net.tcp;
+import .src.net.framing;

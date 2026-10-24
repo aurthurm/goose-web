@@ -237,6 +237,37 @@ correlation id, or 0 when the queue is full, which becomes a <code>503</code>. T
   <li>The <a href="https://github.com/aurthurm/goose-web/tree/main/examples/jobs">jobs example</a> computes prime counts,
   announces each result on an event stream, and drops old results on a 30-second schedule.</li>
 </ul>
+<h2 id="tcp">Custom TCP protocols</h2>
+<p><code>web::tcp_serve</code> runs a nonblocking loop for protocols that are not HTTP. Handlers receive open, data,
+writable and closed events, and send with <code>web::tcp_send</code>, which refuses output past a bounded queue:</p>
+<pre><code>var control = default&lt;web::TcpControl&gt;();
+
+fn tick() {}
+
+fn on_event(net: web::TcpControl&amp;, ev: web::TcpEvent) {
+    match ev {
+        Data d => { if !web::tcp_send(net, d.conn, d.bytes) { web::tcp_close(net, d.conn); } },
+        _ => {},
+    }
+}
+
+fn main() {
+    var config = web::tcp_config();
+    config.handle_signals = true;
+    let started = web::tcp_serve(config, control, on_event, tick);
+    if !started { abort("server failed"); }
+}</code></pre>
+<ul>
+  <li>Each connection's queue is bounded. Reads pause at half the limit and resume as the peer drains it, so a slow peer
+    cannot grow memory.</li>
+  <li>Line and length-prefixed framing helpers keep partial messages between events, with a size limit per message.</li>
+  <li><code>web::tcp_connect</code> opens outgoing connections in the same loop, so a server can act as a proxy.</li>
+  <li>Shutdown flushes queued output and sends FIN before closing, so a stopping server does not cut off a reply in flight.</li>
+</ul>
+<p>The examples are <a href="https://github.com/aurthurm/goose-web/tree/main/examples/tcp-echo">tcp-echo</a>,
+<a href="https://github.com/aurthurm/goose-web/tree/main/examples/tcp-chat">tcp-chat</a> and
+<a href="https://github.com/aurthurm/goose-web/tree/main/examples/tcp-proxy">tcp-proxy</a>. The TCP loop runs in its own process
+beside any HTTP server; see the TCP section of the API reference.</p>
 </main>
 <footer>Documentation for release 0.6.0. Details: <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md">API reference</a>.</footer>
 </body>
