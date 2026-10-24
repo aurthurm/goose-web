@@ -61,6 +61,7 @@ def main():
                 ("app_openapi", "tests/unit/app_openapi.goose"), ("sse", "tests/unit/sse.goose"),
                 ("app_templates", "tests/unit/app_templates.goose"),
                 ("sessions", "tests/unit/sessions.goose"), ("csrf", "tests/unit/csrf.goose"),
+                ("live_reload", "tests/unit/live_reload.goose"),
                 ("parser_fuzz", "tests/fuzz/parser.goose"), ("features", "tests/fixtures/features.goose"),
                 ("app", "tests/fixtures/app.goose"), ("routing", "tests/fixtures/routing.goose"),
                 ("hello", "examples/hello/server.goose"),
@@ -74,7 +75,7 @@ def main():
                        env=env, check=True, cwd=ROOT)
     for name in ("core", "router", "application", "app_routes", "app_security", "app_middleware", "app_params", "constants",
                  "http_parser", "json_codec", "todo_query", "todo_api", "app_openapi", "app_templates", "parser_fuzz",
-                 "app_config", "global_names", "sse", "sessions", "csrf") + (("db",) if with_sqlite else ()):
+                 "app_config", "global_names", "sse", "sessions", "csrf", "live_reload") + (("db",) if with_sqlite else ()):
         # Run from the repository root: the static file checks use tests/fixtures/static.
         subprocess.run([str(BUILD / name)], check=True, timeout=60, cwd=ROOT)
     with tempfile.TemporaryDirectory(prefix="goose-todo-unit-") as directory:
@@ -104,6 +105,11 @@ def main():
     subprocess.run([sys.executable, str(ROOT / "tests/integration/runtime.py")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/workers.py"), str(BUILD / "workers")],
                    env=env, check=True)
+    # The development server: watcher, debounce and build-failure handling (fake build), then a real
+    # rebuild-and-reload cycle through the goose compiler.
+    subprocess.run([sys.executable, str(ROOT / "tests/unit/dev_watch_test.py")], env=env, check=True)
+    subprocess.run([sys.executable, str(ROOT / "tests/integration/dev_reload_test.py")],
+                   env=dict(env, GOOSE=compiler), check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/sse.py"), str(BUILD / "sse_fixture")],
                    env=env, check=True)
     if with_sqlite:

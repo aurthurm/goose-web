@@ -40,3 +40,13 @@ Template features used by `views/list.html`:
 `main` calls `check_template<ListPage>` before the server starts, so a template that names a
 missing field fails at startup with the reason, not on the first request. The list holds 32
 todos in memory; a full list answers 409 `list_full`. Restarting the server clears it.
+
+To work on the page with reload, run it through the development server. It rebuilds and restarts
+on each save, and the browser reloads (a compile error appears over the page):
+
+```sh
+python3 scripts/dev.py examples/pages/server.goose --port 8080
+```
+
+`web::live_reload(c)` in `server.goose` adds the reload script only under that command; a plain
+`./build/pages` start is unchanged. See [development server](../../docs/api.md#development-server-and-live-reload).

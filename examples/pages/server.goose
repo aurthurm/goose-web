@@ -22,7 +22,7 @@ fn render_list(c: web::Ctx&) {
 }
 
 fn app(c: web::Ctx&) {
-    request_id(c) { c.logger() {
+    request_id(c) { c.logger() { web::live_reload(c) {
         c.routes() {
             c.get("/") { render_list(c); };
             c.post("/todos") {
@@ -41,7 +41,7 @@ fn app(c: web::Ctx&) {
                 c.redirect("/", web::HTTP_SEE_OTHER);
             };
         };
-    }};
+    }}};
 }
 
 fn main() {

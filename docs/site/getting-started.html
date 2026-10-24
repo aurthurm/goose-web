@@ -138,6 +138,16 @@ fn main() {
 curl http://127.0.0.1:8080/hello/Ada
 # {"message":"Hello, Ada"}</code></pre>
 
+<h2>Develop with reload</h2>
+<p>To rebuild on save, run the program through the development server. It builds the program, starts it, and
+restarts it after each successful change; the open page reloads by itself. A failed build shows the compiler
+error over the page and keeps the old server running until the next good build.</p>
+<pre><code>python3 scripts/dev.py server.goose                # the starter's scripts/dev.py, port 8080
+python3 scripts/dev.py server.goose --port 9000    # other port; the reload endpoint takes the next one</code></pre>
+<p>The page gets its reload script from <code>web::live_reload(c)</code> in the middleware. It is inert in a
+normal start, so it can stay in the code. The <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md#development-server-and-live-reload">development
+server reference</a> lists the options and the events.</p>
+
 <h2>Stop the server</h2>
 <p>With <code>config.handle_signals = true</code>, Ctrl+C or SIGTERM stops accepting connections and drains open ones for
 a grace period of five seconds by default. The starter sets it. Signal handling is off by default, so the example

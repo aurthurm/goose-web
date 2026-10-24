@@ -81,6 +81,10 @@ def main():
             if updated != text:
                 path.write_text(updated, encoding="utf-8")
 
+    # The development server (rebuild and reload on change) is copied in, so the project runs without this checkout.
+    (destination / "scripts").mkdir(exist_ok=True)
+    shutil.copy2(ROOT / "scripts" / "dev.py", destination / "scripts" / "dev.py")
+
     print(f"created {destination}")
     print(f"import goose_web from \"{source}\";")
     print(f"next: cd {destination} && python3 test.py")
