@@ -23,11 +23,15 @@ const CSRF_MAX_TOKEN_BYTES = 96;
 struct SessionEntry { key: u8[..32] = "", value: u8[..256] = "" }
 
 // Entries 0..count-1 are live. dirty means the store changed and the cookie must be re-issued.
+// id is the shared-store record of a server-side session (SessionConfig.store); max_payload is the
+// largest payload the mode can hold: the cookie bound, or one shared-store value in store mode.
 struct SessionState {
     active: bool = false,
     dirty: bool = false,
     count: i64 = 0,
     entries: SessionEntry[16],
+    id: u8[..43] = "",
+    max_payload: i64 = SESSION_MAX_PAYLOAD_BYTES,
 }
 
 // The token for this request: the cookie value that matched, or a freshly minted one.

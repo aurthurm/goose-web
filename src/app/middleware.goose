@@ -6,7 +6,9 @@ import src.http.errors;
 import src.http.request;
 import src.app.context;
 import src.app.respond;
+import src.app.shared;
 import src.sys.process;
+import src.sys.shared;
 import std;
 namespace web;
 
@@ -171,11 +173,32 @@ fn rate_take(key: const u8[:], limit: i64, window_ns: i64, now: i64) -> bool, i6
 // with no known peer share one bucket.
 fn rate_limit<Next>(c: Ctx&, limit: i64, window_ms: i64) {
     assert(limit > 0 && window_ms > 0 && window_ms <= MAX_TIMEOUT_MS);
-    var key: u8[>..] = [];
-    key.append(peer(c));
-    key.push('|');
-    format(key, limit, "/", window_ms);
-    let allowed, retry_ns = rate_take(key[..], limit, window_ms * NANOSECONDS_PER_MILLISECOND, clock_ns());
+    var allowed = false;
+    var retry_ns: i64 = 0;
+    var counted = false;
+    if shared_enabled() {
+        // With the shared store every worker counts into one window, so the limit holds across processes.
+        // If the store cannot take the count (its table is full), the per-process table below decides.
+        var key: u8[>..] = [];
+        key.append("rl:");
+        key.append(peer(c));
+        format(key, ":", limit, ":", window_ms);
+        let count, remaining_ms, ok = shared_incr_window(key[..], 1, window_ms);
+        if ok {
+            counted = true;
+            allowed = count <= limit;
+            retry_ns = remaining_ms * NANOSECONDS_PER_MILLISECOND;
+        }
+    }
+    if !counted {
+        var key: u8[>..] = [];
+        key.append(peer(c));
+        key.push('|');
+        format(key, limit, "/", window_ms);
+        let local_allowed, local_retry_ns = rate_take(key[..], limit, window_ms * NANOSECONDS_PER_MILLISECOND, clock_ns());
+        allowed = local_allowed;
+        retry_ns = local_retry_ns;
+    }
     if !allowed {
         var seconds: u8[>..] = [];
         format(seconds, (retry_ns + NANOSECONDS_PER_SECOND - 1) / NANOSECONDS_PER_SECOND);

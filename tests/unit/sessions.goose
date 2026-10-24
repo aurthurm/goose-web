@@ -239,6 +239,74 @@ fn test_without_middleware() {
     assert(shared_response.set_cookie_line.len == 0);
 }
 
+// Store mode: the cookie carries "id.tag" and the data lives in the shared store under the id.
+fn test_store_mode() {
+    assert(web::shared_store_open(web::DEFAULT_SHARED_STORE_BYTES));
+    let stored = web::SessionConfig { secret: SECRET, store: true };
+    assert(web::session_config_valid(stored));
+    assert(!web::session_config_valid(web::SessionConfig { secret: SECRET, store: true, max_age: web::SHARED_TTL_MAX_MS }));
+    var c = make_ctx("GET", "/", "Host: x\r\n", "");
+    session(c, stored) {
+        assert(session_set(c, "user", "bob"));
+    };
+    let line = shared_response.set_cookie_line[..];
+    var token: u8[>..] = [];
+    token.append(value_of(line));
+    // The id is 43 characters, a dot, then the tag; the cookie itself holds no session data.
+    assert(token.len == 87 && token[43] == '.');
+
+    // The next request loads the record: the value is there and the cookie is not re-issued.
+    var headers = cookie_headers(token[..]);
+    shared_response = web::response();
+    var again = make_ctx("GET", "/", headers[..], "");
+    session(again, stored) {
+        assert(session_get(again, "user") == "bob");
+    };
+    assert(shared_response.set_cookie_line.len == 0);
+
+    // A forged tag gives an empty session, and so does a record that is gone from the store.
+    var forged: u8[>..] = [];
+    forged.append(token[..43]);
+    forged.push('.');
+    forged.append(token[44..86]);
+    forged.push(if token[86] == 'A' { 'B' } else { 'A' });
+    var forged_headers = cookie_headers(forged[..]);
+    shared_response = web::response();
+    var forger = make_ctx("GET", "/", forged_headers[..], "");
+    session(forger, stored) {
+        assert(session_get(forger, "user") == "");
+    };
+    assert(shared_response.set_cookie_line.len == 0);
+
+    // Logout deletes the record: the cookie expires, and the same cookie then holds nothing.
+    var logout = make_ctx("POST", "/logout", headers[..], "");
+    session(logout, stored) {
+        session_clear(logout);
+    };
+    assert(find(shared_response.set_cookie_line[..], "gw_session=; Path=/; Max-Age=0") == 0);
+    var key: u8[>..] = [];
+    key.append("sess:");
+    key.append(token[..43]);
+    var record: u8[>..] = [];
+    assert(!web::shared_get(key[..], record));
+    var gone = make_ctx("GET", "/", headers[..], "");
+    session(gone, stored) {
+        assert(session_get(gone, "user") == "");
+    };
+    assert(shared_response.set_cookie_line.len == 0);
+
+    // Values beyond one shared-store value are refused, since a record is a single value.
+    var big: u8[>..] = [];
+    big.resize(web::SESSION_MAX_VALUE_BYTES, 'x');
+    var full = make_ctx("GET", "/", "Host: x\r\n", "");
+    session(full, stored) {
+        assert(session_set(full, "a", big[..]));
+        assert(session_set(full, "b", big[..]));
+        assert(session_set(full, "c", big[..]));
+        assert(!session_set(full, "d", big[..]));
+    };
+}
+
 fn main() {
     test_crypto_wrappers();
     test_config_checks();
@@ -248,5 +316,6 @@ fn main() {
     test_expiry_and_clock_skew();
     test_size_limits();
     test_without_middleware();
+    test_store_mode();
     print("Session and crypto unit tests passed: SHA-256, HMAC, base64url, round trip, tampering, expiry, size limits");
 }

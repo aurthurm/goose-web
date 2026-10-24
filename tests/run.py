@@ -62,6 +62,7 @@ def main():
                 ("app_templates", "tests/unit/app_templates.goose"),
                 ("sessions", "tests/unit/sessions.goose"), ("csrf", "tests/unit/csrf.goose"),
                 ("live_reload", "tests/unit/live_reload.goose"),
+                ("shared", "tests/unit/shared.goose"),
                 ("parser_fuzz", "tests/fuzz/parser.goose"), ("features", "tests/fixtures/features.goose"),
                 ("app", "tests/fixtures/app.goose"), ("routing", "tests/fixtures/routing.goose"),
                 ("hello", "examples/hello/server.goose"),
@@ -77,7 +78,8 @@ def main():
                        env=env, check=True, cwd=ROOT)
     for name in ("core", "router", "application", "app_routes", "app_security", "app_middleware", "app_params", "constants",
                  "http_parser", "json_codec", "todo_query", "todo_api", "app_openapi", "app_templates", "parser_fuzz",
-                 "app_config", "global_names", "sse", "sessions", "csrf", "live_reload", "stats_record", "scheduler", "jobs") + (("db",) if with_sqlite else ()):
+                 "app_config", "global_names", "sse", "sessions", "csrf", "live_reload", "stats_record", "scheduler", "jobs",
+                 "shared") + (("db",) if with_sqlite else ()):
         # Run from the repository root: the static file checks use tests/fixtures/static.
         subprocess.run([str(BUILD / name)], check=True, timeout=60, cwd=ROOT)
     with tempfile.TemporaryDirectory(prefix="goose-todo-unit-") as directory:
@@ -98,6 +100,9 @@ def main():
     subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/process.c"),
                     "-o", str(BUILD / "process")], check=True)
     subprocess.run([str(BUILD / "process")], check=True)
+    subprocess.run([cc, "-std=c11", "-Wall", "-Wextra", "-Werror", str(ROOT / "tests/native/shared.c"),
+                    "-o", str(BUILD / "shared_native")], check=True)
+    subprocess.run([str(BUILD / "shared_native")], check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/http.py"), str(BUILD / "features")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/app.py"), str(BUILD / "app")], env=env, check=True)
     subprocess.run([sys.executable, str(ROOT / "tests/integration/routing.py"), str(BUILD / "routing")], env=env, check=True)

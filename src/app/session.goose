@@ -1,11 +1,14 @@
 import src.constants.http;
 import src.constants.limits;
+import src.constants.runtime;
 import src.http.headers;
 import src.app.context;
 import src.app.cookies;
 import src.app.session_state;
 import src.sys.crypto;
 import src.sys.process;
+import src.sys.shared;
+import src.app.shared;
 import std;
 namespace web;
 
@@ -21,12 +24,16 @@ namespace web;
 // The issue time is refreshed whenever the store changes. The cookie expires max_age seconds
 // after its issue time, and the server refuses it at that moment too.
 
+// store = false (the default) keeps the whole session in the cookie. store = true keeps it in the shared
+// store (docs/api.md#sessions): the cookie carries a random id and a tag, and the data lives in the store under
+// that id for max_age seconds. Store mode needs the shared store (ServerConfig.shared_store_bytes > 0).
 struct SessionConfig {
     secret: const u8[:],
     cookie: u8[..32] = "gw_session",
     max_age: i64 = 86400,
     secure: bool = false,
     same_site: u8[..8] = "Lax",
+    store: bool = false,
 }
 
 const SESSION_PAYLOAD_VERSION = 1;
@@ -35,6 +42,9 @@ const SESSION_HEADER_BYTES = 10;
 // Key length, value length and the entry count are fixed-width fields of each entry.
 const SESSION_ENTRY_OVERHEAD_BYTES = 3;
 const SESSION_TAG_LABEL = "gw-session|";
+// Store mode: the record id is 32 random bytes in base64url (43 characters); its tag is keyed separately.
+const SESSION_ID_TAG_LABEL = "gw-session-id|";
+const SESSION_RECORD_PREFIX = "sess:";
 
 // Whether a config can be honoured. The middleware asserts this: a short secret or an
 // impossible attribute is a defect in the application, not a client error.
@@ -42,6 +52,8 @@ fn session_config_valid(config: SessionConfig) -> bool {
     if config.secret.len < SESSION_MIN_SECRET_BYTES { return false; }
     if config.cookie.len == 0 || !token(config.cookie[..]) { return false; }
     if config.max_age <= 0 { return false; }
+    // A stored record expires with max_age, and the store's longest time-to-live is SHARED_TTL_MAX_MS.
+    if config.store && config.max_age > SHARED_TTL_MAX_MS / 1000 { return false; }
     let same_site, ok = cookie_same_site(config.same_site[..]);
     if !ok || same_site.len == 0 { return false; }
     return !(equal_header(same_site, "None") && !config.secure);
@@ -136,6 +148,31 @@ fn session_value(c: Ctx&, secret: const u8[:], issued: i64, out: u8[>..]&) {
     out.append(tag[..]);
 }
 
+// Store mode: authenticates "id.tag", then loads the record the id names. Returns false, with an empty
+// store, when the cookie is absent, malformed, forged, the record is gone or expired, or the record is malformed.
+fn session_load_stored(c: Ctx&, secret: const u8[:], raw: const u8[:], now: i64, max_age: i64) -> bool {
+    c.session_state.count = 0;
+    c.session_state.id.clear();
+    if raw.len == 0 || raw.len > MAX_COOKIE_LINE_BYTES || now <= 0 { return false; }
+    let dot = find(raw, ".");
+    if dot != BASE64URL_32_BYTES || find(raw[dot + 1..], ".") >= 0 { return false; }
+    let id = raw[..dot];
+    var expected: u8[>..] = [];
+    session_id_tag(expected, secret, id);
+    if !constant_time_equal(expected[..], raw[dot + 1..]) { return false; }
+    var key: u8[>..] = [];
+    session_record_key(key, id);
+    var payload: u8[>..] = [];
+    if !shared_get(key[..], payload) { return false; }
+    let issued = session_read_payload(c, payload[..]);
+    if issued < 0 || issued > now + SESSION_CLOCK_SKEW_SECONDS || now - issued >= max_age {
+        c.session_state.count = 0;
+        return false;
+    }
+    c.session_state.id = id;
+    return true;
+}
+
 // Authenticates a cookie value and loads its store into c.session_state. Returns false, with
 // an empty store, when the value is absent, malformed, forged, issued in the future, or expired.
 fn session_load(c: Ctx&, secret: const u8[:], raw: const u8[:], now: i64, max_age: i64) -> bool {
@@ -158,6 +195,56 @@ fn session_load(c: Ctx&, secret: const u8[:], raw: const u8[:], now: i64, max_ag
     return true;
 }
 
+// Store mode: the record key for an id, "sess:" followed by the id text.
+fn session_record_key(out: u8[>..]&, id: const u8[:]) {
+    out.clear();
+    out.append(SESSION_RECORD_PREFIX);
+    out.append(id);
+}
+
+// Appends the tag of a store-mode id: HMAC-SHA256 of the id under the secret, with its own label.
+fn session_id_tag(out: u8[>..]&, secret: const u8[:], id: const u8[:]) {
+    var message: u8[>..] = [];
+    message.append(SESSION_ID_TAG_LABEL);
+    message.append(id);
+    let tag = hmac_sha256(secret, message[..]);
+    base64url_append(out, tag[..]);
+}
+
+// Store mode: writes the record for the current entries under a fresh or existing id, and appends the
+// cookie value "id.tag". With no entries the record is deleted and the cookie expires. Returns false, with
+// the record unchanged, when the write fails or no entropy is available, so the response keeps the old cookie.
+fn session_store_write(c: Ctx&, config: SessionConfig, now: i64, line: u8[>..]&) -> bool {
+    if c.session_state.count == 0 {
+        if c.session_state.id.len > 0 {
+            var key: u8[>..] = [];
+            session_record_key(key, c.session_state.id[..]);
+            shared_delete(key[..]);
+            c.session_state.id.clear();
+        }
+        line.append("; Path=/; Max-Age=0");
+        return true;
+    }
+    if c.session_state.id.len == 0 {
+        var raw_id: u8[32] = [0; 32];
+        if !random_bytes(raw_id[..]) { return false; }
+        var id_text: u8[>..] = [];
+        base64url_append(id_text, raw_id[..]);
+        c.session_state.id = id_text[..];
+    }
+    var payload: u8[>..] = [];
+    session_write_payload(c, payload, now);
+    var key: u8[>..] = [];
+    session_record_key(key, c.session_state.id[..]);
+    if !shared_set(key[..], payload[..], config.max_age * 1000) { return false; }
+    let id = c.session_state.id[..];
+    line.append(id);
+    line.push('.');
+    session_id_tag(line, config.secret, id);
+    format(line, "; Path=/; Max-Age=", config.max_age);
+    return true;
+}
+
 // Writes the Set-Cookie line for the store: the new value while entries remain, or an expired
 // cookie (Max-Age=0) when the store is empty. Lines over MAX_COOKIE_LINE_BYTES are not written;
 // session_set bounds the payload so that cannot happen.
@@ -167,7 +254,9 @@ fn session_emit(c: Ctx&, config: SessionConfig) {
     var line: u8[>..] = [];
     line.append(config.cookie[..]);
     line.push('=');
-    if c.session_state.count > 0 {
+    if config.store {
+        if !session_store_write(c, config, now, line) { return; }
+    } else if c.session_state.count > 0 {
         session_value(c, config.secret, now, line);
         format(line, "; Path=/; Max-Age=", config.max_age);
     } else {
@@ -186,10 +275,16 @@ fn session_emit(c: Ctx&, config: SessionConfig) {
 // left for the client to drop.
 fn session<Next>(c: Ctx&, config: SessionConfig) {
     assert(session_config_valid(config));
+    assert(!config.store || shared_enabled());
     c.session_state.active = true;
     c.session_state.dirty = false;
+    c.session_state.max_payload = if config.store { SHARED_VALUE_MAX_BYTES } else { SESSION_MAX_PAYLOAD_BYTES };
     let raw = cookie(c, config.cookie[..]);
-    session_load(c, config.secret, raw, unix_seconds(), config.max_age);
+    if config.store {
+        session_load_stored(c, config.secret, raw, unix_seconds(), config.max_age);
+    } else {
+        session_load(c, config.secret, raw, unix_seconds(), config.max_age);
+    }
     Next();
     if c.session_state.dirty { session_emit(c, config); }
 }
@@ -204,7 +299,8 @@ fn session_get(c: Ctx&, key: const u8[:]) -> const u8[:] {
 
 // Stores value under key, replacing an earlier value. Returns false, with the store unchanged,
 // when no session middleware is installed, the key or value is out of bounds, the store is full,
-// the clock is unavailable, or the payload would exceed SESSION_MAX_PAYLOAD_BYTES. Setting a key
+// the clock is unavailable, or the payload would exceed the mode's bound (SESSION_MAX_PAYLOAD_BYTES in
+// cookie mode, one shared-store value in store mode). Setting a key
 // to the value it already has does not mark the store changed.
 fn session_set(c: Ctx&, key: const u8[:], value: const u8[:]) -> bool {
     if !c.session_state.active || key.len == 0 || key.len > SESSION_MAX_KEY_BYTES { return false; }
@@ -221,7 +317,7 @@ fn session_set(c: Ctx&, key: const u8[:], value: const u8[:]) -> bool {
         if c.session_state.count == SESSION_MAX_ENTRIES { return false; }
         size += SESSION_ENTRY_OVERHEAD_BYTES + key.len + value.len;
     }
-    if size > SESSION_MAX_PAYLOAD_BYTES { return false; }
+    if size > c.session_state.max_payload { return false; }
     if index >= 0 {
         c.session_state.entries[index].value = value;
     } else {

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Pre-forked workers: concurrent clients across processes, a crashed worker is replaced, SIGTERM drains all,
 aggregated stats, workers=0 means one worker per CPU, the restart budget stops the server, a worker that
-outlives the shutdown grace is SIGKILLed, and the stats of a crashed worker are lost while the rest are summed.
+outlives the shutdown grace is SIGKILLed, the stats of a crashed worker are lost while the rest are summed,
+and the shared store works across workers (a global rate limit, server-side sessions, and an event
+published in one worker reaching a stream held by another).
 Usage: workers.py [path-to-the-workers-fixture]."""
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -37,6 +40,24 @@ def request(port, path):
         return None, b""
     head, _, body = data.partition(b"\r\n\r\n")
     return int(head.split(b" ")[1]), body
+
+
+def send(port, method, path, body=b"", headers=()):
+    """One request on a fresh connection with optional headers. Returns (status, header lines, body)."""
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as client:
+        extra = "".join(f"{name}: {value}\r\n" for name, value in headers)
+        head = (f"{method} {path} HTTP/1.1\r\nHost: x\r\nConnection: close\r\n{extra}"
+                f"Content-Length: {len(body)}\r\n\r\n")
+        client.sendall(head.encode() + body)
+        data = b""
+        while True:
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    head, _, rest = data.partition(b"\r\n\r\n")
+    lines = head.decode().split("\r\n")
+    return int(lines[0].split(" ")[1]), lines[1:], rest
 
 
 def workers_of(parent):
@@ -119,9 +140,15 @@ def test_crash_is_replaced(executable):
         for _ in range(50):
             status, body = request(port, "/health")
             assert status == 200 and body == b"ok", (status, body)
-        results = [request(port, "/pid") for _ in range(200)]
-        assert all(status == 200 for status, _ in results)
-        served = {int(body) for _, body in results}
+        # Accept order can favour the older workers, so requests go out concurrently in rounds until the
+        # replacement answers, for up to five seconds.
+        served = set()
+        deadline = time.monotonic() + 5
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            while not (served & replacement) and time.monotonic() < deadline:
+                results = list(pool.map(lambda _: request(port, "/pid"), range(200)))
+                assert all(status == 200 for status, _ in results)
+                served |= {int(body) for _, body in results}
         assert served & replacement, "the replacement worker never served a request"
         print(f"  a crashed worker was replaced by pid {sorted(replacement)}; service continued")
     finally:
@@ -252,6 +279,103 @@ def test_zero_means_one_per_cpu(executable):
         assert code == 0, code
 
 
+def test_rate_limit_is_global(executable):
+    """/limited allows 20 requests a minute. Sixty concurrent requests land on several workers; exactly 20 may pass."""
+    process, port = start(executable, 4)
+    try:
+        assert wait_for(lambda: len(workers_of(process)) == 4, 3)
+        with ThreadPoolExecutor(max_workers=12) as pool:
+            statuses = list(pool.map(lambda _: send(port, "GET", "/limited")[0], range(60)))
+        passed, refused = statuses.count(200), statuses.count(429)
+        assert passed == 20 and refused == 40, statuses
+        served = {int(send(port, "GET", "/pid")[2]) for _ in range(40)}
+        assert len(served) >= 2, f"expected several workers, saw {served}"
+        print(f"  rate limit held across workers: {passed} passed, {refused} refused, workers {len(served)}")
+    finally:
+        code, _ = stop(process)
+        assert code == 0, code
+
+
+def test_sessions_across_workers(executable):
+    """A server-side session written by one worker is read by others; a forged cookie reads nothing."""
+    process, port = start(executable, 4)
+    try:
+        assert wait_for(lambda: len(workers_of(process)) == 4, 3)
+        status, headers, _ = send(port, "GET", "/session/set/alice")
+        assert status == 200
+        set_cookie = next((line for line in headers if line.lower().startswith("set-cookie: gw_session=")), None)
+        assert set_cookie, headers
+        cookie = set_cookie.split("=", 1)[1].split(";", 1)[0]
+        assert len(cookie) == 87 and cookie[43] == ".", cookie  # id, dot, tag: the data is not in the cookie
+        pids = set()
+        for _ in range(40):
+            status, _, body = send(port, "GET", "/session/get", headers=[("Cookie", f"gw_session={cookie}")])
+            assert status == 200 and body.startswith(b"alice "), body
+            pids.add(int(body.split()[1]))
+        assert len(pids) >= 2, f"expected several workers to read the session, saw {pids}"
+        forged = cookie[:-1] + ("B" if cookie[-1] == "A" else "A")
+        status, _, body = send(port, "GET", "/session/get", headers=[("Cookie", f"gw_session={forged}")])
+        assert status == 200 and body.startswith(b" "), body
+        print(f"  server-side session read by {len(pids)} workers; a forged cookie reads nothing")
+    finally:
+        code, _ = stop(process)
+        assert code == 0, code
+
+
+def read_matching(stream, buffer, pattern, seconds=5):
+    """Reads from stream until pattern matches the accumulated bytes. Returns (match, buffer)."""
+    deadline = time.monotonic() + seconds
+    while True:
+        found = re.search(pattern, buffer)
+        if found:
+            return found, buffer
+        if time.monotonic() > deadline:
+            raise AssertionError(f"timed out waiting for {pattern!r} in {buffer[-200:]!r}")
+        try:
+            chunk = stream.recv(65536)
+        except socket.timeout:
+            continue
+        if not chunk:
+            raise AssertionError(f"stream closed waiting for {pattern!r}")
+        buffer += chunk
+
+
+def test_events_across_workers(executable):
+    """A stream held by one worker receives events published by requests that other workers serve."""
+    process, port = start(executable, 4)
+    stream = None
+    try:
+        assert wait_for(lambda: len(workers_of(process)) == 4, 3)
+        stream = socket.create_connection(("127.0.0.1", port), timeout=1)
+        stream.sendall(b"GET /stream/9 HTTP/1.1\r\nHost: x\r\n\r\n")
+        # The worker that holds the stream announces its process id as the first event.
+        hello, buffer = read_matching(stream, b"", rb"event: hello\ndata: (\d+)\n")
+        holder = int(hello.group(1))
+        publishers = set()
+        sent = 0
+        for i in range(40):
+            status, _, body = send(port, "POST", f"/publish/9", f"m{i}".encode())
+            assert status == 200, status
+            publisher, subscribers = body.decode().split(":")
+            assert subscribers == "1", body  # one stream on channel 9, in whichever worker holds it
+            publishers.add(int(publisher))
+            sent += 1
+            if publishers - {holder}:
+                break
+        assert publishers - {holder}, f"every publish came from the stream's own worker {holder}: {publishers}"
+        last = -1
+        for i in range(sent):
+            found, buffer = read_matching(stream, buffer, rb"event: msg\ndata: m%d\n" % i)
+            assert found.start() > last, "events arrived out of order"
+            last = found.start()
+        print(f"  stream held by pid {holder} received {sent} events published by pids {sorted(publishers)}")
+    finally:
+        if stream is not None:
+            stream.close()
+        code, _ = stop(process)
+        assert code == 0, code
+
+
 def main():
     executable = Path(sys.argv[1]) if len(sys.argv) > 1 else BUILD / "workers"
     test_concurrent_across_processes(executable)
@@ -261,9 +385,13 @@ def main():
     test_sigkill_after_shutdown_grace(executable)
     test_crashed_worker_stats_are_lost(executable)
     test_zero_means_one_per_cpu(executable)
+    test_rate_limit_is_global(executable)
+    test_sessions_across_workers(executable)
+    test_events_across_workers(executable)
     print("Worker process tests passed: concurrent clients across processes, crash replacement, "
           "SIGTERM drain, aggregated stats, restart budget, SIGKILL after grace, lost stats of a crashed "
-          "worker, one worker per CPU")
+          "worker, one worker per CPU, a global rate limit, server-side sessions across workers, "
+          "events across workers")
 
 
 if __name__ == "__main__":
