@@ -67,9 +67,9 @@
 
 ## Milestone 4: asynchronous application work
 
-- Typed worker jobs/completions without sharing borrowed request memory.
-- Cooperative task states, cancellation, and timers integrated with readiness.
-- Benchmarks covering slow clients, queue saturation, latency, and memory bounds.
+- [x] Typed worker jobs and completions: `web::job_pool` runs pure-Goose work on threads over bounded typed queues, with correlation ids, lost-job reports, worker restarts and shutdown joins; example `examples/jobs`.
+- [x] Timers integrated with readiness: `web::every`, `after`, `cancel` and `due` run from the tick, and `hint_wakeup` wakes the reactor for the next due task.
+- Cancellation of a running job, and cooperative task states.- Benchmarks covering slow clients, queue saturation, latency, and memory bounds.
 
 Async network I/O is implemented now. Language-level async/await is not implied by
 this roadmap: application suspension must fit the upstream compiler's memory model.

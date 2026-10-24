@@ -8,6 +8,17 @@ The entries before 0.6.0 were design milestones, not published releases. They ar
 from [ROADMAP.md](ROADMAP.md) and the design notes in [docs/design/app-api.md](docs/design/app-api.md),
 because the repository has no tag history for them.
 
+## Unreleased
+
+### Added
+
+- Reactor scheduler (`web::scheduler`, `every`, `after`, `cancel`, `due`, `hint_wakeup`): bounded periodic and
+  one-shot tasks run from the tick, monotonic times, documented catch-up rule. `ServerControl.wake_at_ns` shortens
+  the poll wait to the next due task. See [Scheduler](docs/api.md#scheduler).
+- Background job pool (`web::job_pool`, `job_start`, `job_submit`, `job_drain`, `job_stop`, `job_worker`): pure-Goose
+  work on contained worker threads over typed queues, with a bounded queue (503 when full), correlation ids, lost-job
+  reports and worker restarts. See [Background jobs](docs/api.md#background-jobs) and [examples/jobs](examples/jobs/README.md).
+
 ## 0.6.0
 
 First release that can be consumed as a fetched package (`import goose_web from "aurthurm/goose-web@v0.6.0";`).

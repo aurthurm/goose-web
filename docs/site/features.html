@@ -56,7 +56,7 @@ li{margin:.25em 0}
 application API; nothing here needs a separate server or a code generator.</p>
 
 <div class="toc">
-  <a href="#templates">Templates</a><a href="#sessions">Sessions</a><a href="#csrf">CSRF</a><a href="#openapi">OpenAPI</a><a href="#sqlite">SQLite</a><a href="#sse">Server-sent events</a>
+  <a href="#templates">Templates</a><a href="#sessions">Sessions</a><a href="#csrf">CSRF</a><a href="#openapi">OpenAPI</a><a href="#sqlite">SQLite</a><a href="#sse">Server-sent events</a><a href="#jobs">Jobs and scheduler</a>
 </div>
 
 <h2 id="templates">Templates</h2>
@@ -212,6 +212,31 @@ fn main() {
 </ul>
 <p>The <a href="https://github.com/aurthurm/goose-web/tree/main/examples/sse-clock">sse-clock example</a> adds a browser page
 that uses <code>EventSource</code>.</p>
+
+<h2 id="jobs">Scheduler and background jobs</h2>
+<p>A bounded scheduler runs periodic and one-shot tasks from the tick, on the reactor, with monotonic times and a
+documented catch-up rule: a late periodic task runs once and skips the intervals it missed.</p>
+<pre><code>var sched = web::scheduler();
+
+fn tick() {
+    web::due(sched) { id =&gt; run_task(id) };
+    web::hint_wakeup(sched, control);
+}
+
+fn main() {
+    assert(web::every(sched, 1, 30000));   // every 30 seconds
+    // ...
+}</code></pre>
+<p>CPU-heavy or blocking work goes to a job pool of worker threads. Jobs are pure Goose, so a worker may not call
+the framework's C (sockets, the clock, SQLite, crypto); the compiler rejects that. A handler submits a job and gets a
+correlation id, or 0 when the queue is full, which becomes a <code>503</code>. The tick drains the replies, and
+<code>web::job_stop</code> joins the workers at shutdown.</p>
+<ul>
+  <li>At most <code>queue_limit</code> jobs are in flight, so memory is bounded.</li>
+  <li>A job that aborts ends only its worker: the job is reported as lost and the worker is started again.</li>
+  <li>The <a href="https://github.com/aurthurm/goose-web/tree/main/examples/jobs">jobs example</a> computes prime counts,
+  announces each result on an event stream, and drops old results on a 30-second schedule.</li>
+</ul>
 </main>
 <footer>Documentation for release 0.6.0. Details: <a href="https://github.com/aurthurm/goose-web/blob/main/docs/api.md">API reference</a>.</footer>
 </body>
