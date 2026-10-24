@@ -23,7 +23,8 @@ namespace web;
 // Size and blocking: the file's size is read from stat before any byte is read. A file over
 // the response cap (c.response.max_body) is refused with 500 file_too_large and is never read. Otherwise at most
 // size + 1 bytes are read (see read_bounded_file), on the reactor thread. A file that cannot be
-// read answers 500 file_read_failed. Keep served trees small and trusted. Symlinks are followed.
+// read answers 500 file_read_failed. Keep served trees small and trusted. Symbolic links are followed
+// only when their real target lies inside the directory; a link that leaves it answers 404.
 
 const CONTENT_TYPE_CSS = "text/css; charset=utf-8";
 const CONTENT_TYPE_JS = "text/javascript; charset=utf-8";
@@ -114,6 +115,8 @@ fn static_resolve(rel: const u8[:], directory: const u8[:], full: u8[>..]&) -> i
         full.append("/index.html");
     }
     if file_kind(full[..]) != FILE_KIND_REGULAR { return HTTP_NOT_FOUND; }
+    // A symbolic link that resolves outside the served directory is treated as missing.
+    if !file_within(directory, full[..]) { return HTTP_NOT_FOUND; }
     return HTTP_OK;
 }
 

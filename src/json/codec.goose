@@ -215,6 +215,10 @@ fn json_read_value<T>(d: JsonDecoder&, out: T&) {
         var scratch: u8[>..] = [];
         let text = json::read_string(d.r, scratch);
         if d.r.error.len > 0 { return; }
+        // Escapes can make bytes the input never held: a lone surrogate (\uD800) decodes to
+        // three bytes that are not UTF-8. Such text is refused here, so every decoded field
+        // is valid UTF-8 and the encoder's own check never fails on it later.
+        if !valid_utf8(text) { json_fail(d, "invalid UTF-8 in string"); return; }
         if !json_is_bytes(out[..]) { json_fail(d, "expected an array"); return; }
         if text.len > out.cap {
             json_reject(d, "string too long", "string_too_long", str("String should have at most ", out.cap, " characters"));

@@ -7,6 +7,7 @@ import src.http.request;
 import src.app.context;
 import src.app.respond;
 import src.app.shared;
+import src.app.proxy;
 import src.sys.process;
 import src.sys.shared;
 import std;
@@ -168,7 +169,7 @@ fn rate_take(key: const u8[:], limit: i64, window_ns: i64, now: i64) -> bool, i6
     return false, rate_entries[slot].window_start + window_ns - now;
 }
 
-// Fixed-window limit per client address (Request.peer), separate for each (limit, window_ms)
+// Fixed-window limit per client address (client_ip: the TCP peer unless trust_proxies set it), separate for each (limit, window_ms)
 // pair. A refused request gets 429 rate_limited with Retry-After in whole seconds. Requests
 // with no known peer share one bucket.
 fn rate_limit<Next>(c: Ctx&, limit: i64, window_ms: i64) {
@@ -181,7 +182,7 @@ fn rate_limit<Next>(c: Ctx&, limit: i64, window_ms: i64) {
         // If the store cannot take the count (its table is full), the per-process table below decides.
         var key: u8[>..] = [];
         key.append("rl:");
-        key.append(peer(c));
+        key.append(client_ip(c));
         format(key, ":", limit, ":", window_ms);
         let count, remaining_ms, ok = shared_incr_window(key[..], 1, window_ms);
         if ok {
@@ -192,7 +193,7 @@ fn rate_limit<Next>(c: Ctx&, limit: i64, window_ms: i64) {
     }
     if !counted {
         var key: u8[>..] = [];
-        key.append(peer(c));
+        key.append(client_ip(c));
         key.push('|');
         format(key, limit, "/", window_ms);
         let local_allowed, local_retry_ns = rate_take(key[..], limit, window_ms * NANOSECONDS_PER_MILLISECOND, clock_ns());

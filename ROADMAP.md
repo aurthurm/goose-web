@@ -57,6 +57,16 @@
 - [x] Browser live reload: `web::live_reload` injects the reload script only when `GOOSE_WEB_LIVE_RELOAD` is set; `reload` and `error` (overlay with the compiler output) events over SSE.
 - [x] The starter and the pages example use it; `new_project.py` copies `scripts/dev.py` into a new project.
 - Next: watch the imported package when it is fetched from GitHub; a file-change debounce tuned by measurement; reload of only the changed template.
+## Milestone 2.7: security review and authentication
+
+- [x] Security review with a threat model, a findings table with severity and status, and the fixes: [docs/security.md](docs/security.md).
+- [x] Static files keep symbolic links inside the served root; a link that leaves it answers 404.
+- [x] Process signals and reaps refuse pid 0 and negative pids; `getrandom` treats a zero return as failure; socket calls refuse negative lengths.
+- [x] JSON strings must be valid UTF-8 after escapes are decoded (a lone `\uD800` is refused); `redirect_local` accepts only local paths.
+- [x] PBKDF2-HMAC-SHA256 password hashing (RFC 7914 and published vectors, 600000 iterations by default, constant-time verification).
+- [x] HTTP Basic and Bearer middleware (`basic_auth`, `bearer_auth`) that store the verified subject for `c.auth_subject()`; HMAC-signed tokens with expiry, deliberately not JWT.
+- [x] Fuzzing for the JSON decoder and encoder, query, cookie and form parsing, template rendering with hostile data, and static path resolution, with recorded seeds; clang libFuzzer and AddressSanitizer harnesses for the base64url/HMAC/PBKDF2 and SQLite shim argument handling.
+- Next: a server-side session store with revocation, login lockout guidance, and coverage-guided fuzzing in CI.
 
 ## Milestone 3: protocol and platform coverage
 
@@ -70,7 +80,8 @@
 - [x] Linux epoll readiness behind one reactor API (level-triggered, registration per connection), poll kept as the portable fallback.
 - [x] Pre-forked worker processes (`workers`): shared listener, one reactor per worker, supervised restarts with backoff, graceful drain, aggregated stats; per-worker state and SQLite connections opened after fork are documented.
 - [x] Shared state across workers: a bounded shared store (entries, counters, `rate_limit`, server-side sessions, server-sent events across workers) with a robust lock; see [docs/api.md](docs/api.md#shared-store).
-- Shared store follow-ups: expose the lost-event count to Goose, and a per-entry lock-free read path if profiling shows the mutex matters.
+- [x] Shared store locking: the key/value table is striped (up to 16 robust mutexes, a key's hash picks one), the ring and the stream registry have their own locks, every lock wait is timed (`shared_lock_timeout_ms`, default 50 ms) so a stopped holder fails calls instead of stalling workers, and `web::shared_stats()` exposes the entry count, lock timeouts, recoveries and the lost-event count.
+- Shared store follow-ups: a lock-free read path for entries, if profiling shows the stripe locks matter; and a stripe-spill rule so a full stripe can borrow a slot from a neighbour (today a key is refused when its own stripe is full).
 - kqueue for BSD and macOS, and a Windows transport, measured under load.
 - TLS integration and deployment guidance.
 - [x] Custom TCP protocols (`web::tcp_serve`, `web::tcp_connect`): own readiness instance for up to 1024 connections, bounded write queues with pause/resume, lingering graceful close, line and length-prefixed framing, echo/chat/proxy examples, and socket tests (`tests/integration/tcp.py`).
@@ -83,6 +94,9 @@
 
 - [x] Typed worker jobs and completions: `web::job_pool` runs pure-Goose work on threads over bounded typed queues, with correlation ids, lost-job reports, worker restarts and shutdown joins; example `examples/jobs`.
 - [x] Timers integrated with readiness: `web::every`, `after`, `cancel` and `due` run from the tick, and `hint_wakeup` wakes the reactor for the next due task.
+- [x] HTTP operations (borrowables 5-8): structured JSON request logs, trusted-proxy client addresses, ETag with conditional GET, load shedding by reactor pressure and per-route body caps. See [Request logs, proxies, caching and load](docs/api.md#request-logs-proxies-caching-and-load).
+- Follow-up: gzip responses (zlib through the native shim), and a per-process concurrency limit if handlers ever run off the reactor.
+- Follow-up: second-resolution timestamps become millisecond ones once the native shim exposes `CLOCK_REALTIME` in nanoseconds.
 - Cancellation of a running job, and cooperative task states.- Benchmarks covering slow clients, queue saturation, latency, and memory bounds.
 
 Async network I/O is implemented now. Language-level async/await is not implied by

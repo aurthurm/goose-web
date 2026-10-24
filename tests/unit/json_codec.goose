@@ -245,7 +245,19 @@ fn test_json_key_duplicates() {
     assert(res.error == "duplicate JSON key name");
 }
 
+// Escapes that decode to bytes which are not UTF-8 are refused at decode time, so a text field
+// never holds them. A valid surrogate pair decodes to one 4-byte code point.
+fn test_surrogates() {
+    expect_error<Title>("{\"title\":\"\\uD800\",\"done\":true}", "invalid UTF-8 in string", "title");
+    expect_error<Title>("{\"title\":\"a\\uDC00b\",\"done\":true}", "invalid UTF-8 in string", "title");
+    expect_error<Title>("{\"title\":\"\\uD83D x\",\"done\":true}", "invalid UTF-8 in string", "title");
+    let back, res = web::json_decode<Title>("{\"title\":\"\\uD83D\\uDE00\",\"done\":false}");
+    assert(res.ok && back.title == "\xf0\x9f\x98\x80");
+    assert(encode(back) == "{\"title\":\"\xf0\x9f\x98\x80\",\"done\":false}");
+}
+
 fn main() {
+    test_surrogates();
     test_json_key_encode();
     test_json_key_decode();
     test_json_key_duplicates();

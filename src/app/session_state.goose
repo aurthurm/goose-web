@@ -34,6 +34,13 @@ struct SessionState {
     max_payload: i64 = SESSION_MAX_PAYLOAD_BYTES,
 }
 
+// The subject that basic_auth or bearer_auth verified for this request ("" when none did).
+// It is set only by a verifying middleware, so a handler can trust it when it is nonempty.
+const AUTH_SUBJECT_MAX_BYTES = 64;
+struct AuthState {
+    subject: u8[..64] = "",
+}
+
 // The token for this request: the cookie value that matched, or a freshly minted one.
 struct CsrfState {
     active: bool = false,

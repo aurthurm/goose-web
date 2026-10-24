@@ -27,6 +27,14 @@ static void expect_sha256(gw_bytes data, const char *hex) {
     assert(memcmp(digest, expected, 32) == 0);
 }
 
+/* Compares len bytes with a hex string of 2 * len characters. */
+static void expect_bytes_hex(const uint8_t *bytes, size_t len, const char *hex) {
+    uint8_t expected[128];
+    assert(strlen(hex) == 2 * len && len <= sizeof(expected));
+    hex_to_bytes(hex, expected);
+    assert(memcmp(bytes, expected, len) == 0);
+}
+
 static void expect_hmac(gw_bytes key, gw_bytes message, const char *hex) {
     uint8_t tag[32], expected[32];
     assert(gw_hmac_sha256(key, message, (gw_bytes){tag, 32}) == 0);
@@ -113,7 +121,42 @@ int main(void) {
     assert(gw_base64url_decode(text_of("Zm9v"), (gw_bytes){scratch, 2}) == GW_BASE64URL_ERROR);
     assert(gw_base64url_decode(text_of("Zg"), (gw_bytes){scratch, 1}) == 1);
 
-    puts("Crypto tests passed: FIPS 180-4 SHA-256, RFC 4231 HMAC cases 1-4, 6, 7, random bytes, "
-         "constant-time compare, strict base64url");
+    /* PBKDF2-HMAC-SHA256 (RFC 8018). The RFC 7914 section 11 vector (passwd, salt, c=1, 64 bytes),
+       the published vectors for c=1, 2 and 4096, a multi-block case and an embedded-NUL case.
+       Expected values were cross-checked against Python hashlib (OpenSSL). */
+    uint8_t derived[64];
+    assert(gw_pbkdf2_sha256(text_of("passwd"), text_of("salt"), 1, (gw_bytes){derived, 64}) == 0);
+    expect_bytes_hex(derived, 64, "55ac046e56e3089fec1691c22544b605f94185216dde0465e68b9d57c20dacbc"
+                                  "49ca9cccf179b645991664b39d77ef317c71b845b1e30bd509112041d3a19783");
+    assert(gw_pbkdf2_sha256(text_of("password"), text_of("salt"), 1, (gw_bytes){derived, 32}) == 0);
+    expect_bytes_hex(derived, 32, "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b");
+    assert(gw_pbkdf2_sha256(text_of("password"), text_of("salt"), 2, (gw_bytes){derived, 32}) == 0);
+    expect_bytes_hex(derived, 32, "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43");
+    assert(gw_pbkdf2_sha256(text_of("password"), text_of("salt"), 4096, (gw_bytes){derived, 32}) == 0);
+    expect_bytes_hex(derived, 32, "c5e478d59288c841aa530db6845c4c8d962893a001ce4e11a4963873aa98134a");
+    assert(gw_pbkdf2_sha256(text_of("passwordPASSWORDpassword"), text_of("saltSALTsaltSALTsaltSALTsaltSALTsalt"),
+                            4096, (gw_bytes){derived, 40}) == 0);
+    expect_bytes_hex(derived, 40, "348c89dbcbd32b2f32d814b8116e84cf2b17347ebc1800181c4e2a1fb8dd53e1"
+                                  "c635518c7dac47e9");
+    /* Embedded NUL bytes are data when the lengths are given: the 9-byte password is not "pass". */
+    assert(gw_pbkdf2_sha256((gw_bytes){(uint8_t *)"pass\0word", 9}, (gw_bytes){(uint8_t *)"sa\0lt", 5}, 4096,
+                            (gw_bytes){derived, 16}) == 0);
+    expect_bytes_hex(derived, 16, "89b69d0516f829893c696226650a8687");
+    /* Bad arguments are refused: zero or too many iterations, and empty or oversize output. */
+    assert(gw_pbkdf2_sha256(text_of("p"), text_of("s"), 0, (gw_bytes){derived, 32}) == -1);
+    assert(gw_pbkdf2_sha256(text_of("p"), text_of("s"), 0x100000000LL, (gw_bytes){derived, 32}) == -1);
+    assert(gw_pbkdf2_sha256(text_of("p"), text_of("s"), 1, (gw_bytes){derived, 0}) == -1);
+    assert(gw_pbkdf2_sha256(text_of("p"), text_of("s"), 1, (gw_bytes){derived, 1025}) == -1);
+    /* A key over one block is hashed first; the result is deterministic and depends on the salt. */
+    uint8_t long_key[100], again[32], other[32];
+    memset(long_key, 'k', sizeof(long_key));
+    assert(gw_pbkdf2_sha256((gw_bytes){long_key, 100}, text_of("salt"), 3, (gw_bytes){again, 32}) == 0);
+    assert(gw_pbkdf2_sha256((gw_bytes){long_key, 100}, text_of("salt"), 3, (gw_bytes){other, 32}) == 0);
+    assert(memcmp(again, other, 32) == 0);
+    assert(gw_pbkdf2_sha256((gw_bytes){long_key, 100}, text_of("salt2"), 3, (gw_bytes){other, 32}) == 0);
+    assert(memcmp(again, other, 32) != 0);
+
+    puts("Crypto tests passed: FIPS 180-4 SHA-256, RFC 4231 HMAC cases 1-4, 6, 7, PBKDF2-HMAC-SHA256 "
+         "(RFC 7914 and published vectors), random bytes, constant-time compare, strict base64url");
     return 0;
 }

@@ -38,7 +38,10 @@ int32_t gw_cpu_count(void) {
     return (int32_t)n;
 }
 
+/* Signals one child process. pid must be positive: kill(0, s) signals the caller's process group,
+   kill(-1, s) every process the user may signal, and both are refused here. */
 int32_t gw_kill(int32_t pid, int32_t signal_number) {
+    if (pid <= 0) return GW_IO_ERROR;
     return kill((pid_t)pid, signal_number) == 0 ? 0 : GW_IO_ERROR;
 }
 
@@ -47,6 +50,9 @@ int32_t gw_kill(int32_t pid, int32_t signal_number) {
    A wait error (for example the child was already reaped) also counts as reaped, with status -1. */
 int32_t gw_wait_child(int32_t pid, int32_t *status) {
     int raw = 0;
+    /* pid <= 0 would wait for any child (waitpid(-1) or a process group), so it is refused as
+       a wait error: the caller reads it as reaped with status -1. */
+    if (pid <= 0) { *status = -1; return GW_CHILD_REAPED; }
     pid_t r = waitpid((pid_t)pid, &raw, WNOHANG);
     if (r == 0) return GW_CHILD_RUNNING;
     if (r < 0) { *status = -1; return GW_CHILD_REAPED; }

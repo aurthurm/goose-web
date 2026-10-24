@@ -6,8 +6,9 @@
 #include <unistd.h>
 
 /* Native checks for the shared store: entries, expiry, counters, a full table, concurrent counters
-   across processes, recovery from a worker that dies holding the lock, the SSE ring under wrap and
-   lag, and the stream registry. */
+   across processes, recovery from a worker that dies holding a stripe lock, timed lock waits against a
+   stopped holder, the stats, the SSE ring under wrap and lag, the stream registry, and a contention run of
+   eight processes on separate keys. Built with -DGW_SHARED_STRIPES_MAX=1 the same checks run on one lock. */
 
 #define K(text) bytes_text(text)
 #define V(text) bytes_text(text)
@@ -31,6 +32,11 @@ static int64_t incr(const char *key, int64_t delta, int64_t ttl_ms, int64_t *val
     return gw_shared_incr(K(key), delta, ttl_ms, value, remaining);
 }
 
+/* The stripe a key of this test lives in. */
+static uint64_t stripe_for(const char *key) {
+    return stripe_of(shared_base, hash_key((const uint8_t *)key, strlen(key)));
+}
+
 static void test_disabled_and_sizes(void) {
     assert(gw_shared_open(0) == 0 && gw_shared_enabled() == 0);
     assert(gw_shared_set(K("k"), V("v"), 0) == -1);
@@ -38,6 +44,20 @@ static void test_disabled_and_sizes(void) {
     assert(gw_shared_open(1024) < 0);
     assert(gw_shared_open(GW_SHARED_MAX_BYTES + 1) < 0);
     assert(gw_shared_open(GW_SHARED_MIN_BYTES) == 0 && gw_shared_enabled() == 1);
+    /* The smallest store still gives every stripe a useful number of slots. */
+    assert(shared_base->stripe_count >= 1 && shared_base->stripe_count <= GW_SHARED_STRIPES_MAX);
+    assert((shared_base->stripe_count & (shared_base->stripe_count - 1)) == 0);
+    assert(shared_base->slot_count / shared_base->stripe_count >= GW_SHARED_MIN_SLOTS_PER_STRIPE);
+    uint64_t covered = 0;
+    for (uint64_t s = 0; s < shared_base->stripe_count; ++s) {
+        assert(shared_base->stripes[s].first == covered);
+        covered += shared_base->stripes[s].count;
+    }
+    assert(covered == shared_base->slot_count);
+    printf("  %llu stripes over %llu slots\n", (unsigned long long)shared_base->stripe_count,
+           (unsigned long long)shared_base->slot_count);
+    assert(gw_shared_open(0) == 0);
+    assert(gw_shared_open(GW_SHARED_MIN_BYTES) == 0);
 }
 
 static void test_entries(void) {
@@ -100,32 +120,44 @@ static void test_full_table(void) {
         stored += 1;
     }
     assert(stored > 0 && stored < 100000);
-    assert(gw_shared_set(K("one-more"), V("x"), 0) == 0);
-    /* Deleting an entry frees its slot for a new key. */
-    snprintf(key, sizeof(key), "fill-%d", 0);
-    assert(gw_shared_delete(K(key)) == 1);
-    assert(gw_shared_set(K("one-more"), V("x"), 0) == 1);
-    /* Expired entries give their slots back without a delete. */
+    /* A key is refused only when its own stripe has no free slot, so room is made in the stripe that
+       "one-more" hashes to, by deleting a fill key from it. */
+    if (gw_shared_set(K("one-more"), V("x"), 0) != 1) {
+        uint64_t target = stripe_for("one-more");
+        int freed = 0;
+        for (int i = 0; i < stored && !freed; ++i) {
+            snprintf(key, sizeof(key), "fill-%d", i);
+            if (stripe_for(key) == target && gw_shared_delete(K(key)) == 1) freed = 1;
+        }
+        assert(freed);
+        assert(gw_shared_set(K("one-more"), V("x"), 0) == 1);
+    }
+    assert(gw_shared_delete(K("one-more")) == 1);
     for (int i = 0; i < stored; ++i) {
         snprintf(key, sizeof(key), "fill-%d", i);
         gw_shared_delete(K(key));
     }
-    gw_shared_delete(K("one-more"));
+    /* Expiring keys fill the table until one stripe refuses. That key's stripe has no free slot, and it gets
+       one again once the entries expire. */
     int shorts = 0;
+    char refused[32] = "";
     for (;;) {
         snprintf(key, sizeof(key), "short-%d", shorts);
-        if (gw_shared_set(K(key), V("payload"), 20) != 1) break;
+        if (gw_shared_set(K(key), V("payload"), 20) != 1) {
+            snprintf(refused, sizeof(refused), "%s", key);
+            break;
+        }
         shorts += 1;
     }
     assert(shorts > 0);
-    assert(gw_shared_set(K("late"), V("x"), 0) == 0);
+    assert(gw_shared_set(K(refused), V("x"), 0) == 0);
     sleep_ms(40);
-    assert(gw_shared_set(K("late"), V("x"), 0) == 1);
-    printf("  table holds %d entries of this size\n", stored);
+    assert(gw_shared_set(K(refused), V("x"), 0) == 1);
+    printf("  table holds %d entries of this size before its first stripe fills\n", stored);
 }
 
-/* A worker takes the lock while it is halfway through a write, then dies. The next locker must take over,
-   drop the half-written entry and carry on. */
+/* A worker takes the lock of the stripe that holds "victim" while it is halfway through a write, then dies.
+   The next locker of that stripe must take over, drop the half-written entry and carry on. */
 static void test_robust_recovery(void) {
     uint8_t out[16];
     assert(gw_shared_set(K("victim"), V("intact"), 0) == 1);
@@ -133,9 +165,11 @@ static void test_robust_recovery(void) {
     pid_t child = fork();
     assert(child >= 0);
     if (child == 0) {
+        uint64_t hv = hash_key((const uint8_t *)"victim", 6);
+        uint64_t s = stripe_of(shared_base, hv);
         int64_t now = monotonic_ms(), match, free_slot;
-        assert(pthread_mutex_lock(&shared_base->lock) == 0);
-        probe(shared_base, (const uint8_t *)"victim", 6, now, &match, &free_slot);
+        assert(pthread_mutex_lock(&shared_base->stripes[s].lock) == 0);
+        probe(shared_base, s, hv, (const uint8_t *)"victim", 6, now, &match, &free_slot);
         assert(match >= 0);
         table_of(shared_base)[match].dirty = 1; /* the write has started and never finishes */
         raise(SIGKILL);
@@ -146,7 +180,7 @@ static void test_robust_recovery(void) {
     assert(gw_shared_get(K("victim"), buffer(out, sizeof(out))) == -1);
     assert(shared_base->recovered == (int64_t)before + 1);
     assert(gw_shared_set(K("after"), V("ok"), 0) == 1);
-    printf("  recovered the lock from a dead worker; interrupted entry dropped\n");
+    printf("  recovered a stripe lock from a dead worker; interrupted entry dropped\n");
 }
 
 /* Four processes increment one counter 1000 times each: the total is exact only with a shared lock. */
@@ -173,6 +207,140 @@ static void test_cross_process_counter(void) {
     printf("  %d processes x %d increments = %lld\n", CHILDREN, PER_CHILD, (long long)value);
 }
 
+/* Eight processes each hammer their own key: an increment and a read per round. Every key must end at exactly
+   the round count. The wall time is printed so a build with one stripe can be compared with the striped one. */
+static void test_contention(void) {
+    enum { PROCS = 8, ROUNDS = 20000 };
+    struct timespec start, end;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    pid_t children[PROCS];
+    for (int c = 0; c < PROCS; ++c) {
+        children[c] = fork();
+        assert(children[c] >= 0);
+        if (children[c] == 0) {
+            char key[32];
+            snprintf(key, sizeof(key), "hot-%d", c);
+            uint8_t out[16];
+            int64_t value = 0, remaining = 0;
+            for (int i = 0; i < ROUNDS; ++i) {
+                if (incr(key, 1, 0, &value, &remaining) != 1) _exit(1);
+                if (gw_shared_get(K(key), buffer(out, sizeof(out))) < 0) _exit(1);
+            }
+            _exit(0);
+        }
+    }
+    for (int c = 0; c < PROCS; ++c) {
+        int status = 0;
+        assert(waitpid(children[c], &status, 0) == children[c] && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+    double ms = (double)(end.tv_sec - start.tv_sec) * 1000.0 + (double)(end.tv_nsec - start.tv_nsec) / 1e6;
+    for (int c = 0; c < PROCS; ++c) {
+        char key[32];
+        snprintf(key, sizeof(key), "hot-%d", c);
+        int64_t value = 0, remaining = 0;
+        assert(incr(key, 0, 0, &value, &remaining) == 1 && value == ROUNDS);
+    }
+    printf("  contention: %d processes x %d rounds on separate keys in %.1f ms (%d stripes)\n", PROCS, ROUNDS, ms,
+           (int)shared_base->stripe_count);
+}
+
+/* Child: takes the lock of the stripe that holds key, then stops itself while holding it. */
+static pid_t hold_stripe_then_stop(const char *key) {
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        assert(pthread_mutex_lock(&shared_base->stripes[stripe_for(key)].lock) == 0);
+        raise(SIGSTOP);
+        pthread_mutex_unlock(&shared_base->stripes[stripe_for(key)].lock);
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(child, &status, WUNTRACED) == child && WIFSTOPPED(status));
+    return child;
+}
+
+static long elapsed_ms(struct timespec from) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (now.tv_sec - from.tv_sec) * 1000L + (now.tv_nsec - from.tv_nsec) / 1000000L;
+}
+
+/* A stopped holder must not stall the others: calls on its stripe fail within the timeout, calls on another
+   stripe still work, and once the holder resumes (or is killed) the store is usable again. */
+static void test_timed_locks(void) {
+    assert(gw_shared_set_lock_timeout(0) == -1 && gw_shared_set_lock_timeout(10001) == -1);
+    assert(gw_shared_set_lock_timeout(50) == 0);
+    uint8_t out[16];
+    assert(gw_shared_set(K("stuck"), V("v"), 0) == 1);
+    int64_t timeouts_before = shared_base->timeouts;
+
+    pid_t child = hold_stripe_then_stop("stuck");
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    assert(gw_shared_get(K("stuck"), buffer(out, sizeof(out))) == -1);
+    long waited = elapsed_ms(start);
+    assert(waited >= 40 && waited < 1000);
+    assert(gw_shared_set(K("stuck"), V("x"), 0) == -1);
+    assert(gw_shared_delete(K("stuck")) == -1);
+    int64_t value = 0, remaining = 0;
+    assert(incr("stuck", 1, 0, &value, &remaining) == -1);
+    assert(shared_base->timeouts >= timeouts_before + 4);
+    if (shared_base->stripe_count > 1) {
+        char other[32] = "other-0";
+        for (int i = 0; i < 1000; ++i) {
+            snprintf(other, sizeof(other), "other-%d", i);
+            if (stripe_for(other) != stripe_for("stuck")) break;
+        }
+        assert(stripe_for(other) != stripe_for("stuck"));
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        assert(gw_shared_set(K(other), V("free"), 0) == 1);
+        assert(elapsed_ms(start) < 40);
+    }
+    assert(kill(child, SIGCONT) == 0);
+    int status = 0;
+    assert(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    assert(gw_shared_get(K("stuck"), buffer(out, sizeof(out))) == 1 && memcmp(out, "v", 1) == 0);
+
+    /* The same holder, killed instead of resumed: the next locker takes the stripe over. */
+    int64_t recovered_before = shared_base->recovered;
+    child = hold_stripe_then_stop("stuck");
+    assert(gw_shared_get(K("stuck"), buffer(out, sizeof(out))) == -1);
+    assert(kill(child, SIGKILL) == 0);
+    assert(waitpid(child, &status, 0) == child && WIFSIGNALED(status));
+    assert(gw_shared_set(K("stuck"), V("after"), 0) == 1);
+    assert(shared_base->recovered == recovered_before + 1);
+    assert(gw_shared_get(K("stuck"), buffer(out, sizeof(out))) == 5 && memcmp(out, "after", 5) == 0);
+    assert(gw_shared_set_lock_timeout(50) == 0);
+    printf("  a stopped holder fails calls in %ld ms; the stripe recovers after SIGKILL\n", waited);
+}
+
+/* The stats report the store and its counters; the live entry count moves with the table. */
+static void test_stats(void) {
+    int64_t entries = 0, capacity = 0, stripes = 0, timeouts = 0, recoveries = 0, ring_lost = 0;
+    gw_shared_stats(&entries, &capacity, &stripes, &timeouts, &recoveries, &ring_lost);
+    assert(entries >= 0 && capacity == (int64_t)shared_base->slot_count);
+    assert(stripes == (int64_t)shared_base->stripe_count && stripes >= 1);
+    assert(timeouts >= 4 && recoveries >= 1);
+    assert(ring_lost == gw_shared_lost());
+    assert(gw_shared_set(K("stats-a"), V("1"), 0) == 1);
+    assert(gw_shared_set(K("stats-b"), V("2"), 0) == 1);
+    int64_t after = 0;
+    gw_shared_stats(&after, &capacity, &stripes, &timeouts, &recoveries, &ring_lost);
+    assert(after == entries + 2);
+    assert(gw_shared_delete(K("stats-a")) == 1);
+    gw_shared_stats(&after, &capacity, &stripes, &timeouts, &recoveries, &ring_lost);
+    assert(after == entries + 1);
+    printf("  stats: %lld stripes, %lld slots, %lld timeouts, %lld recoveries\n", (long long)stripes,
+           (long long)capacity, (long long)timeouts, (long long)recoveries);
+    /* With the store off every counter is zero. */
+    assert(gw_shared_open(0) == 0);
+    gw_shared_stats(&entries, &capacity, &stripes, &timeouts, &recoveries, &ring_lost);
+    assert(entries == 0 && capacity == 0 && stripes == 0 && timeouts == 0 && recoveries == 0 && ring_lost == 0);
+    assert(gw_shared_open(GW_SHARED_MIN_BYTES) == 0);
+}
+
+/* A reader that keeps up sees every message in order, across many wraps of the ring. */
 static uint8_t ring_payload[GW_SHARED_MIN_BYTES];
 
 static void fill_message(uint8_t *data, int64_t len, int64_t index) {
@@ -186,7 +354,6 @@ static int check_message(const uint8_t *data, int64_t len, int64_t index) {
     return memcmp(expected, data, (size_t)len) == 0;
 }
 
-/* A reader that keeps up sees every message in order, across many wraps of the ring. */
 static void test_ring_wraps(void) {
     int64_t position = 0, seq = 0;
     gw_shared_ring_head(&position, &seq);
@@ -280,11 +447,14 @@ int main(void) {
     test_full_table();
     test_robust_recovery();
     test_cross_process_counter();
+    test_contention();
+    test_timed_locks();
+    test_stats();
     test_ring_wraps();
     test_ring_lag();
     test_stream_registry();
     assert(gw_shared_open(0) == 0);
-    puts("Shared store tests passed: entries, expiry, counters, full table, cross-process counter, "
-         "lock recovery, ring wraps and lag, stream registry");
+    puts("Shared store tests passed: entries, expiry, counters, full table, stripes, cross-process counter, "
+         "contention, lock recovery, timed lock waits, stats, ring wraps and lag, stream registry");
     return 0;
 }

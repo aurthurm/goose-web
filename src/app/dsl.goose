@@ -4,6 +4,7 @@ import src.app.params;
 import src.app.templates;
 import src.app.session;
 import src.app.csrf;
+import src.app.auth;
 import std;
 namespace web;
 
@@ -83,6 +84,18 @@ fn ::secure_headers<F>(c: web::Ctx&, content_security_policy: const u8[:] = "def
     web::secure_headers(c, content_security_policy, hsts, F);
 }
 
+// Structured logs, trusted proxies, conditional GET, load shedding and body caps (logging.goose, proxy.goose,
+// etag.goose, shedding.goose). json_logger(c, include_query) { ... }; client_ip(c) is the proxy-aware address.
+fn ::json_logger<F>(c: web::Ctx&, include_query: bool = false) { web::json_logger(c, include_query, F); }
+fn ::trust_proxies<F>(c: web::Ctx&, cfg: web::ProxyConfig) { web::trust_proxies(c, cfg, F); }
+fn ::client_ip(c: web::Ctx&) -> const u8[:] { return web::client_ip(c); }
+fn ::route_pattern(c: web::Ctx&) -> const u8[:] { return web::route_pattern(c); }
+fn ::etag<F>(c: web::Ctx&) { web::etag(c, F); }
+fn ::cache_control(c: web::Ctx&, value: const u8[:]) -> web::Ctx& { return web::cache_control(c, value); }
+fn ::shed_load<F>(c: web::Ctx&, policy: web::LoadPolicy) { web::shed_load(c, policy, F); }
+fn ::server_pressure(c: web::Ctx&) -> web::ServerPressure { return web::server_pressure(c); }
+fn ::body_limit<F>(c: web::Ctx&, bytes: i64) { web::body_limit(c, bytes, F); }
+
 // Cookies. c.cookie(name) reads the request; c.set_cookie(name, value, opts) returns false when
 // the name, value or options are invalid (nothing is set in that case).
 fn ::cookie(c: web::Ctx&, name: const u8[:]) -> const u8[:] { return web::cookie(c, name); }
@@ -107,6 +120,16 @@ fn ::page_meta(c: web::Ctx&, title: const u8[:]) -> web::PageMeta { return web::
 // CSRF. csrf(c, secret) { ... } guards the block; csrf_token(c) gives the token for forms.
 fn ::csrf<F>(c: web::Ctx&, secret: const u8[:], check_origin: bool = false) { web::csrf(c, secret, check_origin, F); }
 fn ::csrf_token(c: web::Ctx&) -> const u8[:] { return web::csrf_token(c); }
+
+// Authentication (docs/api.md#authentication). basic_auth(c, realm, check) { ... } and
+// bearer_auth(c, secret) { ... } guard the block; auth_subject(c) is the verified subject inside it.
+// check is a named function (user, password) -> bool, passed as a generic function value.
+fn ::basic_auth<Check, F>(c: web::Ctx&, realm: const u8[:]) { web::basic_auth(c, realm, Check, F); }
+fn ::bearer_auth<F>(c: web::Ctx&, secret: const u8[:]) { web::bearer_auth(c, secret, F); }
+fn ::auth_subject(c: web::Ctx&) -> const u8[:] { return web::auth_subject(c); }
+
+// Redirects to a target taken from the request: local absolute paths only (400 otherwise).
+fn ::redirect_local(c: web::Ctx&, target: const u8[:], code: i32 = web::HTTP_FOUND) { web::redirect_local(c, target, code); }
 
 // OpenAPI. web::openapi(c, info) { c.routes() { ... } } serves the document; annotations
 // are no-ops except in the describe pass. Generic type arguments need the web:: form.

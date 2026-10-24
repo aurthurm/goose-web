@@ -21,7 +21,12 @@ because the repository has no tag history for them.
   summed. The fixture takes an optional restart budget and a `/block` route.
 - Stats record unit test (`tests/unit/stats_record.goose`): every `ServerStats` field round-trips,
   and a frame with a wrong field count, magic or length is rejected.
-
+- `ServerConfig.shared_lock_timeout_ms` (default 50, 1..10000): how long a shared-store call waits for a
+  stripe, ring or registry lock before it fails. A stopped or stalled lock holder no longer blocks every worker.
+- `web::shared_stats()` returns a `SharedStats` record (`entries`, `capacity`, `stripes`, `timeouts`,
+  `recoveries`, `ring_lost`), so the lost-event count and the lock counters are visible to Goose.
+- Native shared-store tests for lock striping (8 processes on separate keys, with the timing printed),
+  timed lock waits against a stopped holder, recovery of a stripe after SIGKILL, and the stats.
 - Reactor scheduler (`web::scheduler`, `every`, `after`, `cancel`, `due`, `hint_wakeup`): bounded periodic and
   one-shot tasks run from the tick, monotonic times, documented catch-up rule. `ServerControl.wake_at_ns` shortens
   the poll wait to the next due task. See [Scheduler](docs/api.md#scheduler).
@@ -29,10 +34,33 @@ because the repository has no tag history for them.
   work on contained worker threads over typed queues, with a bounded queue (503 when full), correlation ids, lost-job
   reports and worker restarts. See [Background jobs](docs/api.md#background-jobs) and [examples/jobs](examples/jobs/README.md).
 
+- Structured request logs: `json_logger(c, include_query = false) { }` prints one JSON object per request (RFC 3339 UTC `ts`, `level`, `request_id`, `method`, `path` without the query by default, the matched `route` pattern, `status`, `bytes`, `duration_us`, `peer`, `client_ip`, a truncated `user_agent`, `pid` in worker processes). Values are JSON-escaped. `c.route_pattern()` gives the matched pattern. See [Structured logs](docs/api.md#structured-logs).
+- Trusted proxies: `trusted_proxies("10.0.0.0/8, ::1")` builds an allow-list of up to 16 IPv4, IPv6 or CIDR entries; `trust_proxies(c, cfg) { }` resolves the client from `X-Forwarded-For` (or RFC 7239 `Forwarded` with `cfg.forwarded = true`) only when the TCP peer is trusted; `client_ip(c)` returns the result. `rate_limit` counts the client address. See [Trusted proxies](docs/api.md#trusted-proxies).
+- ETag and conditional GET: `etag(c) { }` gives 200 GET and HEAD responses a strong tag (SHA-256 of the body, first 16 bytes, base64url), and answers `If-None-Match` (lists, `*`, weak comparison) with 304 and no body or Content-Type. `cache_control(c, value)` sets `Cache-Control`. See [ETag](docs/api.md#etag).
+- Load shedding: `shed_load(c, LoadPolicy { ... }) { }` answers 503 `overloaded` with `Retry-After` when the reactor reports connection or response-pool pressure above the policy. The reactor publishes `live_pressure` before each handler; `c.server_pressure()` exposes it. `body_limit(c, bytes) { }` answers 413 `payload_too_large` for a longer body. See [Load shedding](docs/api.md#load-shedding).
 - Custom TCP protocols: `web::tcp_config`, `web::tcp_serve`, `web::tcp_connect` and the connection functions in `src/net/tcp.goose`, with framing helpers in `src/net/framing.goose`. Own readiness instance in `native/posix/net.c`. Examples `examples/tcp-echo`, `examples/tcp-chat`, `examples/tcp-proxy`. See the TCP section of `docs/api.md`.
+
+- Authentication: `hash_password`, `hash_password_iterations` and `verify_password` (PBKDF2-HMAC-SHA256,
+  600000 iterations by default), `basic_auth` and `bearer_auth` middleware with `c.auth_subject()`,
+  and `sign_token` and `verify_token` (HMAC-signed tokens, not JWT). See [docs/api.md](docs/api.md#authentication).
+- `redirect_local`, which accepts only local paths for targets taken from a request.
+- Fuzz programs for JSON, query, cookie and form parsing, template rendering and static paths, and clang
+  libFuzzer harnesses for the C byte-slice and SQLite shims.
 
 ### Changed
 
+- Static files: a symbolic link whose real target lies outside the served directory answers 404. Links
+  that stay inside are still followed.
+- JSON decoding refuses a string whose escapes decode to bytes that are not valid UTF-8 (for example a
+  lone `\uD800`).
+- The shared store splits its key/value table into up to 16 lock stripes (`hash & (stripes - 1)`), each with
+  its own robust mutex and slot range. The SSE ring and the stream registry have separate locks. Eight processes
+  on separate keys ran the native contention test about 4 to 6 times faster than with one lock. A key is refused
+  when its own stripe is full, so the first refusal comes slightly earlier than before (about 98% of the slots
+  at the default size, against 100% with one lock).
+- A stream registry check that cannot take the lock now makes `sse_publish` return -1 (refused), not 0 (no
+  subscribers). Stream open and ring reads treat a lock timeout as a refusal or a retry.
+- No system call runs under a store lock any more: the stream liveness checks run with the lock released.
 - The worker stats record is a fixed-size frame (`STATS_RECORD_BYTES`, 272 bytes): a magic word
   `GWSTATS1`, the field count, then each `i64` field as little-endian bytes. It is encoded and
   decoded with `const for` over `fields<ServerStats>`, and the parent sums with the same walk, so a
@@ -40,6 +68,14 @@ because the repository has no tag history for them.
   moves opaque bytes, and the record format is internal to the build (parent and workers are one
   binary).
 - The parent drops a stats frame that does not match its build instead of adding it.
+- A response may have an empty `content_type` only when its status is 304; that response is serialized without
+  `Content-Type` (RFC 9110 15.4.5). Every other response still needs one.
+
+### Security notes
+
+- The security review, its findings and their status are in [docs/security.md](docs/security.md).
+  Fixed in this release: static-file symlink escape, signalling and reaping pid 0 or a negative pid,
+  a `getrandom` zero-return loop, negative lengths in socket calls, and invalid UTF-8 from JSON escapes.
 
 ## 0.6.0
 

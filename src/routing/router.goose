@@ -11,7 +11,9 @@ struct Router { routes: Route[MAX_ROUTES], count: i64 }
 struct PathParam { name: const u8[:], value: const u8[:] }
 struct RouteMatch {
     status: i32, handler_id: i32, params: PathParam[MAX_PATH_PARAMS], param_count: i64,
-    allow: u8[..MAX_ALLOW_BYTES]
+    allow: u8[..MAX_ALLOW_BYTES],
+    // Pattern of the matched route (e.g. /users/:id); empty unless status is 200.
+    pattern: u8[..MAX_ROUTE_PATTERN_BYTES]
 }
 struct QueryValue { status: i32, value: u8[..MAX_QUERY_FIELD_BYTES] }
 
@@ -265,6 +267,7 @@ fn match_route_host(table: Router&, method: const u8[:], target: const u8[:], ho
     if selected < 0 { return result; }
     result.status = HTTP_OK;
     result.handler_id = table.routes[selected].handler_id;
+    result.pattern.append(table.routes[selected].pattern[..]);
     route_bind(result, table.routes[selected].pattern[..], path);
     return result;
 }

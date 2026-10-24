@@ -1,6 +1,7 @@
 /* Filesystem, environment and clock calls for the framework. Each function borrows its
    arguments for the call only and retains no Goose pointers. Paths and names are copied
    into fixed C buffers so they can be NUL-terminated; longer inputs are refused. */
+#define _DEFAULT_SOURCE 1 /* realpath(3) */
 #define _POSIX_C_SOURCE 200809L
 #include <stdint.h>
 #include <stddef.h>
@@ -8,6 +9,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <limits.h>
 #include <time.h>
 #include <unistd.h>
 #include <sys/stat.h>
@@ -38,6 +40,34 @@ int32_t gw_file_stat(gw_bytes path, int64_t *size) {
     }
     if (S_ISDIR(info.st_mode)) return GW_FILE_DIRECTORY;
     return GW_FILE_OTHER;
+}
+
+/* 1 when the real location of path (symbolic links resolved) is root or lies below root, 0 when
+   it lies outside, GW_FILE_ERROR when either name cannot be resolved (for example, it is missing).
+   Static files use it so a symbolic link inside the served tree cannot lead out of it. The check
+   and the later open are separate calls, so a link swapped in between can still escape: serve
+   trees that only trusted writers can change. */
+int32_t gw_file_within(gw_bytes root, gw_bytes path) {
+    char root_name[GW_PATH_MAX_BYTES], path_name[GW_PATH_MAX_BYTES];
+    if (!gw_copy_text(root, root_name, sizeof(root_name)) || !gw_copy_text(path, path_name, sizeof(path_name))) {
+        return GW_FILE_ERROR;
+    }
+    char *real_root = realpath(root_name, NULL);
+    if (real_root == NULL) return GW_FILE_ERROR;
+    char *real_path = realpath(path_name, NULL);
+    if (real_path == NULL) {
+        free(real_root);
+        return GW_FILE_ERROR;
+    }
+    size_t root_length = strlen(real_root);
+    /* Inside means: equal to the root, or the next character is a separator. The root "/" already
+       ends in one, so every absolute path is below it. */
+    int inside = strncmp(real_path, real_root, root_length) == 0 &&
+                 (real_path[root_length] == '\0' || real_path[root_length] == '/' ||
+                  (root_length == 1 && real_root[0] == '/'));
+    free(real_root);
+    free(real_path);
+    return inside ? 1 : 0;
 }
 
 /* Reads at most buffer.len bytes of a regular file into buffer and returns the count.

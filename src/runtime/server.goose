@@ -21,13 +21,24 @@ struct ServerConfig {
     read_timeout_ms: i64, write_timeout_ms: i64, idle_timeout_ms: i64, poll_timeout_ms: i32,
     shutdown_grace_ms: i64, max_requests: i64, max_requests_per_connection: i64, keep_alive: bool,
     handle_signals: bool, max_pool_bytes: i64, max_sse_clients: i64, sse_heartbeat_ms: i64,
-    sse_max_queued_bytes: i64, workers: i32, worker_restart_budget: i64, shared_store_bytes: i64
+    sse_max_queued_bytes: i64, workers: i32, worker_restart_budget: i64, shared_store_bytes: i64,
+    shared_lock_timeout_ms: i64
 }
 struct ServerStats {
     accepted: i64, active: i64, completed: i64, rejected: i64,
     timeouts: i64, forced_closes: i64, bytes_read: i64, bytes_written: i64, reused: i64,
     sse_active: i64, sse_sent: i64, sse_dropped: i64
 }
+// Load snapshot for load shedding (src/app/shedding.goose). record_pressure refreshes it before each handler runs.
+// active: open connections; max_clients: the limit. pool_bytes_*: response bytes in flight and the pool's
+// capacity. queued_events / max_queued_events: SSE messages staged in the outbox.
+struct ServerPressure {
+    active: i64, max_clients: i64, pool_bytes_used: i64, pool_bytes_max: i64,
+    queued_events: i64, max_queued_events: i64
+}
+var live_pressure: ServerPressure = default<ServerPressure>();
+// True in a worker process of serve_workers, so loggers can report its pid (src/app/logging.goose).
+var worker_process: bool = false;
 // One event stream slot, indexed like the connection slot it belongs to.
 struct SseSlot { active: bool, channel: i32 }
 // sse_limit, sse_slots and the message table are reactor state that sse_publish stages into. The
@@ -58,7 +69,8 @@ fn server_config() -> ServerConfig {
         handle_signals: DEFAULT_HANDLE_SIGNALS, max_pool_bytes: DEFAULT_MAX_POOL_BYTES,
         max_sse_clients: DEFAULT_MAX_SSE_CLIENTS, sse_heartbeat_ms: DEFAULT_SSE_HEARTBEAT_MS,
         sse_max_queued_bytes: DEFAULT_SSE_MAX_QUEUED_BYTES, workers: DEFAULT_WORKERS,
-        worker_restart_budget: WORKER_RESTART_BUDGET, shared_store_bytes: DEFAULT_SHARED_STORE_BYTES };
+        worker_restart_budget: WORKER_RESTART_BUDGET, shared_store_bytes: DEFAULT_SHARED_STORE_BYTES,
+        shared_lock_timeout_ms: DEFAULT_SHARED_LOCK_TIMEOUT_MS };
 }
 // Millisecond durations are capped at one day to keep nanosecond arithmetic safe.
 // The pool must hold one maximal response, so a single response never needs more than the pool.
@@ -79,7 +91,8 @@ fn validate_server_config(c: ServerConfig) -> bool {
         c.sse_max_queued_bytes >= MIN_SSE_QUEUED_BYTES && c.sse_max_queued_bytes <= MAX_SSE_QUEUED_BYTES &&
         c.workers >= 0 && c.workers <= MAX_WORKERS &&
         c.worker_restart_budget >= 0 && c.worker_restart_budget <= WORKER_RESTART_BUDGET &&
-        (c.shared_store_bytes == 0 || (c.shared_store_bytes >= MIN_SHARED_STORE_BYTES && c.shared_store_bytes <= MAX_SHARED_STORE_BYTES));
+        (c.shared_store_bytes == 0 || (c.shared_store_bytes >= MIN_SHARED_STORE_BYTES && c.shared_store_bytes <= MAX_SHARED_STORE_BYTES)) &&
+        c.shared_lock_timeout_ms >= MIN_SHARED_LOCK_TIMEOUT_MS && c.shared_lock_timeout_ms <= MAX_SHARED_LOCK_TIMEOUT_MS;
 }
 fn request_shutdown(control: ServerControl&) { control.shutdown_requested = true; }
 extern fn gw_accept(listener: i32) -> i32;
@@ -119,6 +132,14 @@ struct Connection {
     idle: bool, deadline: i64, served: i64, head: i64, head_start: i64,
     peer: u8[MAX_PEER_BYTES], peer_len: i64, sse: bool, sse_closing: bool, sse_channel: i32, slot: i64,
     watch_write: bool, input_at: i64, input_cap: i64, input_class: i64
+}
+
+// Copies the reactor's load into live_pressure. Called once per request, before the handler runs.
+fn record_pressure(config: ServerConfig, control: ServerControl&, pool: ChunkPool&) {
+    live_pressure = ServerPressure { active: control.stats.active, max_clients: config.max_clients,
+        pool_bytes_used: (pool.count - pool.free_count) * RESPONSE_CHUNK_BYTES,
+        pool_bytes_max: pool.max_chunks * RESPONSE_CHUNK_BYTES,
+        queued_events: control.sse_msg_count, max_queued_events: MAX_SSE_OUTBOX_MESSAGES };
 }
 
 // Chunks that a new response could still take: freed ones plus never-used capacity.
@@ -482,6 +503,7 @@ fn serve_config<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
     if !validate_server_config(config) || control.running { return false; }
     // The shared store is made before any fork, so the single process and every worker share one layout.
     if !shared_store_open(config.shared_store_bytes) { return false; }
+    shared_lock_timeout_set(config.shared_lock_timeout_ms);
     if config.workers != 1 { return serve_workers(config, control, H, Tick, Lifecycle); }
     var listener = gw_listen_config(config.port, if config.public_bind { 1 } else { 0 });
     if listener < 0 { return false; }
@@ -681,6 +703,7 @@ fn serve_loop<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl&,
             }
             if status == PARSE_INCOMPLETE { continue; }
             // scratch is empty here: the previous response was reset after staging.
+            record_pressure(config, control, pool);
             if status == HTTP_OK { H(request, scratch); }
             else { scratch.status = status; set_body(scratch, reason(status)); }
             if status == HTTP_OK && scratch.sse {
@@ -844,6 +867,7 @@ fn spawn_worker<H, Tick, Lifecycle>(config: ServerConfig, control: ServerControl
     let pid = fork_process();
     if pid != 0 { return pid; }
     gw_close(read_end);
+    worker_process = true;
     // The inherited handlers are the parent's; restore the originals, then take this worker's own.
     gw_signals_end();
     if gw_signals_begin() < 0 { exit(1); }
@@ -989,6 +1013,7 @@ fn sse_publish(control: ServerControl&, channel: i32, event: const u8[:], data: 
     var subscribers: i64 = 0;
     if shared {
         subscribers = gw_shared_stream_count(channel);
+        if subscribers < 0 { return -1; }
     } else {
         for s in control.sse_slots {
             if s.active && s.channel == channel { subscribers += 1; }

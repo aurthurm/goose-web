@@ -43,6 +43,13 @@ static void reactor_tests(void) {
     assert(gw_reactor_add(3, pair[1], 0) == 0);                 /* the token can be reused */
     assert(gw_reactor_wait(token_slice, state_slice, 1000) == 1 && tokens[0] == 3);
     assert(gw_recv(pair[1], (gw_bytes){input, sizeof(input)}) == 1);
+    /* A negative length is refused before the socket call, so no byte moves and the data stays queued. */
+    assert(write(pair[0], "z", 1) == 1);
+    assert(gw_reactor_wait(token_slice, state_slice, 1000) == 1 && tokens[0] == 3 && states[0] == 1);
+    assert(gw_recv(pair[1], (gw_bytes){input, -1}) == GW_IO_ERROR);
+    assert(gw_send(pair[1], (gw_bytes){input, -1}) == GW_IO_ERROR);
+    assert(gw_recv(pair[1], (gw_bytes){NULL, 4}) == GW_IO_ERROR);
+    assert(gw_recv(pair[1], (gw_bytes){input, sizeof(input)}) == 1 && input[0] == 'z');
     /* The peer closing is readable, so the reactor reports EOF to the connection. */
     gw_close(pair[0]);
     assert(gw_reactor_wait(token_slice, state_slice, 1000) == 1 && tokens[0] == 3 && states[0] == 1);

@@ -138,6 +138,7 @@ choose this policy before side effects: returning 503 cannot undo completed work
 | workers | 1 | 0..256; 1 is the single-process reactor; 0 is one worker process per CPU; more than 1 pre-forks that many workers (see [Worker processes](#worker-processes)) |
 | worker_restart_budget | 30 | 0..30; unexpected worker exits tolerated within 60 seconds before the server stops (see [Worker processes](#worker-processes)) |
 | shared_store_bytes | 1048576 | 0 or 262144..268435456; the [shared store](#shared-store) that workers and streams use across processes; 0 turns it off |
+| shared_lock_timeout_ms | 50 | 1..10000; how long a shared-store call waits for a lock before it fails (see [Shared store](#shared-store)) |
 
 Memory is bounded by these limits and is charged on demand. Each of the `max_clients` slots costs a
 small record. A connection holds an input block only while it has request bytes to parse (1 KiB, doubling
@@ -519,6 +520,7 @@ fn app(c: web::Ctx&) {
 | `web::shared_incr(key, delta, ttl_ms) -> i64, bool` | Adds `delta` to a counter and returns the new value. A missing or expired counter starts at 0 and takes `ttl_ms`. An existing counter keeps its expiry, so `ttl_ms` opens a fixed window that later increments do not extend. |
 | `web::shared_incr_window(key, delta, ttl_ms) -> i64, i64, bool` | As `shared_incr`, and also the milliseconds left before expiry (0 when it never expires). |
 | `web::shared_enabled() -> bool` | Whether this server has a store. |
+| `web::shared_stats() -> SharedStats` | Counters of the store: `entries`, `capacity`, `stripes`, `timeouts`, `recoveries`, `ring_lost`. See [Stats](#shared-store-stats). |
 
 **Bounds.** Keys are 1 to 128 bytes and values are at most 1024 bytes. A key or value outside those
 bounds is refused, never truncated. `ttl_ms` is at most 365 days. A counter is an 8-byte integer, so
@@ -528,21 +530,59 @@ bounds is refused, never truncated. `ttl_ms` is at most 365 days. A counter is a
 room. Deleting an entry frees its slot, and so does expiry: an expired entry's slot goes to the next new
 key that probes over it. Check the return value of `shared_set` when the table can fill up.
 
-**Crash safety.** The table, the ring and the stream registry sit behind one process-shared robust mutex.
-A worker that dies while holding it does not block the others: the next locker takes the mutex over
-(`EOWNERDEAD`, then `pthread_mutex_consistent`) and drops any entry whose write was in progress, so an
-interrupted entry is absent afterwards and its old value is not restored. A ring message becomes visible
-only after it is complete, so no reader sees a partial event. Streams registered by a dead worker are
-removed the next time another process counts or adds streams. The lock has no timeout, so a worker that
-is stopped (SIGSTOP) while holding it stalls the others until it resumes. `tests/native/shared.c` kills
-a child while it holds the lock and checks that the next locker recovers.
+**Stripes.** The entry table is split into up to 16 stripes (a power of two; a small store uses fewer, and
+each stripe keeps at least 16 slots). A key belongs to one stripe, chosen by its hash, and only that stripe's
+lock is taken for it, so calls on different keys mostly do not wait for each other. The SSE ring and the
+stream registry each have a lock of their own. A new key is refused when its own stripe has no free slot,
+even if other stripes have room. At the default size, with keys spread by the hash, the first refusal comes
+after about 98% of the slots are in use. A stripe is probed only within its own slots, so a full stripe
+never blocks a key in another stripe.
+
+**Lock timeouts.** Every lock is taken with a deadline of `shared_lock_timeout_ms` (50 ms by default).
+A holder that does not release its lock in time (for example one stopped with SIGSTOP) makes the waiting
+call fail after that wait, instead of stalling every worker. What the caller sees:
+
+| Call | On a lock timeout |
+| --- | --- |
+| `shared_set`, `shared_get`, `shared_delete` | `false`, nothing stored or read |
+| `shared_incr`, `shared_incr_window` | `false` (and `0` for the value) |
+| `rate_limit` | falls back to the per-process table for that request, so the limit holds per worker for that request instead of across workers. The request is not refused for the timeout itself; watch `timeouts` in `shared_stats()` |
+| server-side sessions (`store = true`) | the session is treated as absent or not saved |
+| `sse_publish` | `-1`, the event is refused and nothing is delivered |
+| opening an event stream | `503` |
+| an event stream's reads | nothing is read this pass; the next pass retries from the same position |
+
+Each timed-out wait increments `timeouts`. Locks are not fair: waiters do not queue in arrival order, so a
+burst of callers on one stripe can see a timeout even when the holder is only slow. Keep the timeout well above
+a normal critical section (microseconds) and well below what a request can afford to wait.
+
+**Critical sections.** Nothing under a lock makes a system call, and each loop under a lock is bounded: one
+stripe's probe, the ring records a message needs to make room, and the stream registry. A value is copied
+under its stripe lock (at most 1 KiB), and an SSE message is copied under the ring lock (at most 64 KiB). The
+liveness checks of the stream registry (`kill` on each stream's process) run with the lock released; a dead
+process's entries are cleared only if they still hold that pid.
+
+**Crash safety.** A worker that dies while holding a lock does not block the others: the next locker takes
+the mutex over (`EOWNERDEAD`, then `pthread_mutex_consistent`). For a stripe it drops any entry whose write was
+in progress, so an interrupted entry is absent afterwards and its old value is not restored. The ring and the
+registry need no repair. A ring message becomes visible only after it is complete, so no reader sees a partial
+event. Streams registered by a dead worker are removed the next time another process adds a stream to a full
+registry. Each takeover is counted in `recoveries`. `tests/native/shared.c` kills a child while it holds a
+stripe lock and checks that the next locker recovers, and stops a child while it holds one to check the timeouts.
+
+<a id="shared-store-stats"></a>
+**Stats.** `web::shared_stats()` returns a `SharedStats` record: `entries` (live entries, all stripes),
+`capacity` (entry slots), `stripes`, `timeouts` (lock waits that gave up), `recoveries` (locks taken over
+from a dead worker) and `ring_lost` (events overwritten before a stream read them). `entries` and `ring_lost`
+are `-1` when their lock could not be had in time, and every field is `0` when the store is off. The
+counters are summed across workers because they live in the shared region.
 
 **Events.** With the store on, `sse_publish` appends the framed message to the ring, and each worker copies
 the messages it has not yet seen to its own streams, in publish order, at the start of its next loop pass.
 A worker starts reading at the current end of the ring, so it never replays older events. A worker that
 falls more than a ring behind loses the messages that were overwritten; the store counts them in its `lost`
-total, which native code and tests can read but the Goose API does not expose yet. The count that
-`sse_publish` returns covers every worker's streams. A stream opened when the registry is full gets 503.
+total, which `shared_stats()` reports as `ring_lost`. The count that `sse_publish` returns covers every
+worker's streams. A stream opened when the registry is full, or when its lock timed out, gets 503.
 
 **What is shared.** With the store on (the default):
 
@@ -555,6 +595,12 @@ total, which native code and tests can read but the Goose API does not expose ye
 
 Still per worker: global variables, route tables, any cache you keep in memory, the `request_id` counter,
 `max_requests`, and each worker's sockets, buffers and stream queues. Stats are still summed by the parent.
+
+Per-worker application state is a typed global variable (`var config: AppConfig = ...;`), which a handler reads
+and writes directly. A generic `web::state<T>()` accessor was considered and not added. The generic functions in
+the library return values (`event_bus<T>()`), and a generic function does not declare a global of its own, so
+such an accessor would need a hand-written global for each `T`, which is the declaration it was meant to save.
+Shared state across workers goes through the shared store, not through globals.
 
 **Which store to use.**
 
@@ -736,7 +782,8 @@ Field names are emitted as declared, in declaration order, with no whitespace.
   it returns false and `out` is unchanged. Bytes are escaped per the stdlib writer.
 - `json_decode<T>(text) -> T, DecodeResult` is strict: unknown keys, duplicate keys, wrong
   types, out-of-range integers, overlong strings, full arrays, invalid UTF-8 and trailing
-  input are errors. Missing keys keep the declared defaults (`T { .. }`).
+  input are errors. Escapes are decoded before the check, so `\uD800` (an unpaired surrogate) decodes to bytes
+  that are not UTF-8 and is refused as `invalid UTF-8 in string`. Missing keys keep the declared defaults (`T { .. }`).
 - `DecodeResult { ok, syntax, error: u8[..128], field: u8[..64], present: u64 }`. `syntax`
   is true when the text is not JSON at all (map to 400); other errors are schema problems
   (map to 422). `field` is the key where the first error occurred. `present` bit i is set
@@ -827,7 +874,7 @@ there. Inside namespace `web` call `web::name(c, ...)` directly.
 | `c.text(s)`, `c.html(s)`, `c.json_raw(s)` | content type and body; over capacity → 500 `response_too_large` |
 | `c.json(value)`, `c.json_list(items)` | JSON responses (below) |
 | `c.body<T>()` (see below) | request body; written as `body<T>(c)` |
-| `c.no_content()`, `c.redirect(location, code)`, `c.fail(status, code, message)` | responses |
+| `c.no_content()`, `c.redirect(location, code)`, `c.redirect_local(target, code)`, `c.fail(status, code, message)` | responses; `redirect_local` accepts only a local absolute path (anything else is 400 `invalid_redirect`), so use it for targets taken from a request |
 | `c.done()` | true once a response was written; middleware can short-circuit on it |
 
 `c.body<T>()` is spelled `body<T>(c)`: the parser does not accept explicit type arguments on a
@@ -877,14 +924,105 @@ short-circuits. Nesting gives the order: the outer middleware's `before` runs fi
 | `logger(c) { }` | after `Next`, prints one line: `METHOD path status bytes`; control bytes are masked |
 | `cors(c, origin = "*") { }` | sets `Access-Control-Allow-Origin` (plus `Vary: Origin` for a non-wildcard origin). A preflight (OPTIONS with `Access-Control-Request-Method`) gets 204 with Allow-Methods, Allow-Headers (echoes the request's headers when valid, else `Content-Type`) and `Max-Age: 600`, and `Next` is not called |
 | `require_json(c) { }` | 415 `unsupported_media_type` unless the media type is `application/json` (parameters ignored, case-insensitive). It applies to every request in its block, so wrap body-carrying routes |
-| `rate_limit(c, limit, window_ms) { }` | fixed window per client address (`c.peer()`): at most `limit` requests per `window_ms`. A refused request gets 429 `rate_limited` with `Retry-After` in whole seconds. Each `(limit, window_ms)` pair counts separately. The table is process-wide and bounded at 1024 clients; when it is full, the least recently seen client is recycled. Requests with no known peer share one bucket. With the shared store on (the default), every worker of one server counts into the same window, so the limit holds across workers; with it off, each worker counts alone. Separate server instances never share a count |
+| `rate_limit(c, limit, window_ms) { }` | fixed window per client address (`client_ip(c)`: the TCP peer, or the address `trust_proxies` resolved; see [Trusted proxies](#trusted-proxies)): at most `limit` requests per `window_ms`. A refused request gets 429 `rate_limited` with `Retry-After` in whole seconds. Each `(limit, window_ms)` pair counts separately. The table is process-wide and bounded at 1024 clients; when it is full, the least recently seen client is recycled. Requests with no known peer share one bucket. With the shared store on (the default), every worker of one server counts into the same window, so the limit holds across workers; with it off, each worker counts alone. Separate server instances never share a count |
+| `json_logger(c, include_query = false) { }` | after `Next`, prints one JSON object per line (ts, level, request_id, method, path, route, status, bytes, duration_us, peer, client_ip, user_agent, pid in workers). See [Structured logs](#structured-logs) |
+| `trust_proxies(c, cfg) { }` | sets the client address from `X-Forwarded-For` (or `Forwarded`) when the TCP peer is trusted. `client_ip(c)` returns it. See [Trusted proxies](#trusted-proxies) |
+| `etag(c) { }` | after `Next`, a 200 GET or HEAD response gets a strong `ETag` (SHA-256 of the body), and a matching `If-None-Match` turns it into 304. See [ETag](#etag) |
+| `shed_load(c, LoadPolicy { ... }) { }` | 503 `overloaded` with `Retry-After` when the reactor reports connection or pool pressure above the policy. See [Load shedding](#load-shedding) |
+| `body_limit(c, bytes) { }` | 413 `payload_too_large` when the request body is longer than `bytes`, before the handler runs |
 | `secure_headers(c, content_security_policy = "default-src 'self'", hsts = "") { }` | sets `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin` and `Content-Security-Policy` (an empty policy leaves it unset). `Strict-Transport-Security` is sent only when `hsts` is nonempty. Headers are set before `Next`, so a handler can replace one with `c.set`. The default policy blocks the CDN script on the `/docs` page, so wrap that page with `""` or a policy that allows it |
 
 The runtime fills `Request.peer` from `getpeername` when it accepts a connection
-(`gw_peer_address` in `native/posix/transport.c`). It is the TCP peer, never a forwarded header,
-so behind a proxy every client shares the proxy's address.
+(`gw_peer_address` in `native/posix/transport.c`). It is the TCP peer, never a forwarded header.
+Behind a proxy, add `trust_proxies` (below) so that `client_ip(c)` names the real client.
+
+### Request logs, proxies, caching and load
+
+#### Structured logs
+
+`json_logger(c, include_query = false) { }` prints one line per request, after the inner chain:
+
+```json
+{"ts":"2026-10-24T10:15:03Z","level":"info","request_id":12,"method":"GET","path":"/users/42","route":"/users/:id","status":200,"bytes":9,"duration_us":84,"peer":"127.0.0.1","client_ip":"203.0.113.9","user_agent":"curl/8.7.1"}
+```
+
+- `ts` is RFC 3339 UTC to the second (`CLOCK_REALTIME`). `duration_us` comes from the monotonic clock.
+- `level` is `error` for 5xx, `warn` for 4xx and `info` otherwise.
+- `route` is the matched route pattern (`/users/:id`), or `null` when no route matched.
+- `path` excludes the query string unless `include_query` is true, because queries may carry secrets.
+- `peer` is the TCP peer; `client_ip` is what `client_ip(c)` returns (equal to `peer` without `trust_proxies`).
+- `user_agent` is cut at 128 bytes. `pid` appears only in worker processes (`workers` other than 1).
+- Every text value is made JSON-safe: bytes outside printable ASCII become `?`, then quotes and
+  backslashes are escaped, so a crafted request cannot break the line.
+- `logger` (the text line) is unchanged and may be used alongside it.
+
+The timestamp has whole-second precision (`src/sys` exposes wall-clock seconds only).
+
+#### Trusted proxies
+
+```goose
+const TRUSTED = "127.0.0.1/32, 10.0.0.0/8, 2001:db8::/32";
+c.trust_proxies(web::trusted_proxies(TRUSTED)) { ... };
+```
+
+- `trusted_proxies(list)` parses a comma-separated list of IPv4 or IPv6 addresses and CIDR networks
+  (up to 16). A malformed entry, an empty entry, or more than 16 entries makes `cfg.valid` false, and
+  `trust_proxies` asserts on that. A bare address is one host. Host bits are cleared.
+- IPv4-mapped IPv6 (`::ffff:10.0.0.1`), which a dual-stack socket reports for IPv4 clients, matches IPv4 entries.
+- Rules, when the TCP peer is trusted: the `X-Forwarded-For` lines are read as one list and walked
+  from the right. Trusted addresses are skipped; the first untrusted address is the client. A chain
+  made only of trusted addresses gives its leftmost one. A malformed entry met on the walk, or a
+  missing header, gives the TCP peer.
+- When the TCP peer is untrusted or unknown, forwarded headers are ignored and the client is the peer.
+  A spoofed `X-Forwarded-For` from the internet changes nothing.
+- `cfg.forwarded = true` reads RFC 7239 `Forwarded: for=...` instead (the `for` parameter, unquoted;
+  bracketed IPv6 and a port are accepted; `unknown` and obfuscated identifiers are malformed).
+- List only proxies you run: the headers of a trusted peer are believed. Put `trust_proxies` before
+  `rate_limit` and the loggers that should see the client address. The result is valid for one request.
+
+#### ETag
+
+`etag(c) { }` runs after the inner chain. For a 200 response to GET or HEAD with a body and no
+`ETag` set by the handler, it sets a strong tag: the base64url of the first 16 bytes of SHA-256 of the
+body, in quotes (22 characters). A handler-set `ETag` is kept and used for matching.
+
+When `If-None-Match` matches (list members, `*`, or weak `W/` on either side, which is the weak
+comparison of RFC 9110), the response becomes `304 Not Modified` with no body and no `Content-Type`
+(RFC 9110 15.4.5). `ETag` and `Cache-Control` are kept. Other methods, other statuses, empty bodies and
+SSE streams are left unchanged.
+
+`cache_control(c, "public, max-age=60")` sets `Cache-Control`. Static files (`static_files`) are not
+given an `ETag` by this middleware; wrap the static route in `etag` if the tag matters.
+
+#### Load shedding
+
+```goose
+c.get("/search") {
+    shed_load(c, web::LoadPolicy { max_active_connections_pct: 90, max_pool_used_pct: 90, retry_after_s: 2 }) {
+        ...
+    };
+};
+```
+
+- `LoadPolicy` fields: `max_active_connections_pct` (default 90) and `max_pool_used_pct` (default 90)
+  are the levels at which requests are refused, 1 to 100; 0 turns that check off. `retry_after_s`
+  (default 1) is the `Retry-After` value.
+- A refused request gets 503 with `error.code` `overloaded` and `Retry-After`. It never reaches the handler.
+- Pressure is read from the reactor. Before each handler runs, the runtime records `live_pressure`:
+  open connections against `max_clients`, response bytes in flight against the response pool
+  (`max_pool_bytes`), and staged SSE messages. `c.server_pressure()` returns the same numbers as a
+  `web::ServerPressure` for handlers that want their own policy.
+- Each worker process has its own reactor, so each sheds on its own numbers.
+- Connections are not refused by shedding at accept time; a request is answered with 503 and the
+  connection is kept or closed as usual. Keep health checks outside `shed_load`.
+
+`body_limit(c, bytes) { }` refuses a longer request body with 413 `payload_too_large` before the
+handler runs. The whole body is already buffered, so this is a route policy. It cannot exceed
+`ServerConfig.max_request_bytes`, which still bounds every request.
 | `session(c, config) { }` | loads the signed session cookie, exposes `session_get`/`session_set`/`session_clear`, and re-issues the cookie after the block only when the store changed. See [Sessions](#sessions) |
 | `csrf(c, secret, check_origin = false) { }` | safe methods pass and receive a token cookie; unsafe methods need the token echoed in `X-CSRF-Token` or `csrf_token`, else 403 `csrf_failed`. See [CSRF](#csrf) |
+| `basic_auth(c, realm, check) { }` | HTTP Basic: `check(user, password)` is a named function returning bool; a true result stores the user for `c.auth_subject()` and runs the block; anything else is 401 with a `WWW-Authenticate` challenge. See [Authentication](#authentication) |
+| `bearer_auth(c, secret) { }` | `Authorization: Bearer` token verified with `verify_token`; the subject is stored like `basic_auth`; otherwise 401 `unauthorized`. See [Authentication](#authentication) |
 
 | `live_reload(c, script_url = "") { }` | development only: after the block, a `text/html` response gets `<script src="URL"></script>` before its last `</body>` (appended when there is none). The URL is `script_url`, or else `GOOSE_WEB_LIVE_RELOAD`, read once per process. Unset, empty or unsafe means no change. See [Development server and live reload](#development-server-and-live-reload) |
 
@@ -1133,6 +1271,75 @@ Security notes:
 - `multipart/form-data` bodies are not parsed. Send the token in `X-CSRF-Token` from such forms,
   through script, or use a URL-encoded form.
 
+### Authentication
+
+Password hashing, HTTP Basic and Bearer middleware, and HMAC-signed tokens. The design and the
+threat model are in [Security](security.md#password-hashing).
+
+```goose
+const ALICE_HASH = "$pbkdf2-sha256$600000$...";     // from web::hash_password, stored by the app
+
+fn check_login(user: const u8[:], password: const u8[:]) -> bool {
+    return user == "alice" && web::verify_password(password, ALICE_HASH);
+}
+
+c.get("/admin") {
+    c.basic_auth("Admin", check_login) {
+        c.text(c.auth_subject());    // the verified user, "alice"
+    };
+};
+```
+
+Password hashes (namespace `web`):
+
+- `hash_password(password) -> u8[..128], bool` hashes with PBKDF2-HMAC-SHA256 (RFC 8018), 600000
+  iterations and a 16-byte salt from the CSPRNG. The result is
+  `$pbkdf2-sha256$<iterations>$<salt base64url>$<hash base64url>`, unpadded base64url. The bool is
+  false only when no random source answers, and then nothing is returned.
+- `hash_password_iterations(password, iterations) -> u8[..128], bool` uses an explicit count,
+  1 to 10000000. Counts below the default weaken the hash; they are for tests.
+- `verify_password(password, encoded) -> bool` compares the derived key with the stored hash in
+  constant time. It reads the count and salt from the hash, so old hashes keep working when the
+  default changes. A malformed, unsupported or over-limit encoding returns false.
+
+Middleware (`c.basic_auth(...)`, `c.bearer_auth(...)`, or `web::basic_auth(c, ...)` inside namespace
+`web`):
+
+- `basic_auth(c, realm, check) { next }` reads `Authorization: Basic`, decodes the standard base64
+  credentials and splits them at the first `:`. `check` is a named function
+  `fn(user: const u8[:], password: const u8[:]) -> bool`, passed after the realm. When it returns
+  true, the user is stored for `c.auth_subject()` and `next` runs. Otherwise the response is 401
+  `unauthorized` with `WWW-Authenticate: Basic realm="...", charset="UTF-8"`, and `next` does not
+  run. The realm is printable text of at most 128 bytes without `"` or `\`; a bad realm is a
+  programmer error (assert). Users over 64 bytes are refused.
+- `bearer_auth(c, secret) { next }` reads `Authorization: Bearer <token>` (scheme compared
+  case-insensitively), verifies the token with `verify_token`, stores the subject, and runs `next`.
+  Otherwise it answers 401 `unauthorized` with `WWW-Authenticate: Bearer` (no token given) or
+  `Bearer error="invalid_token"`. `secret` must be at least 32 bytes.
+- `c.auth_subject()` returns the subject that a verifying middleware stored, or `""` when none did.
+  A handler behind no middleware never sees a subject, so an empty result means "not verified".
+- `bearer_token(c)` returns the raw token text without verifying it. Do not trust it on its own.
+
+Signed tokens (namespace `web`), for APIs that issue bearer credentials:
+
+- `sign_token(secret, subject, ttl) -> u8[..256], bool` makes a token for `subject` (1 to 64 bytes)
+  valid for `ttl` seconds (1 to 315360000) from now. It refuses a secret under 32 bytes and an
+  unavailable clock, and then returns false with an empty token.
+- `verify_token(secret, token) -> u8[..64], bool` returns the subject when the token is well formed,
+  correctly tagged, not expired, and not issued more than 60 seconds in the future. `verify_token_at`
+  takes the clock as an argument, for tests.
+
+The token is `base64url(payload) "." base64url(tag)`, with
+`tag = HMAC-SHA256(secret, "gw-token|" || base64url(payload))`. The payload is a version byte (1),
+the issue time, the expiry time (each 8 bytes, big-endian Unix seconds) and the subject. It is not
+JWT, deliberately: there is no algorithm field for a verifier to trust, so `"alg": "none"` and
+key-confusion attacks have nothing to act on. Tokens are bearer credentials. There is no revocation;
+keep `ttl` short, and rotate the secret to sign everyone out.
+
+Password verification is CPU-bound: each check runs the full iteration count. The unit suite's
+default-count hash and verify take a few seconds in its unoptimized debug build; measure the cost on
+the target hardware before choosing a count. Use `rate_limit` on login routes.
+
 ### Static files
 
 `c.static_files(url_prefix, directory) { next }` is middleware. It serves GET and HEAD requests under
@@ -1184,7 +1391,8 @@ happens. Each read is bounded before any byte of the file is copied:
    `file_read_failed`. Before this change these cases answered 404.
 
 Keep served trees small and trusted, or serve
-large assets elsewhere. Symbolic links inside the directory are followed.
+large assets elsewhere. Symbolic links are followed only when their real target lies inside the
+directory; a link that leaves it answers 404 `not_found` and its target is never read.
 
 The framework reads files and the environment through `src/sys/`, not the `os` stdlib. Importing
 `os` into framework code made its global names (`read_file`, `is_dir`, `clock_ns`, ...) ambiguous
@@ -1384,7 +1592,7 @@ Blocking: each file is read whole with `read_file` on the reactor thread, and no
 served while that happens. The `os` stdlib has no file size query, so the read itself is not
 bounded by the response capacity. The response is: a body over `MAX_RESPONSE_BODY_BYTES` becomes
 500 `response_too_large`. Keep served trees small and trusted, or serve large assets elsewhere.
-Symbolic links inside the directory are followed.
+Symbolic links are followed only when their real target lies inside the directory (see Static files).
 
 ### OpenAPI
 
