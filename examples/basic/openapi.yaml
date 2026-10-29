@@ -119,7 +119,7 @@ paths:
                 type: string
                 pattern: ^[1-9][0-9]*$
         '400':
-          description: Malformed JSON or invalid percent escape. URI syntax errors can be rejected before
+          description: Malformed JSON, invalid UTF-8, unpaired Unicode surrogate escapes, or invalid percent escape. URI syntax errors can be rejected before
             application middleware and its request ID.
           headers:
             X-Request-ID:
@@ -505,7 +505,7 @@ components:
               type: string
   responses:
     '400':
-      description: Malformed JSON or invalid percent escape. URI syntax errors can be rejected before
+      description: Malformed JSON, invalid UTF-8, unpaired Unicode surrogate escapes, or invalid percent escape. URI syntax errors can be rejected before
         application middleware and its request ID.
       headers:
         X-Request-ID:
@@ -617,7 +617,7 @@ components:
           schema:
             $ref: '#/components/schemas/Error'
     '503':
-      description: Required event queue is full. error.code is event_queue_full; mutation has not occurred.
+      description: Required event queue is full (error.code event_queue_full), or Todo IDs are exhausted (error.code ids_exhausted). Mutation has not occurred.
       headers:
         X-Request-ID:
           description: Positive per-process request sequence assigned to application responses.

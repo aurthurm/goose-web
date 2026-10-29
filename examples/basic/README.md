@@ -72,7 +72,7 @@ without normalization; leading/trailing spaces are preserved.
 
 | Status | Meaning |
 | --- | --- |
-| 400 | Malformed JSON or invalid URI escape |
+| 400 | Malformed JSON, invalid UTF-8 or unpaired Unicode surrogate escapes, or invalid URI escape |
 | 404 | Route or valid Todo ID not found |
 | 405 | Method unavailable; `Allow` lists the supported methods |
 | 409 | Store contains 128 Todos |
@@ -80,7 +80,7 @@ without normalization; leading/trailing spaces are preserved.
 | 415 | Required JSON media type is missing or unsupported |
 | 422 | JSON shape/types, title, ID, or query validation failed |
 | 500 | Persistent save failed (`storage_error`) |
-| 503 | Required event queue is full (`event_queue_full`) |
+| 503 | Required event queue is full (`event_queue_full`), or Todo IDs are exhausted (`ids_exhausted`) |
 
 Application errors use `{"error":{"code":"...","message":"..."}}`; every
 application response includes `X-Request-ID`. HTTP parser errors occur before
